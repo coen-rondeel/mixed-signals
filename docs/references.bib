@@ -1,6 +1,7 @@
 % Every entry was checked against its DOI record, official page or, for books without a
 % DOI, library catalogue records before it was added.
-% Keys: lowercase first author (or organisation), year and first title word, in ASCII.
+% Keys: lowercase first author (or organisation), year and first significant title word,
+% skipping a leading article, preposition or verb such as "A", "On" or "Is", in ASCII.
 % Web pages carry the year they were first published and the date they were read.
 
 @book{mardia2000directional,
@@ -174,4 +175,271 @@
   pages   = {306--312},
   year    = {2013},
   doi     = {10.1086/670067},
+}
+
+@article{kullback1951information,
+  author  = {Kullback, S. and Leibler, R. A.},
+  title   = {On information and sufficiency},
+  journal = {Annals of Mathematical Statistics},
+  volume  = {22},
+  number  = {1},
+  pages   = {79--86},
+  year    = {1951},
+  doi     = {10.1214/aoms/1177729694},
+}
+
+@book{rasmussen2006gaussian,
+  author    = {Rasmussen, Carl Edward and Williams, Christopher K. I.},
+  title     = {Gaussian Processes for Machine Learning},
+  publisher = {MIT Press},
+  year      = {2006},
+  doi       = {10.7551/mitpress/3206.001.0001},
+}
+
+@article{dowson1982frechet,
+  author  = {Dowson, D. C. and Landau, B. V.},
+  title   = {The {F}r{\'e}chet distance between multivariate normal distributions},
+  journal = {Journal of Multivariate Analysis},
+  volume  = {12},
+  number  = {3},
+  pages   = {450--455},
+  year    = {1982},
+  doi     = {10.1016/0047-259X(82)90077-X},
+}
+
+@article{givens1984class,
+  author  = {Givens, Clark R. and Shortt, Rae Michael},
+  title   = {A class of {W}asserstein metrics for probability distributions},
+  journal = {Michigan Mathematical Journal},
+  volume  = {31},
+  number  = {2},
+  pages   = {231--240},
+  year    = {1984},
+  doi     = {10.1307/mmj/1029003026},
+}
+
+@article{hellinger1909neue,
+  author  = {Hellinger, E.},
+  title   = {Neue {B}egr{\"u}ndung der {T}heorie quadratischer {F}ormen von unendlichvielen {V}er{\"a}nderlichen},
+  journal = {Journal f{\"u}r die reine und angewandte Mathematik},
+  volume  = {136},
+  pages   = {210--271},
+  year    = {1909},
+  doi     = {10.1515/crll.1909.136.210},
+}
+
+% Sources disagree on the last page (109 or 110), so only the first page is given.
+@article{bhattacharyya1943measure,
+  author  = {Bhattacharyya, A.},
+  title   = {On a measure of divergence between two statistical populations defined by their probability distributions},
+  journal = {Bulletin of the Calcutta Mathematical Society},
+  volume  = {35},
+  pages   = {99},
+  year    = {1943},
+}
+
+@book{fukunaga1990introduction,
+  author    = {Fukunaga, Keinosuke},
+  title     = {Introduction to Statistical Pattern Recognition},
+  edition   = {2},
+  publisher = {Academic Press},
+  year      = {1990},
+  doi       = {10.1016/C2009-0-27872-X},
+}
+
+@article{smirnov1948table,
+  author  = {Smirnov, N.},
+  title   = {Table for estimating the goodness of fit of empirical distributions},
+  journal = {Annals of Mathematical Statistics},
+  volume  = {19},
+  number  = {2},
+  pages   = {279--281},
+  year    = {1948},
+  doi     = {10.1214/aoms/1177730256},
+}
+
+@article{vallender1974calculation,
+  author  = {Vallender, S. S.},
+  title   = {Calculation of the {W}asserstein distance between probability distributions on the line},
+  journal = {Theory of Probability and Its Applications},
+  volume  = {18},
+  number  = {4},
+  pages   = {784--786},
+  year    = {1974},
+  doi     = {10.1137/1118101},
+}
+
+@article{leone1961folded,
+  author  = {Leone, F. C. and Nelson, L. S. and Nottingham, R. B.},
+  title   = {The folded normal distribution},
+  journal = {Technometrics},
+  volume  = {3},
+  number  = {4},
+  pages   = {543--550},
+  year    = {1961},
+  doi     = {10.1080/00401706.1961.10489974},
+}
+
+@article{lin1991divergence,
+  author  = {Lin, J.},
+  title   = {Divergence measures based on the {S}hannon entropy},
+  journal = {IEEE Transactions on Information Theory},
+  volume  = {37},
+  number  = {1},
+  pages   = {145--151},
+  year    = {1991},
+  doi     = {10.1109/18.61115},
+}
+
+@article{pettitt1976two,
+  author  = {Pettitt, A. N.},
+  title   = {A two-sample {A}nderson-{D}arling rank statistic},
+  journal = {Biometrika},
+  volume  = {63},
+  number  = {1},
+  pages   = {161--168},
+  year    = {1976},
+  doi     = {10.1093/biomet/63.1.161},
+}
+
+@article{scholz1987k,
+  author  = {Scholz, F. W. and Stephens, M. A.},
+  title   = {{K}-sample {A}nderson-{D}arling tests},
+  journal = {Journal of the American Statistical Association},
+  volume  = {82},
+  number  = {399},
+  pages   = {918--924},
+  year    = {1987},
+  doi     = {10.1080/01621459.1987.10478517},
+}
+
+@book{piessens1983quadpack,
+  author    = {Piessens, Robert and de Doncker-Kapenga, Elise and {\"U}berhuber, Christoph W. and Kahaner, David K.},
+  title     = {{QUADPACK}: A Subroutine Package for Automatic Integration},
+  series    = {Springer Series in Computational Mathematics},
+  volume    = {1},
+  publisher = {Springer},
+  year      = {1983},
+  doi       = {10.1007/978-3-642-61786-7},
+}
+
+@article{virtanen2020scipy,
+  author  = {Virtanen, Pauli and Gommers, Ralf and Oliphant, Travis E. and others},
+  title   = {{SciPy} 1.0: fundamental algorithms for scientific computing in {P}ython},
+  journal = {Nature Methods},
+  volume  = {17},
+  number  = {3},
+  pages   = {261--272},
+  year    = {2020},
+  doi     = {10.1038/s41592-019-0686-2},
+}
+
+@article{haario1999adaptive,
+  author  = {Haario, Heikki and Saksman, Eero and Tamminen, Johanna},
+  title   = {Adaptive proposal distribution for random walk {M}etropolis algorithm},
+  journal = {Computational Statistics},
+  volume  = {14},
+  number  = {3},
+  pages   = {375--395},
+  year    = {1999},
+  doi     = {10.1007/s001800050022},
+}
+
+@inproceedings{sejdinovic2014kernel,
+  author    = {Sejdinovic, Dino and Strathmann, Heiko and Garcia, Maria Lomeli and Andrieu, Christophe and Gretton, Arthur},
+  title     = {Kernel adaptive {M}etropolis-{H}astings},
+  booktitle = {Proceedings of the 31st International Conference on Machine Learning},
+  series    = {Proceedings of Machine Learning Research},
+  volume    = {32},
+  number    = {2},
+  pages     = {1665--1673},
+  publisher = {PMLR},
+  year      = {2014},
+  url       = {https://proceedings.mlr.press/v32/sejdinovic14.html},
+}
+
+@book{cover2006elements,
+  author    = {Cover, Thomas M. and Thomas, Joy A.},
+  title     = {Elements of Information Theory},
+  edition   = {2},
+  publisher = {Wiley},
+  year      = {2006},
+  doi       = {10.1002/047174882X},
+}
+
+@article{barr1999mean,
+  author  = {Barr, Donald R. and Sherrill, E. Todd},
+  title   = {Mean and variance of truncated normal distributions},
+  journal = {The American Statistician},
+  volume  = {53},
+  number  = {4},
+  pages   = {357--361},
+  year    = {1999},
+  doi     = {10.1080/00031305.1999.10474490},
+}
+
+@article{schilling2002human,
+  author  = {Schilling, Mark F. and Watkins, Ann E. and Watkins, William},
+  title   = {Is human height bimodal?},
+  journal = {The American Statistician},
+  volume  = {56},
+  number  = {3},
+  pages   = {223--229},
+  year    = {2002},
+  doi     = {10.1198/00031300265},
+}
+
+@article{fisher1953dispersion,
+  author  = {Fisher, R. A.},
+  title   = {Dispersion on a sphere},
+  journal = {Proceedings of the Royal Society of London A},
+  volume  = {217},
+  number  = {1130},
+  pages   = {295--305},
+  year    = {1953},
+  doi     = {10.1098/rspa.1953.0064},
+}
+
+@book{fisher1987statistical,
+  author    = {Fisher, N. I. and Lewis, T. and Embleton, B. J. J.},
+  title     = {Statistical Analysis of Spherical Data},
+  publisher = {Cambridge University Press},
+  year      = {1987},
+  doi       = {10.1017/CBO9780511623059},
+}
+
+@book{devroye1986non,
+  author    = {Devroye, Luc},
+  title     = {Non-Uniform Random Variate Generation},
+  publisher = {Springer},
+  year      = {1986},
+  doi       = {10.1007/978-1-4613-8643-8},
+}
+
+@techreport{thompson2010comparison,
+  author      = {Thompson, Madeleine B.},
+  title       = {A comparison of methods for computing autocorrelation time},
+  institution = {Department of Statistics, University of Toronto},
+  type        = {Technical Report},
+  number      = {1007},
+  year        = {2010},
+  eprint      = {1011.0175},
+}
+
+@misc{foremanmackey2017autocorrelation,
+  author       = {Foreman-Mackey, Daniel},
+  title        = {Autocorrelation analysis \& convergence},
+  howpublished = {emcee documentation, tutorial},
+  url          = {https://emcee.readthedocs.io/en/stable/tutorials/autocorr/},
+  year         = {2017},
+  note         = {Accessed 2026-10-13},
+}
+
+@book{davis1984methods,
+  author    = {Davis, Philip J. and Rabinowitz, Philip},
+  title     = {Methods of Numerical Integration},
+  edition   = {2},
+  publisher = {Academic Press},
+  year      = {1984},
+  doi       = {10.1016/C2013-0-10566-1},
 }

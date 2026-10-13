@@ -10,8 +10,8 @@ The implementation is split into twenty focused sessions, numbered 0 to 19. They
 | 0 | Design close-out | A | | Done (2026-10-13) |
 | 1 | Foundations | A | 0 | Done (2026-10-13) |
 | 2 | Sample containers | A | 1 | Done (2026-10-13) |
-| 3 | Validation zoo | B | 2 | Next |
-| 4 | Transforms and whitening | B | 2 | Open |
+| 3 | Validation zoo | B | 2 | Done (2026-10-13) |
+| 4 | Transforms and whitening | B | 2 | Next |
 | 5 | MCMC tools | B | 2 | Open |
 | 6 | Estimators | B | 2 | Open |
 | 7 | eryn adapters and priors | C | 2, 4 | Open |
@@ -94,6 +94,8 @@ Scope: `zoo/`, public as `mixed_signals.zoo`.
 - Each case draws `SampleSet`s from an explicit key and carries its analytic reference values.
 - Done when every case reproduces its reference values within sampling error.
 
+Outcome (2026-10-13): the developers decided fourteen items, now in `DESIGN.md`, and deferred weighted draws. A `ZooCase` holds K named posteriors, their `ParamSpace`, their densities and a polars reference table with the result columns `pair`, `metric` and `parameters`, so results join their truth; `sample(key, N, batch_size=B)` draws a `SampleSet` (B, K, N, D), each posterior from `derive_key(key, name)`. Reference values are closed forms, plus one-dimensional quadrature for the marginal JS and AD of Gaussian pairs and for mixture KL, all in JAX, so they jit, vmap and differentiate. The quadrature uses Gauss-Legendre panels refined around every component and every crossing of two components, which also gets right the narrow components that QUADPACK steps over; concrete invalid inputs raise, and inside jit they give NaN. SciPy became a core dependency, which the tests use as an independent check. The families: shifted, scaled and rotated (±α/2) Gaussians with an optional base mean and covariance, any K Gaussians, the twisted Gaussian with its moment-matched Gaussian and closed-form KL, a mixture against its moment-matched Gaussian, a dropped mode and reweighted modes, railed normals, wrapped normals across a circle boundary, von Mises-Fisher distributions over a pole, and AR(1) chains with known τ for sessions 5, 11 and 12. The tests reproduce every reference value from draws within five standard errors and fail on any 10 per cent error. Later sessions take their test data from `mixed_signals.zoo` and their truths from `case.reference_value`.
+
 ### 4. Transforms and whitening
 
 Scope: `transforms/base.py`, `transforms/whiten.py`.
@@ -101,6 +103,7 @@ Scope: `transforms/base.py`, `transforms/whiten.py`.
 - `Transform`: forward and inverse maps, the log-determinant of the Jacobian and the full Jacobian, which defaults to `jax.jacfwd`; transforms compose.
 - Whitening from the reference, the pooled samples or a Fisher matrix. It acts on the Euclidean block, and periodic axes are only scaled by their circular spread. Both inputs of a comparison share one whitening, recorded with the result.
 - Port from catpylisa's `common_tools.distances.optimal_transport` module: `transformations.py` (z-score, empirical whitening, Fisher projection) and the geometry schema in `containers.py`.
+- Settle with the developers what pooled whitening uses. The covariance of the pooled samples includes the spread between the means, which shrinks a Mahalanobis shift d to d/√(1 + d²/4), below 2 for every d; the average of the within-posterior covariances, as in Cohen's d, does not. The zoo states its shifts against the first posterior's covariance.
 - Done when Jacobians match `jax.jacfwd`, inverses round-trip, Fisher matrices map as Γ′ = JᵀΓJ, and no periodic axis is mixed with another axis.
 
 ### 5. MCMC tools
@@ -110,6 +113,7 @@ Scope: `mcmc/autocorr.py`, `mcmc/ess.py`, `mcmc/reduce.py`.
 - Our own integrated autocorrelation time τ from walker-averaged autocorrelation functions, checked against emcee's and eryn's estimators.
 - Effective sample size, split-chain Kolmogorov-Smirnov tests on τ-thinned halves, and rank-normalised split-R̂ across walkers as an informational statistic that always carries a warning, because eryn's walkers are coupled.
 - Reduction: burn-in removal and thinning by τ, producing a `SampleSet` with its `n_eff` and recording each step. `n_eff` must lie between 1 and the number of samples, so τ-based values of anticorrelated chains are capped there.
+- Test data: the zoo's `ar1_chains` gives τ in closed form, τ < 1 for negative φ, and a known transient through its `start` argument.
 - Done when τ matches the analytic value for AR(1) chains, and a reduction can be repeated from its record.
 
 ### 6. Estimators
@@ -139,6 +143,7 @@ Scope: `metrics/_cap.py`, `metrics/moments.py`, `metrics/marginal.py`.
 - Per-parameter mean shift and width ratio; Gaussian KL in both directions, W2 and Hellinger, split into location and shape terms.
 - Marginals: Kolmogorov-Smirnov, k-sample Anderson-Darling, one-dimensional W1, and Jensen-Shannon in nats and Hellinger with a bounded KDE.
 - Every kernel is pure JAX, honours `log_weights`, carries jaxtyping annotations and cites its sources.
+- Name the result metrics as the zoo's reference tables do (`kl`, `kl_location`, `w2`, `ks`, `js`, `ad` and so on), or rename the zoo's in the same change, so results join their truth.
 - Done when the zoo's closed-form values are recovered.
 
 ### 9. Metrics II: divergences, kernels and classifiers
@@ -180,7 +185,7 @@ Scope: `nulls/`, `sigma/`, and a calibration script in `scripts/`.
 - Nulls: permutation of τ-thinned pooled samples in both modes by default, splitting the reference into halves at the approximation's N_eff as a mode A alternative, Gaussian surrogates for posterior-shape diagnostics, and N_eff matching. 200 draws by default, configurable.
 - σ_sig: the null's empirical p-value as a one-sided σ, with a fitted tail beyond the resampling resolution, flagged as extrapolated.
 - σ_eff maps per metric, r_eff maps for shape-only rows, and per-metric threshold defaults on σ_eff and |ln r_eff| that the YAML config can override.
-- A script that rebuilds the σ_eff and r_eff calibration tables and the validation page from the zoo.
+- A script that rebuilds the σ_eff and r_eff calibration tables and the validation page from the zoo. The zoo's `batch_size` draws independent problems for the null-uniformity checks, and its `mahalanobis_shift` and `width_ratio` rows are the true σ_eff and r_eff.
 - Done when nulls on identical distributions give uniform p-values, σ_eff recovers the zoo's known shifts, and r_eff its known width ratios.
 
 ### 13. Reweighting

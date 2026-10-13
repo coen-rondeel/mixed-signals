@@ -49,7 +49,7 @@ In v1:
 
 ## Decisions so far
 
-The developers have agreed 102 decisions: 88 from rounds 1–8, the repository setup and the design close-out, 7 from roadmap session 1 (Foundations) and 7 from roadmap session 2 (Sample containers), all on 2026-10-13.
+The developers have agreed 116 decisions: 88 from rounds 1–8, the repository setup and the design close-out, 7 from roadmap session 1 (Foundations), 7 from roadmap session 2 (Sample containers) and 14 from roadmap session 3 (Validation zoo), all on 2026-10-13.
 
 | Topic | Decision |
 | --- | --- |
@@ -96,7 +96,7 @@ The developers have agreed 102 decisions: 88 from rounds 1–8, the repository s
 | Config format | YAML |
 | CLI | argparse |
 | Packaging | One package with extras; Python ≥ 3.12; Apache 2.0 license |
-| Dependencies | Lean core: jax, ott-jax, equinox, jaxtyping, numpy, polars, pydantic, pyyaml; eryn is an extra, and the dev group installs every extra except the CUDA ones |
+| Dependencies | Lean core: jax, ott-jax, equinox, jaxtyping, numpy, polars, pydantic, pyyaml and scipy, which JAX requires anyway; eryn is an extra, and the dev group installs every extra except the CUDA ones |
 | Tooling | uv ≥ 0.13 manages the project; ruff, strict mypy, a style-rule script, pre-commit hooks and CPU-only GitHub Actions CI check every change; CI pins its actions by commit SHA |
 | Package layout | The tree under Package layout, with `io/eryn_backend.py` and `priors/eryn_container.py` |
 | MCMC tools | `mcmc/` (τ, ESS, reduction) stays separate from `diagnostics/` (posterior shape) |
@@ -147,7 +147,7 @@ The developers have agreed 102 decisions: 88 from rounds 1–8, the repository s
 | ParamSpace YAML | Flat parameter entries (name, label, unit, topology, bounds) and a `spheres` list; angles in radians; a sphere azimuth is a circle of period 2π, and the polar bounds lie inside the range of the polar form |
 | Hashes | SHA-256 throughout; one input hash per posterior, in `pair` order, over dtype, shape and C-ordered bytes |
 | Result object | A thin `Result` around one polars DataFrame that checks the schema and the required columns and reads and writes parquet; `Provenance` is a pydantic model |
-| Citation style | Author-year citations in round brackets; BibTeX keys of first author, year and first title word in lowercase ASCII; each session adds only verified entries |
+| Citation style | Author-year citations in round brackets; BibTeX keys of first author, year and first significant title word in lowercase ASCII, skipping a leading article, preposition or verb such as "A", "On" or "Is"; each session adds only verified entries |
 | Sample metadata | `SampleSet` holds arrays only; engines take the posterior names and the `ParamSpace` |
 | SampleSet operations | Select problems, posteriors or parameters; take samples, which drops `n_eff`; convert to NumPy, JAX, torch or CuPy. No stacking of sets in v1: engines pair separate sets, and τ-thinned runs differ in N. A later operation that joins sets raises when their optional fields differ |
 | Narrow floats | Inputs narrower than float64 are cast with a `PrecisionWarning` |
@@ -155,6 +155,20 @@ The developers have agreed 102 decisions: 88 from rounds 1–8, the repository s
 | Chain counts | Acceptance and swap counts carry the number of proposals behind each, so rates hold for cut or thinned chains |
 | Chain log densities | `log_like` and `log_prior` are optional; `betas` default to ones for a single temperature |
 | Array extras | A `torch` extra, with CPU-only torch from the PyTorch index in the dev group; `cuda12` and `cuda13` extras with the JAX CUDA plugin and the matching CuPy wheel, which exclude each other and stay out of the dev group |
+| Zoo cases | A `ZooCase` holds K named posteriors, their `ParamSpace`, their densities and a reference table; `sample(key, N, batch_size=B)` gives a `SampleSet` (B, K, N, D), each posterior drawing from `derive_key(key, name)` and each problem folding in its index |
+| Zoo reference tables | A polars table per case with the result columns pair, metric and parameters, plus value and basis (closed form or quadrature), so that results join their truth |
+| Zoo reference values | Closed forms where they exist, plus one-dimensional quadrature for the marginal JS and AD of Gaussian pairs and for mixture KL |
+| Zoo numerics | All numerics of the zoo in JAX, so they jit, vmap and differentiate: closed forms, quadrature, and the set-up of distributions and builders; NumPy only reads user input and holds the fixed Gauss-Legendre table |
+| Zoo quadrature | Composite 8-point Gauss-Legendre rules on panels refined around every normal component (μ ± 12σ in σ/2 steps) and every crossing of two weighted components; fixed shapes, no new dependency, checked against QUADPACK with break points in the tests |
+| Zoo input checks | Closed forms check concrete inputs and raise ValueError, as `SampleSet` does; inside jit, invalid inputs give NaN |
+| SciPy | A core dependency, already installed with JAX, kept for later sessions; the zoo does not import it, the tests use it as an independent check, and the lint group adds `scipy-stubs` |
+| Zoo periodic cases | Wrapped normals: exact draws, a circular standard deviation equal to σ, and circles correlated with real axes by wrapping one coordinate |
+| Zoo sphere cases | von Mises-Fisher distributions centred near a pole and rotated over it, in any polar form, with closed-form KL and Hellinger |
+| Zoo rotated Gaussians | Rotated by ±α/2 in one plane, so the marginals stay identical and only the sign of the correlation differs |
+| Zoo mixtures | A two-component mixture against its moment-matched Gaussian, one component alone (a dropped mode) and the same components reweighted |
+| Zoo railed cases | Unit normals truncated at one bound, one per offset, with the railing score, truncated moments and closed-form KL |
+| Zoo AR(1) chains | AR(1) chains as `Chains` with τ = (1 + φ)/(1 − φ), built in session 3 for sessions 5, 11 and 12 |
+| Zoo base Gaussians | The shift and scale builders take an optional mean and covariance, and the rotation builder a mean and per-parameter scales; shifts stay in Mahalanobis units |
 
 ## Design principles
 
@@ -303,15 +317,28 @@ At linear order, a posterior whose covariance is the inverse Fisher matrix maps 
 
 ## Validation zoo
 
-Distributions with known answers serve as the test suite, as the source of the σ_eff and r_eff calibration tables, and as the content of the validation page.
+Distributions with known answers serve as the test suite, as the source of the σ_eff and r_eff calibration tables, and as the content of the validation page. Session 3 built them in `mixed_signals.zoo`.
 
-- **Shifted and rotated Gaussians:** closed-form KL, W2 and Mahalanobis shifts.
-- **Scaled Gaussians:** known width ratios, for r_eff.
-- **Bananas:** non-linear dependence with Gaussian-matched moments, which moment-based metrics miss; twisted Gaussians as in Haario, Saksman and Tamminen (1999).
-- **Multimodal mixtures:** separated and overlapping modes, for multimodality checks and mode-dropping comparisons.
-- **Railed cases:** posteriors truncated at a prior bound, for the railing threshold.
-- **Periodic cases:** distributions straddling the period boundary.
-- **Sphere cases:** sky-position distributions near the poles.
+| Builder | Posteriors | Reference values |
+| --- | --- | --- |
+| `gaussians` | Any K Gaussians | KL in both directions, W2 and Hellinger, each with location and shape terms; moment metrics; marginal KS, W1, Hellinger, JS and AD |
+| `shifted_gaussians` | `reference` and `shifted` by a Mahalanobis length δ | As for `gaussians`; δ is the true σ_eff |
+| `scaled_gaussians` | `reference` and `scaled` by a ratio r on chosen axes | As for `gaussians`; r is the true width ratio and, for one axis, the true r_eff |
+| `rotated_gaussians` | `reference` and `rotated`, at ∓α/2 in one plane | As for `gaussians`; every marginal and per-parameter value is exactly zero |
+| `banana` | Twisted Gaussian B(b, v) and its moment-matched `gaussian` | Moments; KL(B ‖ N) = ½ ln(1 + 2b²v²) and KL(N ‖ B) = 2b²v² − ½ ln(1 + 2b²v²) |
+| `gaussian_mixture` | Two-component `mixture`, its moment-matched `gaussian`, one `component` and the `reweighted` modes | Moments; KL of every pair, by quadrature along the separation axis |
+| `railed_gaussians` | Unit normals truncated at zero, one per offset z | Railing score exp(−z²/2), or 1 for z ≤ 0; truncated moments; KL of every pair |
+| `wrapped_gaussians` | A wrapped normal centred on the circle boundary, and a copy shifted by δσ | Circular mean and mean resultant length; the generating shift |
+| `von_mises_fisher` | A von Mises-Fisher distribution near the north pole, and a copy rotated over it | Mean resultant length; KL and Hellinger; the angular shift |
+| `ar1_chains` | AR(1) `Chains` with one coefficient φ per parameter | τ = (1 + φ)/(1 − φ); stationary mean and width |
+
+- **Cases (Decided).** A `ZooCase` holds K named posteriors, their `ParamSpace` and their reference table. `sample(key, N, batch_size=B)` draws a `SampleSet` shaped (B, K, N, D) with equal weights, and `log_prob` evaluates every posterior with respect to the Lebesgue measure of the coordinates. Posterior k draws from `derive_key(key, name)` and problem b folds in its index, so draws depend neither on the other posteriors nor on B, and posteriors of the same name share their random numbers across cases.
+- **Reference tables (Decided).** One polars table per case, with the result columns `pair`, `metric` and `parameters`, plus `value` and `basis`, so results join their truth. KL rows come in both directions; symmetric metrics have one row per pair. The effect-size truths are the rows `mean_shift`, `width_ratio`, `mahalanobis_shift` and `angular_shift`, in units of the first posterior of the pair.
+- **Reference values (Decided).** Closed forms where they exist, and one-dimensional quadrature for the marginal JS and AD of Gaussian pairs and for mixture KL. All of it runs in JAX float64, so reference values compute under `jit`, map with `vmap` and differentiate with `grad`; NumPy only reads user input. The quadrature uses composite 8-point Gauss-Legendre rules (Davis and Rabinowitz 1984) on panels refined around every normal component and every crossing of two weighted components, so components of very different widths keep their share of an integral. Adaptive QUADPACK (Piessens et al. 1983), as SciPy (Virtanen et al. 2020) runs it, steps over a narrow component without a warning: it gave ½ ln 2 instead of ln 2 for the JS divergence of N(0, 1) and N(4, 0.001²), and 0.92 instead of 8 ln 2 − 4 for the AD distance of fully separated normals. The tests compare every quadrature with QUADPACK given break points at every component. Concrete invalid inputs raise ValueError; inside jit they give NaN. The banana KL values follow from the unit Jacobian of the twist and the maximum entropy of the Gaussian (Cover and Thomas 2006), and the `banana` defaults are the moderately twisted target B(0.03, 100) of Sejdinovic et al. (2014), who also use b = 0.1 and 8 dimensions.
+- **Families (Decided).** Periodic cases use wrapped normals, whose circular standard deviation equals σ (Mardia and Jupp 2000); they draw exactly, and wrapping one coordinate of a correlated normal correlates a circle with real axes. Sphere cases use von Mises-Fisher distributions (Fisher 1953), drawn by inversion on the 2-sphere (Fisher, Lewis and Embleton 1987). Rotated Gaussians turn by ±α/2, so their marginals stay identical. The mixture's partners cover moment matching, mode dropping and mode reweighting; with equal weights it is bimodal when its separation exceeds 2 (Schilling, Watkins and Watkins 2002). Railed cases share one bound, with truncated moments from Barr and Sherrill (1999). The shift and scale builders take an optional mean and covariance, and the rotation builder a mean and per-parameter scales, so whitening and float64 can be tested at GW scales.
+- **AR(1) chains (Decided).** Chains with known τ (Thompson 2010), summed over all lags as in emcee, with an optional start far from zero whose transient decays as φ^t.
+- **Checks.** The tests reproduce every reference value from draws within five standard errors, and every closed form against an independent SciPy computation; an error of 10 per cent in any reference value fails them.
+- **For session 4.** The covariance of pooled samples includes the spread between the means, which shrinks a Mahalanobis shift d to d/√(1 + d²/4), below 2 for every d. The zoo states shifts against the first posterior's covariance.
 
 **Importable zoo (Decided).** `mixed_signals.zoo` is public and documented, so users can test their own metrics against it.
 
@@ -450,7 +477,7 @@ mixed-signals/
 │   ├── nulls/              # permutation, split-half, Gaussian surrogates, N_eff matching
 │   ├── sigma/              # σ_sig, σ_eff and r_eff maps, calibration tables
 │   ├── engines/            # diagnose, compare, reweight, dataspace
-│   ├── zoo/                # validation distributions with known answers
+│   ├── zoo/                # cases with known answers: distributions, closed forms
 │   ├── pipeline/           # YAML config models, runner, dry-run cost
 │   ├── report/             # marimo notebook, cantuccio plots
 │   ├── cli.py              # argparse: mixed-signals run config.yaml
@@ -461,7 +488,7 @@ mixed-signals/
 └── docs/                   # Sphinx, references.bib, validation page
 ```
 
-Decided at setup: core dependencies are jax, ott-jax, equinox, jaxtyping, numpy, polars, pydantic and pyyaml. jaxtyping is listed directly because every kernel imports it. eryn is the `eryn` extra, because its runtime dependencies include matplotlib, pandas, seaborn and pytest, and only `io/eryn_backend.py` and `priors/eryn_container.py` use it; both import it lazily. The other extras are plot (cantuccio), report (marimo, cantuccio), torch, and cuda12 and cuda13, which install the JAX CUDA plugin with the matching CuPy wheel and exclude each other; the gw extra arrives with its module. The dev dependency group installs every extra except the CUDA ones, with CPU-only torch from the PyTorch index on Linux and Windows, beartype sits in the test group, and Sphinx in the docs group, where sphinxcontrib-bibtex renders the citations from `docs/references.bib`.
+Decided at setup: core dependencies are jax, ott-jax, equinox, jaxtyping, numpy, polars, pydantic and pyyaml; session 3 added scipy, which JAX already requires, as a core dependency for later sessions; the zoo computes in JAX, and the tests use SciPy as an independent check, with `scipy-stubs` in the lint group. jaxtyping is listed directly because every kernel imports it. eryn is the `eryn` extra, because its runtime dependencies include matplotlib, pandas, seaborn and pytest, and only `io/eryn_backend.py` and `priors/eryn_container.py` use it; both import it lazily. The other extras are plot (cantuccio), report (marimo, cantuccio), torch, and cuda12 and cuda13, which install the JAX CUDA plugin with the matching CuPy wheel and exclude each other; the gw extra arrives with its module. The dev dependency group installs every extra except the CUDA ones, with CPU-only torch from the PyTorch index on Linux and Windows, beartype sits in the test group, and Sphinx in the docs group, where sphinxcontrib-bibtex renders the citations from `docs/references.bib`.
 
 ## Open questions
 
@@ -471,7 +498,7 @@ One item stays open by the developers' decision.
 
 ## Deferred
 
-Eleven items wait until the v1 core is stable; replicate runs may never come.
+Twelve items wait until the v1 core is stable; replicate runs may never come.
 
 - **Trans-dimensional catalogs:** cross-matching and label switching, including multi-leaf eryn runs; comparing summed signals in data space avoids matching for the global check.
 - **Injection-ensemble calibration:** PP plots, SBC, TARP; needs an ensemble container with true parameters.
@@ -483,6 +510,7 @@ Eleven items wait until the v1 core is stable; replicate runs may never come.
 - **Leave-one-out comparisons:** each posterior against the pooled rest, for larger K.
 - **Nested-sampling weights:** converting the weights that nested samplers report into `log_weights` in `io/weights.py`; until then users pass the logarithm of those weights.
 - **Independent eryn samplers:** eryn runs with several independent samplers (`nsamplers` > 1), each of which can stop at its own step; v1 reads runs with one sampler.
+- **Weighted zoo draws:** draws from a wider proposal with `log_weights` = ln p − ln q, to test that every kernel honours weights; until then sessions 8 and 13 build weights in their tests.
 - **Independent-data tension:** the parameter-shift probability (Raveri and Hu 2019; Raveri and Doux 2021), for posteriors from independent data, such as multiband sources seen by LISA and by ground-based detectors. Modes A and B analyse the same data, where every shift is a systematic difference.
 
 ## References
@@ -540,8 +568,15 @@ Every method and assumption above cites the sources below. Each module cites the
 | Fisher matrix and Γ′ = JᵀΓJ | Vallisneri (2008) |
 | Energy distance in a Hilbert space | Lyons (2013) |
 | Whitening | Kessy, Lewin and Strimmer (2018) |
-| Circular spread | Mardia and Jupp (2000) |
-| Banana distributions | Haario, Saksman and Tamminen (1999) |
+| Circular spread; wrapped normals | Mardia and Jupp (2000) |
+| Banana distributions | Haario, Saksman and Tamminen (1999); parameter values: Sejdinovic et al. (2014); KL to the moment-matched Gaussian: Cover and Thomas (2006) |
+| von Mises-Fisher distribution and its draws | Fisher (1953); Fisher, Lewis and Embleton (1987); Mardia and Jupp (2000) |
+| Truncated normal moments; inverse-CDF draws | Barr and Sherrill (1999); Devroye (1986) |
+| Bimodality of normal mixtures | Schilling, Watkins and Watkins (2002) |
+| 1D W1 of normals | Vallender (1974); Leone, Nelson and Nottingham (1961) |
+| Two-sample AD in the population limit | Pettitt (1976); Scholz and Stephens (1987) |
+| AR(1) autocorrelation time | Thompson (2010); emcee documentation (Foreman-Mackey 2017) |
+| Quadrature of reference values | Gauss-Legendre rules: Davis and Rabinowitz (1984); checked against QUADPACK (Piessens et al. 1983) through SciPy (Virtanen et al. 2020) |
 | PRNG keys and their derivation | Salmon et al. (2011); Claessen and Pałka (2013); JAX authors (2019); JAX authors (2022) |
 | SHA-256 hashes | National Institute of Standards and Technology (2015) |
 | float32 and float64 resolution | IEEE (2019) |
@@ -552,6 +587,7 @@ Every method and assumption above cites the sources below. Each module cites the
 
 - Anderson, T. W. and Darling, D. A. (1954). A test of goodness of fit. *Journal of the American Statistical Association* 49(268), 765–769.
 - Baringhaus, L. and Franz, C. (2004). On a new multivariate two-sample test. *Journal of Multivariate Analysis* 88(1), 190–206.
+- Barr, D. R. and Sherrill, E. T. (1999). Mean and variance of truncated normal distributions. *The American Statistician* 53(4), 357–361.
 - Bhattacharyya, A. (1943). On a measure of divergence between two statistical populations defined by their probability distributions. *Bulletin of the Calcutta Mathematical Society* 35, 99.
 - Bonneel, N., Rabin, J., Peyré, G. and Pfister, H. (2015). Sliced and Radon Wasserstein barycenters of measures. *Journal of Mathematical Imaging and Vision* 51(1), 22–45.
 - Brooks, S. P., Giudici, P. and Philippe, A. (2003). On non-parametric convergence assessment for MCMC model selection. *Journal of Computational and Graphical Statistics* 12(1), 1–22.
@@ -563,13 +599,17 @@ Every method and assumption above cites the sources below. Each module cites the
 - Cutler, C. and Flanagan, É. É. (1994). Gravitational waves from merging compact binaries: How accurately can one extract the binary's parameters from the inspiral waveform? *Physical Review D* 49(6), 2658–2697.
 - Cuturi, M. (2013). Sinkhorn distances: Lightspeed computation of optimal transport. *Advances in Neural Information Processing Systems* 26.
 - Cuturi, M., Meng-Papaxanthos, L., Tian, Y., Bunne, C., Davis, G. and Teboul, O. (2022). Optimal Transport Tools (OTT): A JAX toolbox for all things Wasserstein. arXiv:2201.12324.
+- Davis, P. J. and Rabinowitz, P. (1984). *Methods of Numerical Integration*, 2nd edition. Academic Press.
 - Dempster, A. P., Laird, N. M. and Rubin, D. B. (1977). Maximum likelihood from incomplete data via the EM algorithm. *Journal of the Royal Statistical Society B* 39(1), 1–38.
+- Devroye, L. (1986). *Non-Uniform Random Variate Generation*. Springer.
 - Dowson, D. C. and Landau, B. V. (1982). The Fréchet distance between multivariate normal distributions. *Journal of Multivariate Analysis* 12(3), 450–455.
 - Efron, B. and Tibshirani, R. J. (1993). *An Introduction to the Bootstrap*. Chapman & Hall.
-- emcee documentation. Autocorrelation analysis & convergence. <https://emcee.readthedocs.io/en/stable/tutorials/autocorr/>
+- emcee documentation: Foreman-Mackey, D. (2017). Autocorrelation analysis & convergence. Tutorial in the emcee documentation. <https://emcee.readthedocs.io/en/stable/tutorials/autocorr/>
 - Feragen, A., Lauze, F. and Hauberg, S. (2015). Geodesic exponential kernels: When curvature and linearity conflict. *Proceedings of the IEEE Conference on Computer Vision and Pattern Recognition*, 3032–3042.
 - Feydy, J., Séjourné, T., Vialard, F.-X., Amari, S., Trouvé, A. and Peyré, G. (2019). Interpolating between optimal transport and MMD using Sinkhorn divergences. *Proceedings of AISTATS*, PMLR 89, 2681–2690.
 - Finn, L. S. (1992). Detection, measurement, and gravitational radiation. *Physical Review D* 46(12), 5236–5249.
+- Fisher, N. I., Lewis, T. and Embleton, B. J. J. (1987). *Statistical Analysis of Spherical Data*. Cambridge University Press.
+- Fisher, R. A. (1953). Dispersion on a sphere. *Proceedings of the Royal Society of London A* 217(1130), 295–305.
 - Foreman-Mackey, D., Hogg, D. W., Lang, D. and Goodman, J. (2013). emcee: The MCMC Hammer. *Publications of the Astronomical Society of the Pacific* 125(925), 306–312.
 - Fraley, C. and Raftery, A. E. (2002). Model-based clustering, discriminant analysis, and density estimation. *Journal of the American Statistical Association* 97(458), 611–631.
 - Fukunaga, K. (1990). *Introduction to Statistical Pattern Recognition*, 2nd edition. Academic Press.
@@ -601,6 +641,7 @@ Every method and assumption above cites the sources below. Each module cites the
 - Kraskov, A., Stögbauer, H. and Grassberger, P. (2004). Estimating mutual information. *Physical Review E* 69(6), 066138.
 - Kullback, S. and Leibler, R. A. (1951). On information and sufficiency. *Annals of Mathematical Statistics* 22(1), 79–86.
 - LaplacesDemon R package. KS.Diagnostic: Kolmogorov-Smirnov convergence diagnostic. <https://www.rdocumentation.org/packages/LaplacesDemon/versions/16.1.8/topics/KS.Diagnostic>
+- Leone, F. C., Nelson, L. S. and Nottingham, R. B. (1961). The folded normal distribution. *Technometrics* 3(4), 543–550.
 - Lin, J. (1991). Divergence measures based on the Shannon entropy. *IEEE Transactions on Information Theory* 37(1), 145–151.
 - Lindblom, L., Owen, B. J. and Brown, D. A. (2008). Model waveform accuracy standards for gravitational wave data analysis. *Physical Review D* 78(12), 124020.
 - Lopez-Paz, D. and Oquab, M. (2017). Revisiting classifier two-sample tests. *International Conference on Learning Representations*.
@@ -613,8 +654,10 @@ Every method and assumption above cites the sources below. Each module cites the
 - National Institute of Standards and Technology (2015). Secure Hash Standard (SHS). Federal Information Processing Standards Publication 180-4.
 - Payne, E., Talbot, C. and Thrane, E. (2019). Higher order gravitational-wave modes with likelihood reweighting. *Physical Review D* 100(12), 123017.
 - pe-configurator (Estelles, H., Ossokine, S. and Williams, D.). Waveform settings and prior bounds for gravitational-wave parameter estimation, MIT license. <https://pypi.org/project/pe-configurator>
+- Pettitt, A. N. (1976). A two-sample Anderson-Darling rank statistic. *Biometrika* 63(1), 161–168.
 - Peyré, G. and Cuturi, M. (2019). Computational optimal transport. *Foundations and Trends in Machine Learning* 11(5–6), 355–607.
 - Phipson, B. and Smyth, G. K. (2010). Permutation P-values should never be zero: calculating exact P-values when permutations are randomly drawn. *Statistical Applications in Genetics and Molecular Biology* 9(1), article 39.
+- Piessens, R., de Doncker-Kapenga, E., Überhuber, C. W. and Kahaner, D. K. (1983). *QUADPACK: A Subroutine Package for Automatic Integration*. Springer Series in Computational Mathematics 1. Springer.
 - Póczos, B. and Schneider, J. (2011). On the estimation of α-divergences. *Proceedings of AISTATS*, PMLR 15, 609–617.
 - Politis, D. N., Romano, J. P. and Wolf, M. (1999). *Subsampling*. Springer.
 - Rabin, J., Peyré, G., Delon, J. and Bernot, M. (2012). Wasserstein barycenter and its application to texture mixing. *Scale Space and Variational Methods in Computer Vision*, Lecture Notes in Computer Science 6667, 435–446.
@@ -624,16 +667,19 @@ Every method and assumption above cites the sources below. Each module cites the
 - Rényi, A. (1961). On measures of entropy and information. *Proceedings of the Fourth Berkeley Symposium on Mathematical Statistics and Probability*, Volume 1, 547–561.
 - Romero-Shaw, I. M. et al. (2020). Bayesian inference for compact binary coalescences with BILBY: validation and application to the first LIGO–Virgo gravitational-wave transient catalogue. *Monthly Notices of the Royal Astronomical Society* 499(3), 3295–3319.
 - Salmon, J. K., Moraes, M. A., Dror, R. O. and Shaw, D. E. (2011). Parallel random numbers: as easy as 1, 2, 3. *Proceedings of the 2011 International Conference for High Performance Computing, Networking, Storage and Analysis*, 1–12.
+- Schilling, M. F., Watkins, A. E. and Watkins, W. (2002). Is human height bimodal? *The American Statistician* 56(3), 223–229.
 - Scholz, F. W. and Stephens, M. A. (1987). K-sample Anderson–Darling tests. *Journal of the American Statistical Association* 82(399), 918–924.
 - Schuster, E. F. (1985). Incorporating support constraints into nonparametric estimators of densities. *Communications in Statistics: Theory and Methods* 14(5), 1123–1136.
 - Schwarz, G. (1978). Estimating the dimension of a model. *Annals of Statistics* 6(2), 461–464.
 - Sejdinovic, D., Sriperumbudur, B., Gretton, A. and Fukumizu, K. (2013). Equivalence of distance-based and RKHS-based statistics in hypothesis testing. *Annals of Statistics* 41(5), 2263–2291.
+- Sejdinovic, D., Strathmann, H., Garcia, M. L., Andrieu, C. and Gretton, A. (2014). Kernel adaptive Metropolis-Hastings. *Proceedings of the 31st International Conference on Machine Learning*, PMLR 32(2), 1665–1673.
 - Smirnov, N. (1948). Table for estimating the goodness of fit of empirical distributions. *Annals of Mathematical Statistics* 19(2), 279–281.
 - Sokal, A. D. (1997). Monte Carlo methods in statistical mechanics: foundations and new algorithms. In *Functional Integration: Basics and Applications*, NATO ASI Series B 361. Plenum.
 - Spearman, C. (1904). The proof and measurement of association between two things. *American Journal of Psychology* 15(1), 72–101.
 - Stephens, M. A. (1974). EDF statistics for goodness of fit and some comparisons. *Journal of the American Statistical Association* 69(347), 730–737.
 - Székely, G. J. and Rizzo, M. L. (2013). Energy statistics: A class of statistics based on distances. *Journal of Statistical Planning and Inference* 143(8), 1249–1272.
 - Székely, G. J., Rizzo, M. L. and Bakirov, N. K. (2007). Measuring and testing dependence by correlation of distances. *Annals of Statistics* 35(6), 2769–2794.
+- Thompson, M. B. (2010). A comparison of methods for computing autocorrelation time. Technical Report 1007, Department of Statistics, University of Toronto. arXiv:1011.0175.
 - Thrane, E. and Talbot, C. (2019). An introduction to Bayesian inference in gravitational-wave astronomy: Parameter estimation, model selection, and hierarchical models. *Publications of the Astronomical Society of Australia* 36, e010.
 - Vallender, S. S. (1974). Calculation of the Wasserstein distance between probability distributions on the line. *Theory of Probability and Its Applications* 18(4), 784–786.
 - Vallisneri, M. (2008). Use and abuse of the Fisher information matrix in the assessment of gravitational-wave parameter-estimation prospects. *Physical Review D* 77(4), 042001.

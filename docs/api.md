@@ -24,6 +24,22 @@
    :members:
 ```
 
+## Validation zoo
+
+```{eval-rst}
+.. automodule:: mixed_signals.zoo
+
+.. automodule:: mixed_signals.zoo.cases
+   :members:
+
+.. automodule:: mixed_signals.zoo.distributions
+   :members:
+   :show-inheritance:
+
+.. automodule:: mixed_signals.zoo.closed_forms
+   :members:
+```
+
 ## Array conversion
 
 ```{eval-rst}
