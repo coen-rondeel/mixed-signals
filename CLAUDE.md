@@ -4,17 +4,17 @@ A JAX package that checks the quality of single posteriors and compares posterio
 
 ## Read first
 
-`DESIGN.md` holds the agreed architecture: 59 decisions, the package layout, and what is open or deferred. Follow it.
+`DESIGN.md` holds the agreed architecture: 88 decisions, the package layout, what is open or deferred, and the sources of every method. Follow it.
 
 `ROADMAP.md` splits the implementation into sessions 0 to 19 and tracks their status. Take the next open session, follow its brief and the routine at the top of the file, and update the status table when done.
 
-- Items marked **Proposed** are not agreed yet. Say so when work depends on one, and ask before treating it as settled.
+- Items marked **Proposed** or **Open** are not agreed yet. Say so when work depends on one, and ask before treating it as settled.
 - When a decision changes, update `DESIGN.md` in the same change.
-- When a choice is settled neither here nor in `DESIGN.md`, ask Coen before picking one.
+- When a choice is settled neither here nor in `DESIGN.md`, ask the developers before picking one.
 
 ## Status
 
-The design is finished (8 rounds) and the repository is set up (2026-10-13). Every module in the Package layout exists as a docstring-only stub, except `_config.py` (float64 switch) and `cli.py` (`--version` only). Next is session 0 of `ROADMAP.md`, the design close-out: Coen prunes the method menus in the Engines table and settles the remaining Proposed items before implementation starts.
+The design is closed: 8 design rounds, then the close-out in session 0 (2026-10-13). Every item in `DESIGN.md` is Decided or Deferred, except the form of eryn transforms, which session 7 settles. The repository is set up; every module in the Package layout exists as a docstring-only stub, except `_config.py` (float64 switch) and `cli.py` (`--version` only). Next is session 1 of `ROADMAP.md`, Foundations.
 
 ## Commands
 
@@ -46,12 +46,13 @@ Designed-verified-and-reviewed-by: coen-rondeel <coen.rondeel@gmail.com>
 - Tests mirror `src/` under `tests/`. GPU tests live in `tests/gpu/` and carry `pytestmark = pytest.mark.gpu`. Warnings fail a test unless it expects them.
 - Every stochastic function takes an explicit JAX PRNG `key`; pipelines derive all keys from one config seed.
 - Engines (`diagnose`, `compare`, `reweight`, data space) are plain functions that return results.
-- Every comparison returns a finite-sample null plus σ_eff and σ_sig; pass/fail thresholds act on σ_eff.
+- Every comparison returns a finite-sample null plus σ_sig and an effect size: σ_eff, or r_eff for rows that measure only a difference in width. Pass/fail thresholds act on the effect size.
+- Every diagnostic, metric, estimator and null cites the paper, official document or reference package that defines it, in a Google-style `References` docstring section with keys from `docs/references.bib`. Every assumption (a default, a threshold, a σ_eff or r_eff map, a null construction) cites a paper or a section of the validation page. `DESIGN.md` lists the sources of every v1 method; a new method needs a verifiable source before it lands, and a citation is never guessed.
 - Both inputs to a comparison share one whitening, recorded in the result.
 - Never assume user code is JAX: generators and likelihoods may be CuPy or PyTorch and are called at the boundary.
 - YAML configs, argparse CLI, Sphinx docs.
 - GPU tests are a marked suite, run by hand; v1 targets a single GPU.
-- Coen owns optimal-transport method choices: propose options rather than picking one.
+- The developers own optimal-transport method choices: propose options rather than picking one.
 
 ## Style rules
 
@@ -63,4 +64,5 @@ These apply to code, docstrings, comments and documentation; `scripts/check_styl
 - Number literals with five or more digits in a row use `_` separators: `10_000`, `0.000_01`.
 - Comments are one or two lines and explain why, not what. Use Better Comments tags where they help: `# !` warning, `# ?` question or uncertainty, `# *` highlight, `# TODO` gap. Longer explanations belong in the docs.
 - State reasons directly; never justify a change by pointing at a label in another document, such as a question number.
+- Refer to "the developers", not to a person by name; the README author line and the commit trailers are the exceptions.
 - A line containing `# style: allow` is exempt from the name and number rules; use it only when an external API forces the name.

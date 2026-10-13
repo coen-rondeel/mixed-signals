@@ -1,1 +1,4 @@
-"""Finite-sample nulls: split-half, permutation and effective-sample matching."""
+"""Finite-sample nulls: permutation, split-half and Gaussian surrogates.
+
+Every null matches the effective sample sizes of the inputs it compares.
+"""

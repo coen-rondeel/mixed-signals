@@ -1,1 +1,1 @@
-"""Nearest-neighbour estimates of the KL and Jensen-Shannon divergences."""
+"""Nearest-neighbour estimates of KL and JS divergences and the Hellinger distance."""

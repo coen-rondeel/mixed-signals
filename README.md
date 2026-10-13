@@ -2,9 +2,9 @@
 
 mixed signals checks the quality of single posteriors and compares posteriors
 from different analyses of the same data. Every number it reports comes with a
-finite-sample null, an effect size (σ_eff) and a significance (σ_sig). The main
-field is gravitational-wave data analysis (LISA, LVK), but the core does not
-depend on it.
+finite-sample null, an effect size (σ_eff, or r_eff for a difference in width
+alone) and a significance (σ_sig). The main field is gravitational-wave data
+analysis (LISA, LVK), but the core does not depend on it.
 
 **Status:** early development. The architecture is agreed in
 [DESIGN.md](DESIGN.md) and the package layout is in place; the modules are being
