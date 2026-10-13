@@ -1,0 +1,28 @@
+# Python bytecode and build output
+__pycache__/
+*.py[cod]
+build/
+dist/
+*.egg-info/
+
+# Environments
+.venv/
+.env
+
+# Tool caches and coverage reports
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+
+# Documentation builds and notebook caches
+docs/_build/
+__marimo__/
+.ipynb_checkpoints/
+
+# Operating system and editor files
+.DS_Store
+.idea/

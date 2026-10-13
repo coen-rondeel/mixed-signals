@@ -1,0 +1,165 @@
+[project]
+name = "mixed-signals"
+version = "0.1.0.dev0"
+description = "Quality checks for single posteriors and comparisons between posteriors, each number reported against a finite-sample null."
+readme = "README.md"
+license = "Apache-2.0"
+license-files = ["LICENSE"]
+authors = [
+    { name = "coen-rondeel", email = "coen.rondeel@gmail.com" },
+]
+requires-python = ">=3.12"
+keywords = [
+    "bayesian inference",
+    "gravitational waves",
+    "jax",
+    "lisa",
+    "mcmc diagnostics",
+    "optimal transport",
+    "posterior comparison",
+]
+classifiers = [
+    "Development Status :: 2 - Pre-Alpha",
+    "Intended Audience :: Science/Research",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Scientific/Engineering :: Astronomy",
+    "Topic :: Scientific/Engineering :: Physics",
+    "Typing :: Typed",
+]
+dependencies = [
+    "equinox>=0.13.8",
+    "jax>=0.11.2",
+    "jaxtyping>=0.3.11",
+    "numpy>=2.5.4",
+    "ott-jax>=0.6.0",
+    "polars>=2.0.0",
+    "pydantic>=2.14.1",
+    "pyyaml>=6.0.3",
+]
+
+[project.scripts]
+mixed-signals = "mixed_signals.cli:main"
+
+[project.urls]
+Repository = "https://github.com/coen-rondeel/mixed-signals"
+Issues = "https://github.com/coen-rondeel/mixed-signals/issues"
+
+[project.optional-dependencies]
+eryn = [
+    "eryn",
+]
+plot = [
+    "cantuccio>=0.5.0",
+]
+report = [
+    "cantuccio>=0.5.0",
+    "marimo>=0.25.1",
+]
+
+[dependency-groups]
+# * The default environment carries every extra, so the tests cover the optional adapters.
+dev = [
+    "mixed-signals[eryn,plot,report]",
+    { include-group = "test" },
+    { include-group = "lint" },
+]
+test = [
+    "beartype>=0.23.1",
+    "pytest>=9.1.1",
+    "pytest-cov>=7.1.0",
+]
+lint = [
+    "mypy>=2.4.0",
+    "pre-commit>=4.7.0",
+    "ruff>=0.17.0",
+    "types-pyyaml>=6.0.12.20260906",
+]
+docs = [
+    "furo>=2025.12.19",
+    "myst-parser>=5.1.0",
+    "sphinx>=9.1.0",
+]
+
+[build-system]
+requires = ["uv_build>=0.13.0,<0.14"]
+build-backend = "uv_build"
+
+[tool.uv]
+required-version = ">=0.13"
+
+[tool.uv.sources]
+# ! Development only: the prior setup lives on eryn's l2d-dev branch until its release.
+eryn = { git = "https://github.com/mikekatz04/Eryn", branch = "l2d-dev" }
+
+# Rule set follows the LISA DDPC Python guidelines, extended with bug and naming checks.
+[tool.ruff]
+line-length = 88
+target-version = "py312"
+
+[tool.ruff.lint]
+select = [
+    "E",   # pycodestyle errors
+    "W",   # pycodestyle warnings
+    "F",   # pyflakes
+    "I",   # import sorting
+    "D",   # docstrings
+    "UP",  # modern syntax
+    "B",   # likely bugs
+    "C4",  # comprehensions
+    "N",   # PEP 8 naming
+    "NPY", # NumPy-specific rules
+    "PT",  # pytest style
+    "RUF", # ruff-specific rules
+    "SIM", # simplifications
+]
+
+[tool.ruff.lint.per-file-ignores]
+# * Re-exports in the package root must follow the float64 switch.
+"src/mixed_signals/__init__.py" = ["E402"]
+
+[tool.ruff.lint.pydocstyle]
+convention = "google"
+
+[tool.ruff.format]
+docstring-code-format = true
+
+[tool.mypy]
+files = ["src", "tests", "scripts", "docs/conf.py"]
+python_version = "3.12"
+strict = true
+warn_unreachable = true
+enable_error_code = ["ignore-without-code", "redundant-expr", "truthy-bool"]
+plugins = ["pydantic.mypy"]
+
+[[tool.mypy.overrides]]
+# ? eryn ships without type information; only the two eryn adapter modules import it.
+module = ["eryn.*"]
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+minversion = "9.0"
+testpaths = ["tests"]
+addopts = [
+    "-ra",
+    "--strict-config",
+    "--strict-markers",
+    "--import-mode=importlib",
+    "-m", "not gpu",
+    "--jaxtyping-packages=mixed_signals,beartype.beartype",
+]
+markers = [
+    "gpu: needs a CUDA GPU; skipped by default, run by hand with `pytest -m gpu`",
+]
+filterwarnings = ["error"]
+xfail_strict = true
+
+[tool.coverage.run]
+source = ["mixed_signals"]
+branch = true
+
+[tool.coverage.report]
+show_missing = true
+skip_covered = true
