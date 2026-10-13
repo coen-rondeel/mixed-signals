@@ -4,7 +4,7 @@ A JAX package that checks the quality of single posteriors and compares posterio
 
 ## Read first
 
-`DESIGN.md` holds the agreed architecture: 88 decisions, the package layout, what is open or deferred, and the sources of every method. Follow it.
+`DESIGN.md` holds the agreed architecture: 95 decisions, the package layout, what is open or deferred, and the sources of every method. Follow it.
 
 `ROADMAP.md` splits the implementation into sessions 0 to 19 and tracks their status. Take the next open session, follow its brief and the routine at the top of the file, and update the status table when done.
 
@@ -14,7 +14,7 @@ A JAX package that checks the quality of single posteriors and compares posterio
 
 ## Status
 
-The design is closed: 8 design rounds, then the close-out in session 0 (2026-10-13). Every item in `DESIGN.md` is Decided or Deferred, except the form of eryn transforms, which session 7 settles. The repository is set up; every module in the Package layout exists as a docstring-only stub, except `_config.py` (float64 switch) and `cli.py` (`--version` only). Next is session 1 of `ROADMAP.md`, Foundations.
+The design is closed: 8 design rounds, then the close-out in session 0 (2026-10-13). Every item in `DESIGN.md` is Decided or Deferred, except the form of eryn transforms, which session 7 settles. Session 1 (Foundations, 2026-10-13) implemented `errors.py`, `prng.py`, `_config.py`, `core/topology.py`, `core/space.py`, `core/result.py` and the citation setup in `docs/`. The other modules in the Package layout are docstring-only stubs, except `cli.py` (`--version` only). Next is session 2 of `ROADMAP.md`, Sample containers.
 
 ## Commands
 
@@ -44,10 +44,12 @@ Designed-verified-and-reviewed-by: coen-rondeel <coen.rondeel@gmail.com>
 - jaxtyping dimension names are words: `batch posterior sample param` for the (B, K, N, D) axes of `DESIGN.md`, and `step temp walker leaf param` for eryn chains, for example `Float[Array, "sample param"]`. Add new words sparingly and reuse them across modules.
 - Google-style docstrings: ruff `D` rules with the google convention, rendered by Sphinx napoleon.
 - Tests mirror `src/` under `tests/`. GPU tests live in `tests/gpu/` and carry `pytestmark = pytest.mark.gpu`. Warnings fail a test unless it expects them.
-- Every stochastic function takes an explicit JAX PRNG `key`; pipelines derive all keys from one config seed.
+- Every stochastic function takes an explicit JAX PRNG `key`; pipelines derive all keys from one config seed. Derive each key with `prng.derive_key` from a path of names, never by counting calls, so that keys do not depend on call order.
+- Raise package warnings from the classes in `errors.py`, outside jit, where a cached call would not warn again; engines capture them per row with `errors.capture_warnings`.
+- Do not annotate with `typing.Self`: beartype rejects it in classes that it does not decorate, and the test hook decorates functions only. Write the class name instead.
 - Engines (`diagnose`, `compare`, `reweight`, data space) are plain functions that return results.
 - Every comparison returns a finite-sample null plus σ_sig and an effect size: σ_eff, or r_eff for rows that measure only a difference in width. Pass/fail thresholds act on the effect size.
-- Every diagnostic, metric, estimator and null cites the paper, official document or reference package that defines it, in a Google-style `References` docstring section with keys from `docs/references.bib`. Every assumption (a default, a threshold, a σ_eff or r_eff map, a null construction) cites a paper or a section of the validation page. `DESIGN.md` lists the sources of every v1 method; a new method needs a verifiable source before it lands, and a citation is never guessed.
+- Every diagnostic, metric, estimator and null cites the paper, official document or reference package that defines it, in a Google-style `References` docstring section with `:cite:t:` roles and keys from `docs/references.bib`. Keys are first author, year and first title word in lowercase ASCII, such as `mardia2000directional`. Every assumption (a default, a threshold, a σ_eff or r_eff map, a null construction) cites a paper or a section of the validation page. `DESIGN.md` lists the sources of every v1 method; a new method needs a verifiable source before it lands, and a citation is never guessed.
 - Both inputs to a comparison share one whitening, recorded in the result.
 - Never assume user code is JAX: generators and likelihoods may be CuPy or PyTorch and are called at the boundary.
 - YAML configs, argparse CLI, Sphinx docs.
@@ -59,7 +61,7 @@ Designed-verified-and-reviewed-by: coen-rondeel <coen.rondeel@gmail.com>
 These apply to code, docstrings, comments and documentation; `scripts/check_style.py` enforces the mechanical ones.
 
 - Plain language (ISO 24495) in a scientific register, as a gravitational-wave data analyst would write it.
-- No em-dashes and no emojis.
+- No em-dashes and no emojis. Docstrings may use Unicode mathematics such as σ, π and −; ruff allows σ and − as confusable characters.
 - No one-letter names for variables, parameters, attributes, functions, classes or type parameters (`_` is fine). Abbreviations are allowed with a short comment that expands them.
 - Number literals with five or more digits in a row use `_` separators: `10_000`, `0.000_01`.
 - Comments are one or two lines and explain why, not what. Use Better Comments tags where they help: `# !` warning, `# ?` question or uncertainty, `# *` highlight, `# TODO` gap. Longer explanations belong in the docs.

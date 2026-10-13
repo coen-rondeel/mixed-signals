@@ -2,7 +2,7 @@
 
 > Exported from the claude.ai design doc on 2026-10-13, after design round 8, and closed out the same day in roadmap session 0. This file is the working copy: update it when a decision changes.
 
-mixed signals checks the quality of single posteriors and compares posteriors from different analyses of the same data, reporting every number against a finite-sample null. This document records design rounds 1–8 and the design close-out. Every item is **Decided** or **Deferred**, except one item the developers left **Open** (see Open questions). Every method and every assumption cites its source; the sources are collected under References.
+mixed signals checks the quality of single posteriors and compares posteriors from different analyses of the same data, reporting every number against a finite-sample null. This document records design rounds 1–8, the design close-out and the decisions taken in the implementation sessions. Every item is **Decided** or **Deferred**, except one item the developers left **Open** (see Open questions). Every method and every assumption cites its source; the sources are collected under References.
 
 ## At a glance
 
@@ -49,7 +49,7 @@ In v1:
 
 ## Decisions so far
 
-Eighty-eight decisions are agreed after rounds 1–8, the repository setup and the design close-out, which all ended on 2026-10-13.
+Ninety-five decisions are agreed: 88 from rounds 1–8, the repository setup and the design close-out, and 7 from roadmap session 1 (Foundations), all on 2026-10-13.
 
 | Topic | Decision |
 | --- | --- |
@@ -128,7 +128,7 @@ Eighty-eight decisions are agreed after rounds 1–8, the repository setup and t
 | Comparison nulls | Permutation of τ-thinned pooled samples in both modes; split-half of the reference stays configurable |
 | Diagnostic nulls | Gaussian surrogates with the posterior's mean and covariance at its N_eff |
 | Uncertainty | The null standard deviation, marked approximate; a subsampling bootstrap on request |
-| Result additions | Null draws, null recipe, r_eff, JAX version, device platform and config hash |
+| Result additions | Null draws, null recipe, r_eff, JAX version, device platform and config hash; then estimator settings, the uncertainty method and the PRNG key in provenance |
 | σ_eff maps | Closed forms where they exist, tabulated curves for AD and JS, all checked on the zoo |
 | Width effect size | r_eff, the Gaussian-equivalent width ratio, for shape-only rows; thresholds on \|ln r_eff\| |
 | JS units | Nats |
@@ -141,6 +141,13 @@ Eighty-eight decisions are agreed after rounds 1–8, the repository setup and t
 | PSIS threshold | Flag k̂ above min(1 − 1/log₁₀ S, 0.7) |
 | Prior railing | Posterior density at a finite bound over its peak density, with a zoo-calibrated threshold |
 | Interfaces | Kernels, SampleSet functions, and the YAML + CLI pipeline |
+| Key derivation | `prng.derive_key` folds the first 64 bits of the SHA-256 digest of each element of a named path into the parent key, so a key does not depend on which other calls run or in which order; root keys use Threefry-2x32 whatever the process default |
+| Warnings | Ordinary Python warnings in a `MixedSignalsWarning` hierarchy, raised outside jit; engines capture them per row as category and message entries. Errors derive from `MixedSignalsError`; invalid pydantic models raise pydantic's `ValidationError` |
+| Package defaults | Module constants in `_config.py`, such as 200 null draws and the PRNG implementation; no process-wide settings change them at run time |
+| ParamSpace YAML | Flat parameter entries (name, label, unit, topology, bounds) and a `spheres` list; angles in radians; a sphere azimuth is a circle of period 2π, and the polar bounds lie inside the range of the polar form |
+| Hashes | SHA-256 throughout; one input hash per posterior, in `pair` order, over dtype, shape and C-ordered bytes |
+| Result object | A thin `Result` around one polars DataFrame that checks the schema and the required columns and reads and writes parquet; `Provenance` is a pydantic model |
+| Citation style | Author-year citations in round brackets; BibTeX keys of first author, year and first title word in lowercase ASCII; each session adds only verified entries |
 
 ## Design principles
 
@@ -241,7 +248,7 @@ Distances are in noise-σ units, and ‖δh‖ ≲ 1 is indistinguishable in the
 
 Every result row carries a value, its uncertainty, its null, σ_sig and an effect size: σ_eff, or r_eff for rows that measure only a difference in width. Thresholds act on the effect size, with per-metric defaults that the YAML config can override.
 
-**Result columns:** problem, pair, metric, estimator, space (transform chain), parameters, value, uncertainty, null mean, null std, null draws, null recipe (construction, number of draws, sample size per side), p-value, σ_sig, σ_eff, r_eff, warnings, provenance (package version, seed, input hashes, JAX version, device platform, config hash).
+**Result columns:** problem, pair, metric, estimator, estimator settings (a JSON object), space (transform chain), parameters, value, uncertainty, uncertainty method, null mean, null std, null draws, null recipe (construction, number of draws, sample size per side), p-value, σ_sig, σ_eff, r_eff, warnings (category and message of each entry), provenance (package version, seed, PRNG key, input hashes, JAX version, device platform, config hash). A null entry means that a column does not apply to the row; NaN marks a value at a hard validity limit. The PRNG key is the key that the engine received, so a row from a direct call without a seed can still be rebuilt.
 
 **Uncertainty (Decided).** The null standard deviation, marked approximate. It is accurate when the difference is small, which is where thresholds decide. A keyword switches on a subsampling bootstrap on half-samples drawn without replacement (Politis, Romano and Wolf 1999), so kNN metrics never see duplicate points.
 
@@ -324,6 +331,7 @@ Priors come from eryn's prior setup on the l2d-dev branch, and `ParamSpace` is b
 
 - **Priors:** an `eryn.priors.ProbDistContainer` keyed by parameter name, or by a tuple of names for joint priors. `logpdf` takes (N, D) and returns (N,); `rvs(size)` returns size + (D,). Conditional priors and CuPy are supported. The l2d-dev setup is headed for release.
 - **ParamSpace:** set explicitly; a class method such as `ParamSpace.from_eryn_priors(priors)` reads names from `key_order` and each prior's label, unit, bounds and `boundary`.
+- **YAML layout (Decided):** one entry per parameter with `name`, `label` (the name when left out), `unit`, `topology` (`real` when left out, `interval` or `circle`) and `bounds`, and a `spheres` list of `azimuth`, `polar` and `polar_form`. The real line keeps the bounds (−∞, ∞), an interval needs at least one finite bound and a circle two. Angles are in radians: a sphere azimuth must be a circle of period 2π, and the polar bounds must lie inside the range of the polar form, which admits eryn's 10⁻¹² margins on sin and cos axes. An invalid space raises pydantic's `ValidationError` with one message per fault.
 - **Topology (Decided):** `periodic` becomes a circle with period maximum − minimum. Every other parameter becomes an interval from its bounds, and its finite bounds are reflecting edges for bounded KDEs (Schuster 1985; Jones 1993). One bound may be infinite, as for LogNormal or Exponential priors; the real line remains when both are infinite. eryn's `reflective` flag only changes the sampler's proposals, so it maps like no flag. eryn stores bounds in the sampling space; physical-space bounds follow from the prior's inverse transform.
 - **Sky position (Decided):** the user declares coupled pairs such as (λ, β) as a sphere, with great-circle OT costs. The polar axis may be latitude, colatitude, sin(latitude) or cos(colatitude), so spheres work in eryn's sampling space, where SineUniform and CosineUniform sample sin β and cos θ, and in physical space.
 - **Fixed and discrete parameters (Decided):** with eryn priors, `DeltaFunction` parameters are dropped automatically and discrete priors stay out of v1; without eryn priors, nothing is dropped.
@@ -339,7 +347,7 @@ The pipeline runs in JAX with float64 switched on at import; arrays convert to a
 
 - float64 is needed because galactic-binary frequency posteriors have σ_f/f ~ 10⁻⁸, below one float32 step.
 - `jax_enable_x64` is process-global, so importing mixed signals switches it on for the host pipeline too; the documentation must say so.
-- Every stochastic function takes an explicit JAX PRNG `key`; pipelines derive all keys from one config seed.
+- Every stochastic function takes an explicit JAX PRNG `key`; pipelines derive all keys from one config seed. `prng.derive_key` folds the SHA-256 digest of each element of a named path, such as ("compare", problem, metric, pair, "null"), into the root key, so adding a metric leaves the draws of every other row unchanged (Salmon et al. 2011; Claessen and Pałka 2013). For a fixed key, JAX may change sampled values between releases (JAX authors 2022), so provenance records the JAX version.
 - v1 runs on a single GPU; sharding the batch axis B across devices comes later.
 - eryn supplies the chain axis convention and priors through the optional `eryn` extra; ott-jax supplies optimal transport.
 - One package, `mixed-signals` on PyPI, with extras, licensed Apache 2.0, managed with uv, for Python ≥ 3.12.
@@ -523,6 +531,8 @@ Every method and assumption above cites the sources below. Each module cites the
 | Whitening | Kessy, Lewin and Strimmer (2018) |
 | Circular spread | Mardia and Jupp (2000) |
 | Banana distributions | Haario, Saksman and Tamminen (1999) |
+| PRNG keys and their derivation | Salmon et al. (2011); Claessen and Pałka (2013); JAX authors (2019); JAX authors (2022) |
+| SHA-256 hashes | National Institute of Standards and Technology (2015) |
 | Parameter-shift probability (deferred) | Raveri and Hu (2019); Raveri and Doux (2021) |
 
 **Bibliography**
@@ -532,6 +542,7 @@ Every method and assumption above cites the sources below. Each module cites the
 - Bhattacharyya, A. (1943). On a measure of divergence between two statistical populations defined by their probability distributions. *Bulletin of the Calcutta Mathematical Society* 35, 99.
 - Bonneel, N., Rabin, J., Peyré, G. and Pfister, H. (2015). Sliced and Radon Wasserstein barycenters of measures. *Journal of Mathematical Imaging and Vision* 51(1), 22–45.
 - Brooks, S. P., Giudici, P. and Philippe, A. (2003). On non-parametric convergence assessment for MCMC model selection. *Journal of Computational and Graphical Statistics* 12(1), 1–22.
+- Claessen, K. and Pałka, M. H. (2013). Splittable pseudorandom number generators using cryptographic hashing. *Proceedings of the 2013 ACM SIGPLAN Symposium on Haskell*, 47–58.
 - Cohen, J. (1988). *Statistical Power Analysis for the Behavioral Sciences*, 2nd edition. Lawrence Erlbaum.
 - Cover, T. M. and Thomas, J. A. (2006). *Elements of Information Theory*, 2nd edition. Wiley.
 - Cowan, G., Cranmer, K., Gross, E. and Vitells, O. (2011). Asymptotic formulae for likelihood-based tests of new physics. *European Physical Journal C* 71, 1554.
@@ -561,11 +572,13 @@ Every method and assumption above cites the sources below. Each module cites the
 - Hellinger, E. (1909). Neue Begründung der Theorie quadratischer Formen von unendlichvielen Veränderlichen. *Journal für die reine und angewandte Mathematik* 136, 210.
 - Hermans, J., Delaunoy, A., Rozet, F., Wehenkel, A., Begy, V. and Louppe, G. (2022). A trust crisis in simulation-based inference? Your posterior approximations can be unfaithful. *Transactions on Machine Learning Research*.
 - Janati, H., Muzellec, B., Peyré, G. and Cuturi, M. (2020). Entropic optimal transport between unbalanced Gaussian measures has a closed form. *Advances in Neural Information Processing Systems* 33.
+- JAX authors (2019). JAX PRNG design. JAX documentation, JAX Enhancement Proposal 263. <https://docs.jax.dev/en/latest/jep/263-prng.html>
+- JAX authors (2022). API compatibility. JAX documentation. <https://docs.jax.dev/en/latest/api_compatibility.html>
 - Joanes, D. N. and Gill, C. A. (1998). Comparing measures of sample skewness and kurtosis. *Journal of the Royal Statistical Society D* 47(1), 183–189.
 - Johnson, N. L., Kotz, S. and Balakrishnan, N. (1995). *Continuous Univariate Distributions*, Volume 2, 2nd edition. Wiley.
 - Johnson, R. A. and Wichern, D. W. (2007). *Applied Multivariate Statistical Analysis*, 6th edition. Pearson.
 - Jones, M. C. (1993). Simple boundary correction for kernel density estimation. *Statistics and Computing* 3(3), 135–146.
-- Karnesis, N., Katz, M. L., Korsakova, N., Gair, J. R. and Stergioulas, N. (2023). Eryn: A multi-purpose sampler for Bayesian inference. arXiv:2303.02164.
+- Karnesis, N., Katz, M. L., Korsakova, N., Gair, J. R. and Stergioulas, N. (2023). Eryn: a multipurpose sampler for Bayesian inference. *Monthly Notices of the Royal Astronomical Society* 526(4), 4814–4830. arXiv:2303.02164.
 - Kessy, A., Lewin, A. and Strimmer, K. (2018). Optimal whitening and decorrelation. *The American Statistician* 72(4), 309–314.
 - Kish, L. (1965). *Survey Sampling*. Wiley.
 - Knijnenburg, T. A., Wessels, L. F. A., Reinders, M. J. T. and Shmulevich, I. (2009). Fewer permutations, more accurate P-values. *Bioinformatics* 25(12), i161–i168.
@@ -582,6 +595,7 @@ Every method and assumption above cites the sources below. Each module cites the
 - Mardia, K. V. and Jupp, P. E. (2000). *Directional Statistics*. Wiley.
 - Moran, P. A. P. (1948). Rank correlation and product-moment correlation. *Biometrika* 35(1/2), 203–206.
 - Nakagawa, S., Poulin, R., Mengersen, K., Reinhold, K., Engqvist, L., Lagisz, M. and Senior, A. M. (2015). Meta-analysis of variation: ecological and evolutionary applications and beyond. *Methods in Ecology and Evolution* 6(2), 143–152.
+- National Institute of Standards and Technology (2015). Secure Hash Standard (SHS). Federal Information Processing Standards Publication 180-4.
 - Payne, E., Talbot, C. and Thrane, E. (2019). Higher order gravitational-wave modes with likelihood reweighting. *Physical Review D* 100(12), 123017.
 - pe-configurator (Estelles, H., Ossokine, S. and Williams, D.). Waveform settings and prior bounds for gravitational-wave parameter estimation, MIT license. <https://pypi.org/project/pe-configurator>
 - Peyré, G. and Cuturi, M. (2019). Computational optimal transport. *Foundations and Trends in Machine Learning* 11(5–6), 355–607.
@@ -594,6 +608,7 @@ Every method and assumption above cites the sources below. Each module cites the
 - Raveri, M. and Hu, W. (2019). Concordance and discordance in cosmology. *Physical Review D* 99(4), 043506.
 - Rényi, A. (1961). On measures of entropy and information. *Proceedings of the Fourth Berkeley Symposium on Mathematical Statistics and Probability*, Volume 1, 547–561.
 - Romero-Shaw, I. M. et al. (2020). Bayesian inference for compact binary coalescences with BILBY: validation and application to the first LIGO–Virgo gravitational-wave transient catalogue. *Monthly Notices of the Royal Astronomical Society* 499(3), 3295–3319.
+- Salmon, J. K., Moraes, M. A., Dror, R. O. and Shaw, D. E. (2011). Parallel random numbers: as easy as 1, 2, 3. *Proceedings of the 2011 International Conference for High Performance Computing, Networking, Storage and Analysis*, 1–12.
 - Scholz, F. W. and Stephens, M. A. (1987). K-sample Anderson–Darling tests. *Journal of the American Statistical Association* 82(399), 918–924.
 - Schuster, E. F. (1985). Incorporating support constraints into nonparametric estimators of densities. *Communications in Statistics: Theory and Methods* 14(5), 1123–1136.
 - Schwarz, G. (1978). Estimating the dimension of a model. *Annals of Statistics* 6(2), 461–464.

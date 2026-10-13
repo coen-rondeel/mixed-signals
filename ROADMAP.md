@@ -8,8 +8,8 @@ The implementation is split into twenty focused sessions, numbered 0 to 19. They
 | --- | --- | --- | --- | --- |
 | Setup | Repository scaffold, tooling and CI | | | Done (2026-10-13) |
 | 0 | Design close-out | A | | Done (2026-10-13) |
-| 1 | Foundations | A | 0 | Next |
-| 2 | Sample containers | A | 1 | Open |
+| 1 | Foundations | A | 0 | Done (2026-10-13) |
+| 2 | Sample containers | A | 1 | Next |
 | 3 | Validation zoo | B | 2 | Open |
 | 4 | Transforms and whitening | B | 2 | Open |
 | 5 | MCMC tools | B | 2 | Open |
@@ -65,6 +65,8 @@ Scope: `errors.py`, `prng.py`, `_config.py` (package defaults), `core/topology.p
 - The result schema in polars: problem, pair, metric, estimator, space, parameters, value, uncertainty, null mean, null standard deviation, null draws, null recipe, p-value, σ_sig, σ_eff, r_eff, warnings and provenance (package version, seed, input hashes, JAX version, device platform, config hash).
 - Citations: add sphinxcontrib-bibtex to the docs group, create `docs/references.bib` and a bibliography page, and cite the sources of this session's modules.
 - Done when a `ParamSpace` round-trips through YAML, invalid spaces fail with clear messages, an empty result table has the agreed schema, and the docs build renders a citation.
+
+Outcome (2026-10-13): the developers decided seven items, now in `DESIGN.md`: named key derivation, the warning design, package defaults as constants, the flat `ParamSpace` YAML, SHA-256 hashes, the `Result` object and the citation style. The result schema gained the estimator settings, the uncertainty method and the PRNG key in provenance. Later sessions raise the warning classes of `errors.py` outside jit, derive every key with `prng.derive_key` from a path of names, and build rows with `Result.from_rows`.
 
 ### 2. Sample containers
 

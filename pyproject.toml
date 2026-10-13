@@ -81,6 +81,7 @@ docs = [
     "furo>=2025.12.19",
     "myst-parser>=5.1.0",
     "sphinx>=9.1.0",
+    "sphinxcontrib-bibtex>=2.7.0",
 ]
 
 [build-system]
@@ -115,6 +116,8 @@ select = [
     "RUF", # ruff-specific rules
     "SIM", # simplifications
 ]
+# * Scientific docstrings write σ and the minus sign −, which the confusable-character rules flag.
+allowed-confusables = ["σ", "−"]
 
 [tool.ruff.lint.per-file-ignores]
 # * Re-exports in the package root must follow the float64 switch.
@@ -138,6 +141,16 @@ plugins = ["pydantic.mypy"]
 # ? eryn ships without type information; only the two eryn adapter modules import it.
 module = ["eryn.*"]
 ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+# ? The lint environment lacks the docs group, so docs/conf.py sees no Sphinx extensions.
+module = ["sphinxcontrib.*"]
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+# ? Without the docs group, the citation style that docs/conf.py extends is untyped.
+module = ["conf"]
+disallow_subclassing_any = false
 
 [tool.pytest.ini_options]
 minversion = "9.0"
