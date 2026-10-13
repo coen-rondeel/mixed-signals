@@ -85,6 +85,18 @@ class ConvergenceWarning(MixedSignalsWarning):
     """An iterative solver stopped before it converged."""
 
 
+class PrecisionWarning(MixedSignalsWarning):
+    """An input narrower than float64 was cast to float64.
+
+    The cast cannot restore precision lost before it. Neighbouring float32
+    values differ by 6e-8 to 1.2e-7 of their magnitude (IEEE 2019), so a
+    float32 posterior narrower than about 1e-7 of its values is quantised.
+
+    References:
+        :cite:t:`ieee2019ieee`.
+    """
+
+
 @dataclasses.dataclass(frozen=True)
 class WarningRecord:
     """One entry of the ``warnings`` column of the result table.

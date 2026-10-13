@@ -58,11 +58,23 @@ report = [
     "cantuccio>=0.5.0",
     "marimo>=0.25.1",
 ]
+torch = [
+    "torch>=2.14.1",
+]
+# * One extra per CUDA major version: the JAX CUDA plugin and the matching CuPy wheel.
+cuda12 = [
+    "cupy-cuda12x>=14.2.0",
+    "jax[cuda12]>=0.11.2",
+]
+cuda13 = [
+    "cupy-cuda13x>=14.2.0",
+    "jax[cuda13]>=0.11.2",
+]
 
 [dependency-groups]
-# * The default environment carries every extra, so the tests cover the optional adapters.
+# * The default environment carries every extra except the CUDA ones, which need a GPU.
 dev = [
-    "mixed-signals[eryn,plot,report]",
+    "mixed-signals[eryn,plot,report,torch]",
     { include-group = "test" },
     { include-group = "lint" },
 ]
@@ -90,10 +102,23 @@ build-backend = "uv_build"
 
 [tool.uv]
 required-version = ">=0.13"
+# * Both CUDA extras provide the cupy module, so an environment holds one of them.
+conflicts = [
+    [{ extra = "cuda12" }, { extra = "cuda13" }],
+]
 
 [tool.uv.sources]
 # ! Development only: the prior setup lives on eryn's l2d-dev branch until its release.
 eryn = { git = "https://github.com/mikekatz04/Eryn", branch = "l2d-dev" }
+# * Development installs CPU-only torch; macOS wheels on PyPI are CPU-only already.
+torch = [
+    { index = "pytorch-cpu", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
+]
+
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
 
 # Rule set follows the LISA DDPC Python guidelines, extended with bug and naming checks.
 [tool.ruff]
@@ -116,6 +141,8 @@ select = [
     "RUF", # ruff-specific rules
     "SIM", # simplifications
 ]
+# * jaxtyping shape strings such as "sample param" are not Python, but F722 parses them as annotations.
+ignore = ["F722"]
 # * Scientific docstrings write σ and the minus sign −, which the confusable-character rules flag.
 allowed-confusables = ["σ", "−"]
 
@@ -140,6 +167,11 @@ plugins = ["pydantic.mypy"]
 [[tool.mypy.overrides]]
 # ? eryn ships without type information; only the two eryn adapter modules import it.
 module = ["eryn.*"]
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+# ? CuPy needs CUDA, so the lint environment does not install it.
+module = ["cupy", "cupy.*"]
 ignore_missing_imports = true
 
 [[tool.mypy.overrides]]

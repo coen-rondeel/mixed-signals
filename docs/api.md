@@ -14,6 +14,23 @@
    :members:
 ```
 
+## Samples and chains
+
+```{eval-rst}
+.. automodule:: mixed_signals.core.samples
+   :members:
+
+.. automodule:: mixed_signals.core.chains
+   :members:
+```
+
+## Array conversion
+
+```{eval-rst}
+.. automodule:: mixed_signals.io.arrays
+   :members:
+```
+
 ## Results
 
 ```{eval-rst}

@@ -9,8 +9,8 @@ The implementation is split into twenty focused sessions, numbered 0 to 19. They
 | Setup | Repository scaffold, tooling and CI | | | Done (2026-10-13) |
 | 0 | Design close-out | A | | Done (2026-10-13) |
 | 1 | Foundations | A | 0 | Done (2026-10-13) |
-| 2 | Sample containers | A | 1 | Next |
-| 3 | Validation zoo | B | 2 | Open |
+| 2 | Sample containers | A | 1 | Done (2026-10-13) |
+| 3 | Validation zoo | B | 2 | Next |
 | 4 | Transforms and whitening | B | 2 | Open |
 | 5 | MCMC tools | B | 2 | Open |
 | 6 | Estimators | B | 2 | Open |
@@ -70,7 +70,7 @@ Outcome (2026-10-13): the developers decided seven items, now in `DESIGN.md`: na
 
 ### 2. Sample containers
 
-Scope: `core/samples.py`, `core/chains.py`, `io/arrays.py`, `io/weights.py`.
+Scope: `core/samples.py`, `core/chains.py`, `io/arrays.py`, `io/weights.py` (benched in this session).
 
 - `SampleSet`: an equinox module with samples shaped (batch, posterior, sample, param), `log_weights` shaped (batch, posterior, sample), an optional `n_eff` shaped (batch, posterior), and optional `log_like`, `log_prior` and `log_q`. It is built from one posterior (N, D), K posteriors (K, N, D) or batches (B, K, N, D). Without `n_eff`, the Kish effective sample size of the weights applies.
 - Metadata stays outside the pytree, because changing static fields triggers recompilation.
@@ -78,6 +78,8 @@ Scope: `core/samples.py`, `core/chains.py`, `io/arrays.py`, `io/weights.py`.
 - Conversion between JAX and NumPy, CuPy or PyTorch arrays through DLPack, zero-copy on GPU. CuPy and PyTorch tests skip when the package is missing.
 - Nested-sampling weights become `log_weights`.
 - Done when every input shape builds the same container, weights survive every operation, and conversions round-trip.
+
+Outcome (2026-10-13): the developers decided seven items, now in `DESIGN.md`, and deferred two. `SampleSet` holds arrays only, so engines take the posterior names and the `ParamSpace`. It selects problems, posteriors and parameters, takes samples (dropping `n_eff`) and converts to NumPy, JAX, torch or CuPy; stacking sets is left out of v1. A given `n_eff` lies between 1 and the number of positive-weight samples, and inputs narrower than float64 raise a `PrecisionWarning`. `Chains` takes the eryn layout or (step, walker, param), with optional log densities, and counts that carry their proposals. A `torch` extra and conflicting `cuda12` and `cuda13` extras arrived; the dev group installs CPU-only torch. Nested-sampling weights and eryn runs with several independent samplers are deferred. Later sessions build containers through the constructors, which check values only outside jit, and compute the Kish value with `core.samples.kish_effective_sample_size`.
 
 ### 3. Validation zoo
 
@@ -107,7 +109,7 @@ Scope: `mcmc/autocorr.py`, `mcmc/ess.py`, `mcmc/reduce.py`.
 
 - Our own integrated autocorrelation time τ from walker-averaged autocorrelation functions, checked against emcee's and eryn's estimators.
 - Effective sample size, split-chain Kolmogorov-Smirnov tests on τ-thinned halves, and rank-normalised split-R̂ across walkers as an informational statistic that always carries a warning, because eryn's walkers are coupled.
-- Reduction: burn-in removal and thinning by τ, producing a `SampleSet` with its `n_eff` and recording each step.
+- Reduction: burn-in removal and thinning by τ, producing a `SampleSet` with its `n_eff` and recording each step. `n_eff` must lie between 1 and the number of samples, so τ-based values of anticorrelated chains are capped there.
 - Done when τ matches the analytic value for AR(1) chains, and a reduction can be repeated from its record.
 
 ### 6. Estimators
@@ -123,7 +125,7 @@ Scope: `estimators/`.
 Scope: `io/eryn_backend.py`, `priors/protocol.py`, `priors/eryn_container.py`.
 
 - Open first: eryn's transforms are NumPy or CuPy callables that JAX cannot jit or differentiate, so the session starts by settling with the developers how they become `Transform` objects, then builds that form. The options are JAX re-implementations of the built-in families, `jax.pure_callback` wrappers, applying them at load time, or JAX-compatible eryn priors and transform containers upstream.
-- Read eryn backends into `Chains`: the cold chain of one branch, with acceptance and swap counts.
+- Read eryn backends into `Chains`: one branch with all its temperatures, with acceptance and swap counts and the number of proposals behind each. eryn's backend does not store `num_repeats_in_model`, so the acceptance proposals need it from the caller or the sampler. Reject runs with several independent samplers (`nsamplers` > 1), which are deferred.
 - The minimal prior protocol: `logpdf` maps (N, D) samples to (N,) values, and `rvs(size)` returns size + (D,).
 - `ParamSpace.from_eryn_priors`: names from `key_order`, and each prior's label, unit, bounds and boundary. `periodic` gives a circle; every other parameter gives an interval from its bounds, where one bound may be infinite, and `reflective` maps like no flag. eryn stores bounds in the sampling space; physical bounds come from the inverse transform. `DeltaFunction` parameters are dropped and discrete priors are rejected.
 - Pitfalls: import eryn inside functions only, so `import mixed_signals` works without it; use `eryn.priors`, because `eryn.prior` is deprecated.
@@ -168,7 +170,7 @@ Scope: `diagnostics/`.
 - Every shape and dependence statistic is compared with Gaussian surrogates at the posterior's N_eff, so each row gets a null, a p-value and σ_sig.
 - Multimodality through GMM-BIC.
 - Prior railing: the marginal posterior density at a finite bound over its peak density, from the reflecting bounded KDE, with a flag threshold calibrated on the zoo's railed cases.
-- Chain health from session 5 (τ, effective sample size, split-chain tests, informational R̂, and acceptance and swap rates for eryn backends) as diagnostic rows.
+- Chain health from session 5 (τ, effective sample size, split-chain tests, informational R̂, and acceptance and swap rates for eryn backends, from the counts and proposals in `Chains`) as diagnostic rows.
 - Done when the zoo's bananas, mixtures and railed cases are flagged and its Gaussians are not.
 
 ### 12. Nulls and σ
@@ -187,7 +189,7 @@ Scope: `reweight/` and its engine function.
 
 - Importance weights for a new prior, a new likelihood or an approximation's density q.
 - The evidence ratio Z_new/Z_old = E_old[L_new/L_old].
-- Effective sample size and PSIS k̂ for every weight set, flagged above min(1 − 1/log₁₀ S, 0.7). Weights stay raw; Pareto smoothing is opt-in.
+- Effective sample size, the Kish value of `core.samples`, and PSIS k̂ for every weight set, flagged above min(1 − 1/log₁₀ S, 0.7). Weights stay raw; Pareto smoothing is opt-in.
 - Done when reweighting between zoo Gaussians recovers the analytic target and k̂ flags heavy-tailed weights.
 
 ### 14. Engines

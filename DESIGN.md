@@ -49,7 +49,7 @@ In v1:
 
 ## Decisions so far
 
-Ninety-five decisions are agreed: 88 from rounds 1–8, the repository setup and the design close-out, and 7 from roadmap session 1 (Foundations), all on 2026-10-13.
+The developers have agreed 102 decisions: 88 from rounds 1–8, the repository setup and the design close-out, 7 from roadmap session 1 (Foundations) and 7 from roadmap session 2 (Sample containers), all on 2026-10-13.
 
 | Topic | Decision |
 | --- | --- |
@@ -61,7 +61,7 @@ Ninety-five decisions are agreed: 88 from rounds 1–8, the repository setup and
 | Sample counts | Equal N first; unequal N anticipated in the design |
 | Number of posteriors | Kept small; warnings on combinatorial cost |
 | Replicate runs | Not supported; possibly never |
-| Chain layout | eryn's axis convention; v1 reads the cold chain of a single branch |
+| Chain layout | eryn's axis convention; v1 reads the cold chain of a single branch from a run with one independent sampler |
 | Flat samples | A separate flat container, not squeezed into the chain layout |
 | Chain reduction | Built-in burn-in and τ-thinning tools, optional in pipelines and configs; direct metric calls assume cleaned samples |
 | Per-sample data | Raw or cleaned chains with log L and log π; nested-sampling weights optional |
@@ -96,7 +96,7 @@ Ninety-five decisions are agreed: 88 from rounds 1–8, the repository setup and
 | Config format | YAML |
 | CLI | argparse |
 | Packaging | One package with extras; Python ≥ 3.12; Apache 2.0 license |
-| Dependencies | Lean core: jax, ott-jax, equinox, jaxtyping, numpy, polars, pydantic, pyyaml; eryn is an extra, and the dev group installs every extra |
+| Dependencies | Lean core: jax, ott-jax, equinox, jaxtyping, numpy, polars, pydantic, pyyaml; eryn is an extra, and the dev group installs every extra except the CUDA ones |
 | Tooling | uv ≥ 0.13 manages the project; ruff, strict mypy, a style-rule script, pre-commit hooks and CPU-only GitHub Actions CI check every change; CI pins its actions by commit SHA |
 | Package layout | The tree under Package layout, with `io/eryn_backend.py` and `priors/eryn_container.py` |
 | MCMC tools | `mcmc/` (τ, ESS, reduction) stays separate from `diagnostics/` (posterior shape) |
@@ -148,6 +148,13 @@ Ninety-five decisions are agreed: 88 from rounds 1–8, the repository setup and
 | Hashes | SHA-256 throughout; one input hash per posterior, in `pair` order, over dtype, shape and C-ordered bytes |
 | Result object | A thin `Result` around one polars DataFrame that checks the schema and the required columns and reads and writes parquet; `Provenance` is a pydantic model |
 | Citation style | Author-year citations in round brackets; BibTeX keys of first author, year and first title word in lowercase ASCII; each session adds only verified entries |
+| Sample metadata | `SampleSet` holds arrays only; engines take the posterior names and the `ParamSpace` |
+| SampleSet operations | Select problems, posteriors or parameters; take samples, which drops `n_eff`; convert to NumPy, JAX, torch or CuPy. No stacking of sets in v1: engines pair separate sets, and τ-thinned runs differ in N. A later operation that joins sets raises when their optional fields differ |
+| Narrow floats | Inputs narrower than float64 are cast with a `PrecisionWarning` |
+| `n_eff` range | A given `n_eff` lies between 1 and the number of samples with positive weight, the range of the Kish value |
+| Chain counts | Acceptance and swap counts carry the number of proposals behind each, so rates hold for cut or thinned chains |
+| Chain log densities | `log_like` and `log_prior` are optional; `betas` default to ones for a single temperature |
+| Array extras | A `torch` extra, with CPU-only torch from the PyTorch index in the dev group; `cuda12` and `cuda13` extras with the JAX CUDA plugin and the matching CuPy wheel, which exclude each other and stay out of the dev group |
 
 ## Design principles
 
@@ -178,8 +185,8 @@ Comparisons run on flat samples shaped (B, K, N, D); diagnostics also read chain
 
 **Chains (eryn layout)**
 
-- Per branch: chain (nsteps, ntemps, nwalkers, nleaves, ndim); log_like and log_prior (nsteps, ntemps, nwalkers); betas (nsteps, ntemps). Chains read from an eryn backend also carry the acceptance counts (ntemps, nwalkers) and the accepted swaps between neighbouring temperatures (ntemps − 1).
-- v1 reads the cold chain (β = 1) of a single branch. Runs with several leaves wait for the catalog work, because leaves are not batch entries. Diagnostics read chains directly. Comparisons use flat samples from an explicit, recorded reduction: cold chain, burn-in, thinning by τ. The package ships these tools; pipelines take reduction as an optional argument, and direct metric calls assume cleaned samples.
+- Per branch: chain (nsteps, ntemps, nwalkers, nleaves, ndim); log_like and log_prior (nsteps, ntemps, nwalkers); betas (nsteps, ntemps). Chains read from an eryn backend also carry the acceptance counts (ntemps, nwalkers) and the accepted swaps between neighbouring temperatures (ntemps − 1), each with the number of proposals behind it: eryn counts over the whole run, so the stored steps of a cut or thinned chain are not the denominator of a rate. `log_like` and `log_prior` are optional, for samplers that store only the log posterior; a run with one temperature may also come as (nsteps, nwalkers, ndim), as from emcee.
+- v1 reads the cold chain (β = 1) of a single branch from a run with one independent sampler. Runs with several leaves wait for the catalog work, because leaves are not batch entries. Diagnostics read chains directly. Comparisons use flat samples from an explicit, recorded reduction: cold chain, burn-in, thinning by τ. The package ships these tools; pipelines take reduction as an optional argument, and direct metric calls assume cleaned samples.
 - τ comes from our own estimator of walker-averaged autocorrelation functions with automatic windowing (Sokal 1997; Goodman and Weare 2010), with eryn's and emcee's estimators as reference examples.
 - R̂ assumes independent chains (Gelman and Rubin 1992), but eryn's ensemble moves couple the walkers, and the emcee documentation advises against Gelman-Rubin across the walkers of one ensemble. `diagnose` therefore reports rank-normalised split-R̂ across walkers (Vehtari et al. 2021) only as an informational row, always with a warning that the walkers are coupled; it never decides pass/fail.
 
@@ -188,13 +195,15 @@ Comparisons run on flat samples shaped (B, K, N, D); diagnostics also read chain
 | Object | Holds |
 | --- | --- |
 | `ParamSpace` | Names, labels, units, topology and bounds, shared by every input to a comparison, including the sphere pairs the user declares |
-| `Chains` | eryn-layout arrays with log densities and betas; acceptance and swap counts when read from an eryn backend |
-| `SampleSet` | Flat samples, `log_weights`, an optional `n_eff` per batch and posterior, and optional per-sample `log_like`, `log_prior` and `log_q`; generic, so priors and approximations reuse it |
+| `Chains` | eryn-layout arrays with betas and optional log densities; acceptance and swap counts with their proposals when read from an eryn backend |
+| `SampleSet` | Flat samples, `log_weights`, an optional `n_eff` per batch and posterior, and optional per-sample `log_like`, `log_prior` and `log_q`; arrays only, so names and the space go to the engines; generic, so priors and approximations reuse it |
 | `Transform` | Composable bijector: forward, inverse, log\|J\| and Jacobian |
 | `Estimator` | Gaussian, bounded KDE, kNN and GMM; classifier and normalizing-flow placeholders |
 | `Result` | One row per problem, pair, metric, estimator, space and parameter subset, with the columns under Statistical reporting |
 
-**Effective sample size (Decided).** `n_eff` sizes every null and every subsample. `reduce` sets it from τ, and users may set it for correlated samples; otherwise it is the Kish effective sample size of `log_weights` (Kish 1965), which assumes independent samples.
+**Effective sample size (Decided).** `n_eff` sizes every null and every subsample. `reduce` sets it from τ, and users may set it for correlated samples; otherwise it is the Kish effective sample size of `log_weights` (Kish 1965), which assumes independent samples. A given `n_eff` lies between 1 and the number of samples with positive weight, the range of the Kish value, because nulls cannot subsample more samples than exist.
+
+**Sample containers (session 2).** Every input layout becomes (B, K, N, D) with float64 fields. `log_weights` stay unnormalised; methods normalise them per posterior where needed. Inputs narrower than float64 are cast with a `PrecisionWarning`, because neighbouring float32 values differ by up to 1.2 × 10⁻⁷ of their magnitude (IEEE 2019). The constructors check shapes and types always, and values (finite samples, log weights without NaN or +∞, a positive weight per posterior, the `n_eff` range, whole and consistent counts) when the inputs are concrete; inside `jax.jit` the values are unknown. NumPy inputs are copied into JAX; torch and CuPy arrays share memory through DLPack (Consortium for Python Data API Standards 2021), so they must not change in place afterwards.
 
 **Structure layering (Decided)**
 
@@ -414,7 +423,7 @@ mixed-signals/
 │   ├── io/
 │   │   ├── arrays.py       # NumPy, CuPy, torch ↔ JAX via DLPack
 │   │   ├── eryn_backend.py # eryn backends → Chains
-│   │   └── weights.py      # nested-sampling weights → log_weights
+│   │   └── weights.py      # benched: nested-sampling weights → log_weights
 │   ├── priors/
 │   │   ├── protocol.py     # minimal prior interface: logpdf, rvs
 │   │   └── eryn_container.py  # eryn priors → ParamSpace, Transforms
@@ -452,7 +461,7 @@ mixed-signals/
 └── docs/                   # Sphinx, references.bib, validation page
 ```
 
-Decided at setup: core dependencies are jax, ott-jax, equinox, jaxtyping, numpy, polars, pydantic and pyyaml. jaxtyping is listed directly because every kernel imports it. eryn is the `eryn` extra, because its runtime dependencies include matplotlib, pandas, seaborn and pytest, and only `io/eryn_backend.py` and `priors/eryn_container.py` use it; both import it lazily. The other extras so far are plot (cantuccio) and report (marimo, cantuccio); the gw, cupy and torch extras arrive with their modules. The dev dependency group installs every extra, beartype sits in the test group, and Sphinx in the docs group, where sphinxcontrib-bibtex renders the citations from `docs/references.bib`.
+Decided at setup: core dependencies are jax, ott-jax, equinox, jaxtyping, numpy, polars, pydantic and pyyaml. jaxtyping is listed directly because every kernel imports it. eryn is the `eryn` extra, because its runtime dependencies include matplotlib, pandas, seaborn and pytest, and only `io/eryn_backend.py` and `priors/eryn_container.py` use it; both import it lazily. The other extras are plot (cantuccio), report (marimo, cantuccio), torch, and cuda12 and cuda13, which install the JAX CUDA plugin with the matching CuPy wheel and exclude each other; the gw extra arrives with its module. The dev dependency group installs every extra except the CUDA ones, with CPU-only torch from the PyTorch index on Linux and Windows, beartype sits in the test group, and Sphinx in the docs group, where sphinxcontrib-bibtex renders the citations from `docs/references.bib`.
 
 ## Open questions
 
@@ -462,7 +471,7 @@ One item stays open by the developers' decision.
 
 ## Deferred
 
-Nine items wait until the v1 core is stable; replicate runs may never come.
+Eleven items wait until the v1 core is stable; replicate runs may never come.
 
 - **Trans-dimensional catalogs:** cross-matching and label switching, including multi-leaf eryn runs; comparing summed signals in data space avoids matching for the global check.
 - **Injection-ensemble calibration:** PP plots, SBC, TARP; needs an ensemble container with true parameters.
@@ -472,6 +481,8 @@ Nine items wait until the v1 core is stable; replicate runs may never come.
 - **Replicate runs:** not at this stage, possibly never; they would add a replicate axis and run-to-run nulls.
 - **C2ST and the normalizing-flow estimator:** the classifier, its training setup and its null, and optax as a dependency; v1 ships placeholders.
 - **Leave-one-out comparisons:** each posterior against the pooled rest, for larger K.
+- **Nested-sampling weights:** converting the weights that nested samplers report into `log_weights` in `io/weights.py`; until then users pass the logarithm of those weights.
+- **Independent eryn samplers:** eryn runs with several independent samplers (`nsamplers` > 1), each of which can stop at its own step; v1 reads runs with one sampler.
 - **Independent-data tension:** the parameter-shift probability (Raveri and Hu 2019; Raveri and Doux 2021), for posteriors from independent data, such as multiband sources seen by LISA and by ground-based detectors. Modes A and B analyse the same data, where every shift is a systematic difference.
 
 ## References
@@ -486,8 +497,8 @@ Every method and assumption above cites the sources below. Each module cites the
 | Effective sample size | Geyer (1992); Kish (1965) for weights |
 | Split-chain KS | Brooks, Giudici and Philippe (2003); LaplacesDemon R package, `KS.Diagnostic` |
 | R̂, informational only | Gelman and Rubin (1992); Vehtari et al. (2021); emcee documentation |
-| Acceptance rates of ensemble moves | Foreman-Mackey et al. (2013) |
-| Swap rates of parallel tempering | Vousden, Farr and Mandel (2016) |
+| Acceptance rates of ensemble moves; the (step, walker, param) chain layout | Foreman-Mackey et al. (2013) |
+| Swap rates and the cold chain of parallel tempering | Vousden, Farr and Mandel (2016) |
 | eryn | Karnesis et al. (2023) |
 | Mahalanobis distances vs χ²_D | Mahalanobis (1936); Johnson and Wichern (2007) |
 | Skewness and kurtosis | Joanes and Gill (1998) |
@@ -533,6 +544,8 @@ Every method and assumption above cites the sources below. Each module cites the
 | Banana distributions | Haario, Saksman and Tamminen (1999) |
 | PRNG keys and their derivation | Salmon et al. (2011); Claessen and Pałka (2013); JAX authors (2019); JAX authors (2022) |
 | SHA-256 hashes | National Institute of Standards and Technology (2015) |
+| float32 and float64 resolution | IEEE (2019) |
+| Array interchange through DLPack | Consortium for Python Data API Standards (2021) |
 | Parameter-shift probability (deferred) | Raveri and Hu (2019); Raveri and Doux (2021) |
 
 **Bibliography**
@@ -544,6 +557,7 @@ Every method and assumption above cites the sources below. Each module cites the
 - Brooks, S. P., Giudici, P. and Philippe, A. (2003). On non-parametric convergence assessment for MCMC model selection. *Journal of Computational and Graphical Statistics* 12(1), 1–22.
 - Claessen, K. and Pałka, M. H. (2013). Splittable pseudorandom number generators using cryptographic hashing. *Proceedings of the 2013 ACM SIGPLAN Symposium on Haskell*, 47–58.
 - Cohen, J. (1988). *Statistical Power Analysis for the Behavioral Sciences*, 2nd edition. Lawrence Erlbaum.
+- Consortium for Python Data API Standards (2021). Python array API standard, version 2025.12: Data interchange mechanisms. <https://data-apis.org/array-api/latest/design_topics/data_interchange.html>
 - Cover, T. M. and Thomas, J. A. (2006). *Elements of Information Theory*, 2nd edition. Wiley.
 - Cowan, G., Cranmer, K., Gross, E. and Vitells, O. (2011). Asymptotic formulae for likelihood-based tests of new physics. *European Physical Journal C* 71, 1554.
 - Cutler, C. and Flanagan, É. É. (1994). Gravitational waves from merging compact binaries: How accurately can one extract the binary's parameters from the inspiral waveform? *Physical Review D* 49(6), 2658–2697.
@@ -571,6 +585,7 @@ Every method and assumption above cites the sources below. Each module cites the
 - Haario, H., Saksman, E. and Tamminen, J. (1999). Adaptive proposal distribution for random walk Metropolis algorithm. *Computational Statistics* 14(3), 375–395.
 - Hellinger, E. (1909). Neue Begründung der Theorie quadratischer Formen von unendlichvielen Veränderlichen. *Journal für die reine und angewandte Mathematik* 136, 210.
 - Hermans, J., Delaunoy, A., Rozet, F., Wehenkel, A., Begy, V. and Louppe, G. (2022). A trust crisis in simulation-based inference? Your posterior approximations can be unfaithful. *Transactions on Machine Learning Research*.
+- IEEE (2019). IEEE Standard for Floating-Point Arithmetic. IEEE Std 754-2019.
 - Janati, H., Muzellec, B., Peyré, G. and Cuturi, M. (2020). Entropic optimal transport between unbalanced Gaussian measures has a closed form. *Advances in Neural Information Processing Systems* 33.
 - JAX authors (2019). JAX PRNG design. JAX documentation, JAX Enhancement Proposal 263. <https://docs.jax.dev/en/latest/jep/263-prng.html>
 - JAX authors (2022). API compatibility. JAX documentation. <https://docs.jax.dev/en/latest/api_compatibility.html>

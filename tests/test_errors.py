@@ -16,6 +16,7 @@ WARNING_CLASSES = (
     errors.ExtrapolationWarning,
     errors.ImportanceWeightWarning,
     errors.ConvergenceWarning,
+    errors.PrecisionWarning,
 )
 
 
