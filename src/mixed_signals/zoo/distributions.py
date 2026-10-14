@@ -48,7 +48,13 @@ from jax.scipy.special import logsumexp, ndtr, ndtri
 from jax.typing import ArrayLike
 from jaxtyping import Array, Float, PRNGKeyArray
 
-from mixed_signals.core.topology import AZIMUTH_PERIOD, PolarForm
+from mixed_signals.core.topology import (
+    AZIMUTH_PERIOD,
+    PolarForm,
+    sphere_coordinates,
+    unit_vectors,
+    wrap,
+)
 from mixed_signals.prng import derive_key
 from mixed_signals.zoo import closed_forms
 from mixed_signals.zoo._checks import (
@@ -643,83 +649,3 @@ class VonMisesFisher(ZooDistribution):
         extra = values[..., 2:]
         euclidean = jnp.sum(-0.5 * extra**2 - _HALF_LOG_TWO_PI, axis=-1)
         return jnp.where(inside, sphere + log_area + euclidean, -jnp.inf)
-
-
-def wrap(
-    values: Float[Array, " *leading"], lower: ArrayLike, period: ArrayLike
-) -> Float[Array, " *leading"]:
-    """Reduce values onto [lower, lower + period).
-
-    Args:
-        values: Values to reduce.
-        lower: Lower end of the circle.
-        period: Period of the circle, positive.
-
-    Returns:
-        The reduced values, shaped like ``values``.
-    """
-    offset = jnp.mod(values - jnp.asarray(lower), period)
-    # ! A tiny negative offset rounds up to the period; that point is the lower end.
-    return jnp.asarray(lower) + jnp.where(offset >= period, 0.0, offset)
-
-
-def sphere_coordinates(
-    unit: Float[Array, "*leading 3"], polar_form: PolarForm
-) -> tuple[Float[Array, " *leading"], Float[Array, " *leading"]]:
-    """Return the azimuth in [0, 2π) and the polar coordinate of unit vectors.
-
-    Args:
-        unit: Unit vectors in Cartesian coordinates, shaped (..., 3).
-        polar_form: Coordinate of the polar axis.
-
-    Returns:
-        The azimuth and the polar coordinate, each shaped (...).
-    """
-    horizontal = jnp.hypot(unit[..., 0], unit[..., 1])
-    height = jnp.clip(unit[..., 2], -1.0, 1.0)
-    azimuth = wrap(jnp.arctan2(unit[..., 1], unit[..., 0]), 0.0, AZIMUTH_PERIOD)
-    if polar_form is PolarForm.LATITUDE:
-        polar = jnp.arctan2(height, horizontal)
-    elif polar_form is PolarForm.COLATITUDE:
-        polar = jnp.arctan2(horizontal, height)
-    else:
-        polar = height
-    return azimuth, polar
-
-
-def unit_vectors(
-    azimuth: Float[Array, " *leading"],
-    polar: Float[Array, " *leading"],
-    polar_form: PolarForm,
-) -> tuple[Float[Array, "*leading 3"], Float[Array, " *leading"], Array]:
-    """Return unit vectors, the log area element and the polar range mask.
-
-    The area element of the unit sphere is cos β dλ dβ in latitude,
-    sin θ dλ dθ in colatitude, and dλ dz in the sine and cosine forms.
-
-    Args:
-        azimuth: Azimuth λ.
-        polar: Polar coordinate in the given form.
-        polar_form: Coordinate of the polar axis.
-
-    Returns:
-        The unit vectors shaped (..., 3), the log of the area element, and
-        whether each polar value lies inside the range of its form.
-    """
-    range_lower, range_upper = polar_form.bounds
-    inside = (polar >= range_lower) & (polar <= range_upper)
-    clipped = jnp.clip(polar, range_lower, range_upper)
-    if polar_form is PolarForm.LATITUDE:
-        height, horizontal = jnp.sin(clipped), jnp.cos(clipped)
-        log_area = jnp.log(horizontal)
-    elif polar_form is PolarForm.COLATITUDE:
-        height, horizontal = jnp.cos(clipped), jnp.sin(clipped)
-        log_area = jnp.log(horizontal)
-    else:
-        height = clipped
-        horizontal = jnp.sqrt(jnp.clip(1 - clipped**2, 0.0, None))
-        log_area = jnp.zeros_like(clipped)
-    unit = jnp.stack(
-        [horizontal * jnp.cos(azimuth), horizontal * jnp.sin(azimuth), height], -1
-    )
-    return unit, log_area, inside

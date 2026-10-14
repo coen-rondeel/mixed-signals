@@ -2,6 +2,8 @@
 
 import math
 
+import jax.numpy as jnp
+import numpy as np
 import pytest
 from pydantic import ValidationError
 
@@ -13,6 +15,9 @@ from mixed_signals.core.topology import (
     check_bounds,
     check_sphere_azimuth,
     check_sphere_polar,
+    sphere_coordinates,
+    unit_vectors,
+    wrap,
 )
 
 INF = math.inf
@@ -135,3 +140,28 @@ def test_polar_axis_rejects_bounds_beyond_the_poles(
     """A polar axis must be an interval that stays between the poles."""
     with pytest.raises(ValueError, match=message):
         check_sphere_polar(polar_form, topology, bounds)
+
+
+# * Coordinates on circles and spheres
+
+
+def test_wrap_maps_onto_the_half_open_interval() -> None:
+    """Values reduce onto [lower, lower + period), including tiny negative offsets."""
+    values = jnp.array([-1e-20, 0.0, 2 * math.pi, 7.0, -7.0])
+    wrapped = np.asarray(wrap(values, 0.0, AZIMUTH_PERIOD))
+    assert np.all((wrapped >= 0) & (wrapped < AZIMUTH_PERIOD))
+    assert wrapped[0] == 0.0
+    assert wrapped[3] == pytest.approx(7.0 - AZIMUTH_PERIOD)
+
+
+def test_sphere_coordinates_round_trip() -> None:
+    """Coordinates of unit vectors convert back to the same vectors."""
+    rng = np.random.default_rng(3)
+    vectors = rng.normal(size=(20, 3))
+    vectors /= np.linalg.norm(vectors, axis=1, keepdims=True)
+    for polar_form in PolarForm:
+        azimuth, polar = sphere_coordinates(jnp.asarray(vectors), polar_form)
+        assert bool(jnp.all((azimuth >= 0) & (azimuth < AZIMUTH_PERIOD)))
+        back, _, inside = unit_vectors(azimuth, polar, polar_form)
+        assert bool(jnp.all(inside))
+        np.testing.assert_allclose(back, vectors, atol=1e-12)

@@ -15,8 +15,11 @@ from mixed_signals.core.samples import (
     N_EFF_RELATIVE_TOLERANCE,
     SampleSet,
     SampleShape,
+    circular_mean,
     circular_standard_deviation,
     kish_effective_sample_size,
+    mean_resultant_length,
+    unwrap_about,
     weighted_covariance,
 )
 from mixed_signals.errors import PrecisionWarning
@@ -275,6 +278,72 @@ def test_narrow_circles_keep_their_width(rng: np.random.Generator) -> None:
         jnp.asarray(values), jnp.zeros(1_000), 2 * math.pi
     )
     assert float(width) == pytest.approx(float(np.std(values)), rel=1e-6)
+
+
+def test_circular_mean_matches_scipy(rng: np.random.Generator) -> None:
+    """Equal weights reproduce scipy.stats.circmean on a circle of any period."""
+    lower, period = -1.0, 3.0
+    values = lower + rng.vonmises(0.4, 2.0, size=(2, 300)) * period / (2 * math.pi)
+    computed = circular_mean(
+        jnp.asarray(values), jnp.zeros(values.shape), period, lower
+    )
+    expected = stats.circmean(values, high=lower + period, low=lower, axis=-1)
+    np.testing.assert_allclose(computed, expected, rtol=1e-12)
+    assert bool(jnp.all((computed >= lower) & (computed < lower + period)))
+
+
+def test_circular_mean_and_resultant_honour_weights(rng: np.random.Generator) -> None:
+    """Integer weights act like repeated values."""
+    values = rng.uniform(0.0, 1.0, size=12)
+    repeats = rng.integers(1, 5, size=12)
+    log_weights = jnp.log(jnp.asarray(repeats, dtype=float))
+    repeated = jnp.asarray(np.repeat(values, repeats))
+    flat = jnp.zeros(int(repeats.sum()))
+    assert float(circular_mean(jnp.asarray(values), log_weights, 1.0, 0.0)) == (
+        pytest.approx(float(circular_mean(repeated, flat, 1.0, 0.0)), rel=1e-12)
+    )
+    assert float(mean_resultant_length(jnp.asarray(values), log_weights, 1.0)) == (
+        pytest.approx(float(mean_resultant_length(repeated, flat, 1.0)), rel=1e-12)
+    )
+
+
+def test_mean_resultant_length_matches_the_mean_unit_vector(
+    rng: np.random.Generator,
+) -> None:
+    """R̄ is the length of the mean of the unit vectors."""
+    values = rng.vonmises(1.0, 0.7, size=500)
+    expected = abs(np.mean(np.exp(1j * values)))
+    computed = mean_resultant_length(jnp.asarray(values), jnp.zeros(500), 2 * math.pi)
+    assert float(computed) == pytest.approx(float(expected), rel=1e-12)
+
+
+def test_opposite_clusters_have_no_mean_resultant() -> None:
+    """Two equal opposite clusters give R̄ = 0, where the mean direction is undefined."""
+    values = jnp.array([0.5, 0.5 + math.pi])
+    resultant = mean_resultant_length(values, jnp.zeros(2), 2 * math.pi)
+    assert float(resultant) == pytest.approx(0.0, abs=1e-8)
+
+
+def test_narrow_circles_keep_their_mean(rng: np.random.Generator) -> None:
+    """A circle 1e-9 rad wide next to the boundary keeps its mean to rounding."""
+    values = 2 * math.pi - 2e-9 + 1e-9 * rng.normal(size=1_000)
+    computed = circular_mean(jnp.asarray(values), jnp.zeros(1_000), 2 * math.pi, 0.0)
+    expected = float(np.mean(values))
+    assert abs(float(computed) - expected) < 1e-15
+
+
+def test_unwrap_about_gives_representatives_within_half_a_period() -> None:
+    """Every value maps to the point of the same angle nearest the centre."""
+    values = jnp.array([0.1, 3.0, 6.2, -6.2, 12.0])
+    centre = 0.05
+    unwrapped = unwrap_about(values, centre, 2 * math.pi)
+    assert bool(jnp.all(jnp.abs(unwrapped - centre) <= math.pi))
+    np.testing.assert_allclose(
+        np.cos(np.asarray(unwrapped)), np.cos(np.asarray(values)), atol=1e-12
+    )
+    np.testing.assert_allclose(
+        np.sin(np.asarray(unwrapped)), np.sin(np.asarray(values)), atol=1e-12
+    )
 
 
 def test_gw_scale_means_stay_within_one_float64_step(

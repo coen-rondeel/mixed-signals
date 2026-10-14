@@ -53,6 +53,40 @@
    :members:
 ```
 
+## Estimators
+
+```{eval-rst}
+.. automodule:: mixed_signals.estimators
+
+.. automodule:: mixed_signals.estimators.base
+   :members:
+   :show-inheritance:
+
+.. automodule:: mixed_signals.estimators.gaussian
+   :members:
+   :show-inheritance:
+
+.. automodule:: mixed_signals.estimators.kde
+   :members:
+   :show-inheritance:
+
+.. automodule:: mixed_signals.estimators.knn
+   :members:
+   :show-inheritance:
+
+.. automodule:: mixed_signals.estimators.gmm
+   :members:
+   :show-inheritance:
+
+.. automodule:: mixed_signals.estimators.flow
+   :members:
+   :show-inheritance:
+
+.. automodule:: mixed_signals.estimators.classifier
+   :members:
+   :show-inheritance:
+```
+
 ## Marginal metrics
 
 ```{eval-rst}

@@ -13,8 +13,8 @@ The implementation is split into twenty focused sessions, numbered 0 to 19. They
 | 3 | Validation zoo | B | 2 | Done (2026-10-13) |
 | 4 | Transforms and whitening | B | 2 | Done (2026-10-14) |
 | 5 | MCMC tools | B | 2 | Done (2026-10-14) |
-| 6 | Estimators | B | 2 | Next |
-| 7 | eryn adapters and priors | C | 2, 4 | Open |
+| 6 | Estimators | B | 2 | Done (2026-10-14) |
+| 7 | eryn adapters and priors | C | 2, 4 | Next |
 | 8 | Metrics I: moments and marginals | C | 3, 6 | Open |
 | 9 | Metrics II: divergences, kernels and classifiers | C | 3, 6 | Open |
 | 10 | Optimal transport | C | 3, 4 | Open |
@@ -129,6 +129,8 @@ Scope: `estimators/`.
 - Bounded KDEs run in the original or z-scored space: decorrelated whitened axes are real lines, because their bounds become oblique.
 - Done when the estimators recover zoo densities within tolerance and respect each topology.
 
+Outcome (2026-10-14): the developers decided sixteen items, now in `DESIGN.md`. Every estimator is an equinox module that a `fit` classmethod builds per problem and posterior, vmapped over (B, K), with frozen pydantic settings for the `estimator_settings` column and `resolved_settings` for the values that a rule chose; the `estimator` column reads `gaussian`, `kde`, `knn`, `gmm`, `flow` or `classifier`. `GaussianDensity` has the weighted mean and unbiased covariance and draws the Gaussian surrogates. `KernelDensity` wraps `jax.scipy.stats.gaussian_kde` with Silverman's factor on the Kish n_eff, and sums its kernels over windings and, in two or more dimensions, over mirror images at finite bounds. In one dimension an interval takes the non-negative correction of Jones and Foster (1996), which recovered the zoo's railing scores within a few per cent where reflection was high by 11 to 48 per cent; a KDE warns below Silverman's sample size for its dimension. Its estimates equal SciPy's and, with the resolved factor, cantuccio's. `NearestNeighbours` gives topology-aware k-th neighbour distances and digamma-corrected log densities, with the rank k as the required setting `neighbours`; zero weights leave its searches, while unequal weights, too few samples and coinciding samples give NaN. `MixtureDensity` runs weighted EM on z-scored axes from 18 weighted k-means++ starts with scikit-learn's stopping rule. A zoo check found that this rule ends 37 to 68 per cent of single starts near the one-Gaussian solution and leaves winners a few nats below the optimum, which the developers accepted, with more starts. The Gaussian and the GMM unwrap circles about their circular mean and warn when the Rayleigh test leaves the mean direction unresolved. `FlowDensity` and `ClassifierRatio` are placeholders. `wrap`, `sphere_coordinates` and `unit_vectors` moved from the zoo to `core/topology.py`, and `core/samples.py` gained `circular_mean`, `mean_resultant_length` and `unwrap_about`. A fit inside `jax.jit` counts its images from the widest kernel that the samples admit and gives NaN beyond. Later sessions build densities with `mixed_signals.estimators`, write `resolved_settings().to_json()` into their rows, and resample weighted sets before kNN metrics.
+
 ### 7. eryn adapters and priors
 
 Scope: `io/eryn_backend.py`, `priors/protocol.py`, `priors/eryn_container.py`.
@@ -148,6 +150,7 @@ Scope: `metrics/_cap.py`, `metrics/moments.py`, `metrics/marginal.py`.
 - Per-parameter mean shift and width ratio; Gaussian KL in both directions, W2 and Hellinger, split into location and shape terms.
 - Widths come from `core.samples.weighted_covariance`; the pooled σ of mode B is the scale of the pooled z-score (`Whitening.from_samples` with `decorrelate=False`), so per-parameter and joint units agree.
 - Marginals: Kolmogorov-Smirnov, k-sample Anderson-Darling, one-dimensional W1, and Jensen-Shannon in nats and Hellinger with a bounded KDE. Session 5 built the weighted two-sample KS statistic, `metrics.marginal.ks_statistic`; this session adds its rows, its name and its σ_eff map.
+- The bounded KDE is the one-dimensional `estimators.KernelDensity`, whose interval bounds take the Jones-Foster correction. Settle with the developers whether the two marginals of a pair share one bandwidth, fixed once per comparison as the MMD bandwidth is, and write `resolved_settings().to_json()` into each row.
 - Every kernel is pure JAX, honours `log_weights`, carries jaxtyping annotations and cites its sources.
 - Name the result metrics as the zoo's reference tables do (`kl`, `kl_location`, `w2`, `ks`, `js`, `ad` and so on), or rename the zoo's in the same change, so results join their truth.
 - Done when the zoo's closed-form values are recovered.
@@ -157,6 +160,7 @@ Scope: `metrics/_cap.py`, `metrics/moments.py`, `metrics/marginal.py`.
 Scope: `metrics/divergence.py`, `metrics/kernel.py`, `metrics/classifier.py`.
 
 - kNN estimates of the KL divergence in both directions, of the Jensen-Shannon divergence from Kozachenko-Leonenko entropy estimates of the pooled samples and of each input, and of the Hellinger distance from the Rényi-α estimator at α = ½.
+- Build them on `estimators.NearestNeighbours`: its k-th neighbour distances (`neighbour_distance`, `leave_one_out_distance`) and digamma-corrected log densities. Each metric sets its default k (`neighbours`). Unequal positive weights give NaN there, so weighted sets are resampled first.
 - Maximum mean discrepancy with a Gaussian kernel, whose median-heuristic bandwidth is fixed once per comparison, and energy distance, both under the cap from session 8.
 - The classifier two-sample test (C2ST) as a placeholder: its final signature and docstring, raising `NotImplementedError`.
 - Done when each metric vanishes on identical distributions, within its null, and orders the zoo's shifts correctly.
@@ -178,10 +182,10 @@ Scope: `metrics/ot/`. The developers own the method choices, so the session open
 Scope: `diagnostics/`.
 
 - Gaussianity: Mahalanobis distances against χ²_D, skewness, kurtosis and Anderson-Darling.
-- Dependence: Pearson, Spearman, distance correlation and mutual information against their Gaussian values, to catch bananas.
-- Every shape and dependence statistic is compared with Gaussian surrogates at the posterior's N_eff, so each row gets a null, a p-value and σ_sig.
-- Multimodality through GMM-BIC.
-- Prior railing: the marginal posterior density at a finite bound over its peak density, from the reflecting bounded KDE, with a flag threshold calibrated on the zoo's railed cases.
+- Dependence: Pearson, Spearman, distance correlation and mutual information against their Gaussian values, to catch bananas. The KSG estimator of mutual information needs the max norm and neighbour counts, which this session adds to `estimators/knn.py`.
+- Every shape and dependence statistic is compared with Gaussian surrogates at the posterior's N_eff, drawn with `estimators.GaussianDensity.sample`, so each row gets a null, a p-value and σ_sig.
+- Multimodality through GMM-BIC with `estimators.MixtureDensity`: form BIC from its `mean_log_likelihood` and `parameter_count`, and settle with the developers the n of the penalty for weighted or correlated samples. Under scikit-learn's stopping rule the winning log-likelihood can lie a few nats below the optimum (the session 6 zoo check), which the comparison of component counts must allow for.
+- Prior railing: the marginal posterior density at a finite bound over its peak density, from the one-dimensional `estimators.KernelDensity`, whose Jones-Foster correction recovered the zoo's railing scores within a few per cent, with a flag threshold calibrated on the zoo's railed cases.
 - Chain health from session 5 (τ, effective sample size, split-chain tests, informational R̂, and acceptance and swap rates for eryn backends, from the counts and proposals in `Chains`) as diagnostic rows. The `mcmc` kernels take the cold chain shaped (step, walker, param); the split-chain test brings its own asymptotic p-value, and R̂ raises a `CoupledChainsWarning` that the rows capture.
 - Done when the zoo's bananas, mixtures and railed cases are flagged and its Gaussians are not.
 
@@ -189,10 +193,10 @@ Scope: `diagnostics/`.
 
 Scope: `nulls/`, `sigma/`, and a calibration script in `scripts/`.
 
-- Nulls: permutation of τ-thinned pooled samples in both modes by default, splitting the reference into halves at the approximation's N_eff as a mode A alternative, Gaussian surrogates for posterior-shape diagnostics, and N_eff matching. 200 draws by default, configurable.
+- Nulls: permutation of τ-thinned pooled samples in both modes by default, splitting the reference into halves at the approximation's N_eff as a mode A alternative, Gaussian surrogates for posterior-shape diagnostics (`estimators.GaussianDensity.sample`), and N_eff matching. 200 draws by default, configurable.
 - σ_sig: the null's empirical p-value as a one-sided σ, with a fitted tail beyond the resampling resolution, flagged as extrapolated.
 - σ_eff maps per metric, r_eff maps for shape-only rows, and per-metric threshold defaults on σ_eff and |ln r_eff| that the YAML config can override.
-- A script that rebuilds the σ_eff and r_eff calibration tables and the validation page from the zoo. The zoo's `batch_size` draws independent problems for the null-uniformity checks, and its `mahalanobis_shift` and `width_ratio` rows are the true σ_eff and r_eff.
+- A script that rebuilds the σ_eff and r_eff calibration tables and the validation page from the zoo. The zoo's `batch_size` draws independent problems for the null-uniformity checks, and its `mahalanobis_shift` and `width_ratio` rows are the true σ_eff and r_eff. The page also reruns the session 6 zoo checks: the GMM starts behind `DEFAULT_STARTS` and the railing scores of the reflected and corrected KDEs.
 - Done when nulls on identical distributions give uniform p-values, σ_eff recovers the zoo's known shifts, and r_eff its known width ratios.
 
 ### 13. Reweighting
@@ -210,6 +214,7 @@ Scope: `engines/` (`compare` and `diagnose`) and the public API in `__init__.py`
 
 - `compare` in modes A and B, against a reference or over all pairs, with one shared whitening per comparison. Every row carries its null and null draws, σ_sig, σ_eff or r_eff, the null standard deviation as its uncertainty, validity warnings and provenance.
 - A dry run that counts metric evaluations times null resamples and warns above a budget.
+- kNN metrics need equally weighted samples: resample a weighted set in proportion to its weights first (Smith and Gelfand 1992), with a key derived from the row's path.
 - `diagnose` on raw chains and on flat samples.
 - Re-exports in `__init__.py` go below the float64 switch.
 - One whitening per problem through `jax.vmap` of `Whitening.from_samples` (the reference posterior in mode A, the two posteriors of each pair in mode B) or `from_fisher`, with its `description` in the space column. Traced whitenings do not warn, so rebuild a NaN one concretely to capture its `ValidityWarning` in the rows of its problem.
@@ -240,6 +245,7 @@ Scope: `report/`.
 
 - A generated marimo notebook that runs as a script and exports to HTML.
 - Contents: the σ_eff, r_eff and σ_sig summary table, cantuccio corner overlays with contours from the metric estimators, null histograms from the stored null draws, and diagnostics.
+- Pass `KernelDensity.resolved_settings().bandwidth` to cantuccio as its `bandwidth`, which reproduces the estimate away from bounds (tested in session 6). cantuccio neither reflects nor corrects at bounds, so near an interval bound draw the contours from `KernelDensity.log_density` on a grid.
 - Done when the example pipeline produces a report that renders.
 
 ### 18. GW subpackage

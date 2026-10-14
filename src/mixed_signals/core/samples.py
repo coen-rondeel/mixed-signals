@@ -26,7 +26,10 @@ Effective sample size
 Weighted statistics
     :func:`weighted_covariance` and :func:`circular_standard_deviation` are
     the package's estimators of widths from weighted samples, shared by the
-    transforms, metrics and diagnostics.
+    transforms, metrics and diagnostics. :func:`circular_mean` and
+    :func:`mean_resultant_length` give the direction and concentration of
+    values on a circle, and :func:`unwrap_about` their representatives
+    within half a period of a centre, such as the circular mean.
 Precision
     Every field is stored in float64. Narrower float inputs are cast and raise
     a :class:`~mixed_signals.errors.PrecisionWarning`, because the cast cannot
@@ -60,8 +63,10 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 from jax.scipy.special import logsumexp
+from jax.typing import ArrayLike
 from jaxtyping import Array, Bool, Float, Integer
 
+from mixed_signals.core.topology import wrap
 from mixed_signals.errors import PrecisionWarning
 from mixed_signals.io.arrays import ArrayBackend, from_jax, to_jax
 
@@ -197,6 +202,110 @@ def circular_standard_deviation(
     References:
         :cite:t:`mardia2000directional`.
     """
+    deficit = _resultant_deficit(samples, log_weights, period)
+    return jnp.sqrt(-jnp.log1p(-deficit)) * period / (2 * jnp.pi)
+
+
+def mean_resultant_length(
+    samples: Float[Array, "*leading sample"],
+    log_weights: Float[Array, "*leading sample"],
+    period: float,
+) -> Float[Array, " *leading"]:
+    """Return the weighted mean resultant length R̄ of values on a circle.
+
+    R̄ is the length of the weighted mean of the unit vectors exp(2πi xᵢ/P),
+    for weights summing to one (Mardia and Jupp 2000). It is 1 when all
+    values coincide, and near 0 when they spread evenly around the circle or
+    form two opposite clusters of equal weight, when the mean direction is
+    undefined. It shares the half-angle sums of
+    :func:`circular_standard_deviation`.
+
+    Args:
+        samples: Values on the circle, shaped (..., N).
+        log_weights: Natural logarithms of unnormalised weights, shaped
+            (..., N); −∞ for zero.
+        period: Period P of the circle.
+
+    Returns:
+        R̄ in [0, 1], shaped (...).
+
+    References:
+        :cite:t:`mardia2000directional`.
+    """
+    return jnp.sqrt(1 - _resultant_deficit(samples, log_weights, period))
+
+
+def circular_mean(
+    samples: Float[Array, "*leading sample"],
+    log_weights: Float[Array, "*leading sample"],
+    period: float,
+    lower: float,
+) -> Float[Array, " *leading"]:
+    """Return the weighted circular mean of values on a circle.
+
+    The mean direction is the argument of the weighted mean of the unit
+    vectors exp(2πi xᵢ/P) (Mardia and Jupp 2000), converted back to the units
+    of the values. The angles are measured from the value of largest weight,
+    as in :func:`circular_standard_deviation`, so a narrow circle keeps its
+    precision. Where R̄ is near zero, the direction is undefined and the
+    result arbitrary; the Rayleigh test tells whether it is resolved (Mardia
+    and Jupp 2000).
+
+    Args:
+        samples: Values on the circle, shaped (..., N).
+        log_weights: Natural logarithms of unnormalised weights, shaped
+            (..., N); −∞ for zero.
+        period: Period P of the circle.
+        lower: Lower end of the circle.
+
+    Returns:
+        The circular mean in [lower, lower + P), shaped (...).
+
+    References:
+        :cite:t:`mardia2000directional`.
+    """
+    weights = jax.nn.softmax(log_weights, axis=-1)
+    anchor = jnp.take_along_axis(
+        samples, jnp.argmax(log_weights, axis=-1)[..., None], axis=-1
+    )
+    angles = 2 * jnp.pi * (samples - anchor) / period
+    offset = jnp.arctan2(
+        jnp.sum(weights * jnp.sin(angles), axis=-1),
+        jnp.sum(weights * jnp.cos(angles), axis=-1),
+    )
+    return wrap(anchor[..., 0] + offset * period / (2 * jnp.pi), lower, period)
+
+
+def unwrap_about(
+    values: Float[Array, " *leading"], centre: ArrayLike, period: float
+) -> Float[Array, " *leading"]:
+    """Return the representative of each circle value within half a period of a centre.
+
+    Values that differ by a whole number of periods are the same point, so
+    each value maps to its representative in [centre − P/2, centre + P/2).
+    About the circular mean, the representatives of a narrow distribution
+    form one unbroken interval, on which linear statistics apply.
+
+    Args:
+        values: Values on the circle.
+        centre: Centre of the representatives, broadcast against ``values``.
+        period: Period P of the circle.
+
+    Returns:
+        The representatives, shaped like ``values``.
+
+    References:
+        :cite:t:`mardia2000directional`.
+    """
+    return wrap(values, jnp.asarray(centre) - period / 2, period)
+
+
+def _resultant_deficit(
+    samples: Float[Array, "*leading sample"],
+    log_weights: Float[Array, "*leading sample"],
+    period: float,
+) -> Float[Array, " *leading"]:
+    """Return 1 − R̄², computed from half-angle sines so that narrow circles keep it."""
     weights = jax.nn.softmax(log_weights, axis=-1)
     anchor = jnp.take_along_axis(
         samples, jnp.argmax(log_weights, axis=-1)[..., None], axis=-1
@@ -206,8 +315,7 @@ def circular_standard_deviation(
     # * With versine v = Σ w (1 − cos Δφ) and sine s = Σ w sin Δφ, R̄² = (1 − v)² + s².
     versine = jnp.sum(weights * 2 * jnp.sin(half_angles) ** 2, axis=-1) / total
     sine = jnp.sum(weights * jnp.sin(2 * half_angles), axis=-1) / total
-    deficit = jnp.clip(2 * versine - versine**2 - sine**2, 0.0, 1.0)
-    return jnp.sqrt(-jnp.log1p(-deficit)) * period / (2 * jnp.pi)
+    return jnp.clip(2 * versine - versine**2 - sine**2, 0.0, 1.0)
 
 
 class SampleSet(eqx.Module):

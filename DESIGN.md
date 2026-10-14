@@ -49,7 +49,7 @@ In v1:
 
 ## Decisions so far
 
-The developers have agreed 142 decisions: 88 from rounds 1–8, the repository setup and the design close-out, 7 from roadmap session 1 (Foundations), 7 from roadmap session 2 (Sample containers) and 14 from roadmap session 3 (Validation zoo), all on 2026-10-13, and 14 from roadmap session 4 (Transforms and whitening) and 12 from roadmap session 5 (MCMC tools), both on 2026-10-14.
+The developers have agreed 158 decisions: 88 from rounds 1–8, the repository setup and the design close-out, 7 from roadmap session 1 (Foundations), 7 from roadmap session 2 (Sample containers) and 14 from roadmap session 3 (Validation zoo), all on 2026-10-13, and 14 from roadmap session 4 (Transforms and whitening), 12 from roadmap session 5 (MCMC tools) and 16 from roadmap session 6 (Estimators), all three on 2026-10-14.
 
 | Topic | Decision |
 | --- | --- |
@@ -195,6 +195,22 @@ The developers have agreed 142 decisions: 88 from rounds 1–8, the repository s
 | emcee in tests | emcee joins the test group as the reference for the autocorrelation function and τ, next to eryn's estimator |
 | MCMC validity checks | Fewer than 50τ steps and lag pairs positive to the end warn; walkers that never move leave the average, and τ is NaN when none moves; R̂ warns below 50 effective samples per split chain |
 | MCMC interfaces | The τ, ESS, split-chain KS and R̂ kernels take arrays shaped (step, walker, param); `reduce_chains` takes `Chains` |
+| Estimator form | Equinox modules that a `fit` classmethod builds per problem and posterior, vmapped over (B, K); frozen pydantic settings give the `estimator_settings` JSON, and `resolved_settings` the values that a rule chose |
+| Estimator names | `gaussian`, `kde`, `knn`, `gmm`, `flow` and `classifier`, as `GaussianDensity`, `KernelDensity`, `NearestNeighbours`, `MixtureDensity`, `FlowDensity` and `ClassifierRatio` in `estimators/` modules of those names, with the `Estimator` base in `base.py` |
+| KDE core | `jax.scipy.stats.gaussian_kde`, the JAX port of SciPy's estimator, evaluated in chunks at the winding and mirror images of each point |
+| KDE bandwidth | Silverman's factor on the Kish n_eff; a float replaces it, and plots pass the resolved factor to cantuccio |
+| KDE bounds | The non-negative Jones-Foster correction in one dimension, renormalised by quadrature; reflection at every finite bound in two or more |
+| KDE dimension limit | A warning below Silverman's sample size for a relative mean squared error of 0.1 at a Gaussian's mode, recomputed exactly up to 20 dimensions, and always above |
+| Circles in estimators | The Gaussian and the GMM unwrap each circle about its circular mean and sum over windings; the KDE unwraps for its bandwidth and wraps its kernels; sphere axes follow their own topologies |
+| Unresolved circles | The Gaussian and the GMM warn when the Rayleigh statistic 2N_effR̄² lies below 5.99, the 95% point of χ²₂ |
+| Gaussian estimator | The weighted mean and the unbiased weighted covariance, unbounded on intervals, with `sample` for the Gaussian surrogates |
+| kNN scope | Topology-aware brute-force distances (Euclidean block, shorter arc, great circle), the k-th neighbour with self-exclusion, and the digamma-corrected log density; the divergence formulas stay in session 9 and KSG's max norm comes with session 11 |
+| kNN weights | Zero weights leave every search; unequal positive weights give NaN with a warning, so engines resample first |
+| GMM start | Weighted k-means++ seeds, nearest-centre assignment and one M-step, as in scikit-learn; the best of 18 starts by default, from a zoo check |
+| GMM stopping | The rule of scikit-learn on z-scored axes: 1e-3 on the mean log-likelihood per sample, at most 100 iterations and 1e-6 on every diagonal; a winning start at the cap warns |
+| BIC | Formed in session 11 from the GMM's mean log-likelihood and parameter count |
+| Placeholders | `FlowDensity.fit(samples, log_weights, space, settings, *, key)` and `ClassifierRatio.fit(first, first_log_weights, second, second_log_weights, space, settings, *, key)` raise `NotImplementedError` |
+| Coordinate helpers | `wrap`, `sphere_coordinates` and `unit_vectors` move from the zoo to `core/topology.py`; `circular_mean`, `mean_resultant_length` and `unwrap_about` join `core/samples.py` |
 
 ## Design principles
 
@@ -249,6 +265,8 @@ Comparisons run on flat samples shaped (B, K, N, D); diagnostics also read chain
 
 **MCMC tools (session 5).** The kernels take chains shaped (step, walker, param) after burn-in. τ = Σₜ ρ(t), summed over all lags (Goodman and Weare 2010), comes from emcee's average of each walker's autocorrelation function (Foreman-Mackey 2017), truncated by Geyer's initial monotone sequence of lag pairs (Geyer 1992), plus the next even lag when it is positive (Vehtari et al. 2021), and floored at 1/log₁₀ S, so a chain holds at most S log₁₀ S effective samples. Sokal's window (Sokal 1997) gave −0.003 for an AR(1) chain with φ = −0.5, whose τ is 1/3, and −0.80 for φ = −0.9, whose τ is 0.053; Geyer's pairs recover the first and stop at the floor for the second, and on AR(1) chains with φ of 0.9 and 0.95 the estimate has about 60% of the scatter of emcee's. Each walker is centred on its own mean, so its autocorrelations sum to ½ over all lags; lag pairs that stay positive to the end of the chain therefore put τ at its floor, and warn as a sign of too short chains. The ESS is S·W/τ. Thinning keeps every k-th step with k = max(1, ⌈τ − 2ε⌉) and ε = τ√(2(2M + 1)/(SW)), the a priori error of a sum to lag M (Madras and Sokal 1988; Wolff 2004): with ⌈τ⌉ alone, noise put τ above 1 in 60% of runs of uncorrelated chains and halved their samples. A reduction keeps the cold chain, drops an explicit burn-in, thins by the largest factor over the parameters and sets `n_eff` = N/τ_k, clipped to [1, N], with τ_k from every k-th lag of the full autocorrelation function, which matched (1 + φᵏ)/(1 − φᵏ) of AR(1) chains within 1%. The split-chain test compares the thinned halves pooled over the walkers with the weighted KS statistic of `metrics/marginal.py` and the limiting Kolmogorov distribution (Smirnov 1948); its p-values were uniform for stationary chains. R̂ uses average ranks for ties and Blom's normal scores (Blom 1958), and is NaN for a parameter that never moves.
 
+**Estimators (session 6).** Every estimator is an equinox module that a `fit` classmethod builds from the samples of one posterior of one problem, with `jax.vmap` over problems and posteriors. Its settings are a frozen pydantic model, whose JSON fills the `estimator_settings` column, and `resolved_settings` turns a rule into its value, so plots and later fits reuse it. Densities refer to the coordinates of the space. The Gaussian estimator has the weighted mean and the unbiased weighted covariance (Harris et al. 2020), ignores interval bounds and draws the Gaussian surrogates (Efron and Tibshirani 1993). The bounded KDE wraps JAX's port of SciPy's `gaussian_kde` (Virtanen et al. 2020; JAX authors 2022), with Silverman's factor (n(D + 2)/4)^(−1/(D+4)) on the Kish n_eff (Silverman 1986), which cantuccio's contours take as their `bandwidth`. It sums the kernels over windings on circles, and over mirror images at finite bounds in two or more dimensions (Schuster 1985). In one dimension an interval takes the non-negative correction of Jones and Foster (1996) on the linear correction of Jones (1993), as evmix applies it (Hu and Scarrott 2018), renormalised by Gauss-Legendre quadrature: on the zoo's railed normals, reflection put the railing score 11% and 31% high at N = 10⁴ for peaks 1σ and 2σ inside the bound, and 48% high at N = 10³ for 2σ, where the correction left 2%, 4% and −2%, at about 1.5 times the scatter. A KDE warns below the sample size at which the relative mean squared error at a Gaussian's mode reaches 0.1 (Silverman 1986, Table 4.2), recomputed exactly and extended to 20 dimensions. The kNN estimator measures Euclidean distances on the Euclidean block, the shorter arc on circles and great-circle angles on spheres, in d = E + C + 2S dimensions. It gives the k-th neighbour distance, with each sample left out of its own search, and the log density ψ(k) − ψ(n + 1) − ln V_d − d ln r_k (Loftsgaarden and Quesenberry 1965; Kozachenko and Leonenko 1987; Kraskov, Stögbauer and Grassberger 2004), plus the log area element on spheres. Zero weights leave the searches; unequal positive weights, too few samples and zero k-th distances give NaN with a warning, because the estimators assume equally weighted independent draws (Wang, Kulkarni and Verdú 2009), and engines resample weighted sets first (Smith and Gelfand 1992). The GMM runs weighted EM (Dempster, Laird and Rubin 1977; McLachlan and Peel 2000) on z-scored axes from weighted k-means++ seeds (Arthur and Vassilvitskii 2007), with the stopping rule and the regularisation of scikit-learn (Pedregosa et al. 2011). That rule ended 37 to 68% of single starts on the plateau near the one-Gaussian solution in the hardest zoo mixtures checked, so 18 starts keep the chance that all of them miss below 10⁻³. The winning mean log-likelihood still lay a median 2.6 to 2.8 nats below the optimum for 4 000 samples in those cases, and up to 19 nats; a tolerance of 0.01 nats on the total would have left at most 0.65. The Gaussian and the GMM unwrap each circle about its circular mean, sum their densities over windings, and warn when the Rayleigh statistic 2N_effR̄² lies below 5.99 (Mardia and Jupp 2000). Under `jax.jit`, the image counts follow the widest kernel that the samples admit, √2 times half a period or interval for unbiased widths of two or more effective samples, and a wider kernel gives NaN. The normalizing-flow and classifier estimators (Papamakarios et al. 2021; Sugiyama, Suzuki and Kanamori 2012) raise `NotImplementedError` until their training setups are chosen.
+
 **Structure layering (Decided)**
 
 - equinox modules for anything crossing jit: samples, weights, transforms, estimator state.
@@ -278,7 +296,7 @@ Four engines share the data model and declare what they need. The menus below ar
 - C2ST and the normalizing-flow estimator are placeholders: their functions exist with final signatures and raise `NotImplementedError` until the classifier and its training setup are chosen.
 - Split-chain KS compares the τ-thinned halves of a chain, pooled over the walkers, because the test assumes independent draws (Brooks, Giudici and Philippe 2003); its p-value comes from the limiting Kolmogorov distribution (Smirnov 1948) and is approximate for coupled walkers.
 - Gaussianity and dependence statistics are compared with Gaussian surrogates; see Null construction.
-- The prior-railing score is the marginal posterior density at a finite bound divided by its peak density, both from the reflecting bounded KDE. No paper defines a railing diagnostic. The LVK tool pe-configurator checks chirp-mass railing with a histogram; our flag threshold is calibrated on the zoo's railed cases and shown on the validation page.
+- The prior-railing score is the marginal posterior density at a finite bound divided by its peak density, both from the one-dimensional bounded KDE, which corrects its bounds as Jones and Foster (1996) do. No paper defines a railing diagnostic. The LVK tool pe-configurator checks chirp-mass railing with a histogram; our flag threshold is calibrated on the zoo's railed cases and shown on the validation page.
 
 **Comparison topologies (Decided)**
 
@@ -398,7 +416,7 @@ Priors come from eryn's prior setup on the l2d-dev branch, and `ParamSpace` is b
 - **Priors:** an `eryn.priors.ProbDistContainer` keyed by parameter name, or by a tuple of names for joint priors. `logpdf` takes (N, D) and returns (N,); `rvs(size)` returns size + (D,). Conditional priors and CuPy are supported. The l2d-dev setup is headed for release.
 - **ParamSpace:** set explicitly; a class method such as `ParamSpace.from_eryn_priors(priors)` reads names from `key_order` and each prior's label, unit, bounds and `boundary`.
 - **YAML layout (Decided):** one entry per parameter with `name`, `label` (the name when left out), `unit`, `topology` (`real` when left out, `interval` or `circle`) and `bounds`, and a `spheres` list of `azimuth`, `polar` and `polar_form`. The real line keeps the bounds (−∞, ∞), an interval needs at least one finite bound and a circle two. Angles are in radians: a sphere azimuth must be a circle of period 2π, and the polar bounds must lie inside the range of the polar form, which admits eryn's 10⁻¹² margins on sin and cos axes. An invalid space raises pydantic's `ValidationError` with one message per fault.
-- **Topology (Decided):** `periodic` becomes a circle with period maximum − minimum. Every other parameter becomes an interval from its bounds, and its finite bounds are reflecting edges for bounded KDEs (Schuster 1985; Jones 1993). One bound may be infinite, as for LogNormal or Exponential priors; the real line remains when both are infinite. eryn's `reflective` flag only changes the sampler's proposals, so it maps like no flag. eryn stores bounds in the sampling space; physical-space bounds follow from the prior's inverse transform.
+- **Topology (Decided):** `periodic` becomes a circle with period maximum − minimum. Every other parameter becomes an interval from its bounds, and its finite bounds are edges of bounded KDEs: corrected as Jones and Foster (1996) do in one dimension, reflecting in two or more (Schuster 1985). One bound may be infinite, as for LogNormal or Exponential priors; the real line remains when both are infinite. eryn's `reflective` flag only changes the sampler's proposals, so it maps like no flag. eryn stores bounds in the sampling space; physical-space bounds follow from the prior's inverse transform.
 - **Sky position (Decided):** the user declares coupled pairs such as (λ, β) as a sphere, with great-circle OT costs. The polar axis may be latitude, colatitude, sin(latitude) or cos(colatitude), so spheres work in eryn's sampling space, where SineUniform and CosineUniform sample sin β and cos θ, and in physical space.
 - **Fixed and discrete parameters (Decided):** with eryn priors, `DeltaFunction` parameters are dropped automatically and discrete priors stay out of v1; without eryn priors, nothing is dropped.
 - **Transforms (Open):** eryn priors carry physical ↔ sampling transforms with log Jacobians, as NumPy or CuPy callables that JAX cannot jit or differentiate. How they become `Transform` objects is open; see Open questions. With eryn priors, comparing in physical parameters is optional (Decided).
@@ -566,8 +584,8 @@ Every method and assumption above cites the sources below. Each module cites the
 | Spearman's ρ and its Gaussian value | Spearman (1904); Moran (1948) |
 | Distance correlation and its Gaussian value | Székely, Rizzo and Bakirov (2007) |
 | Mutual information and its Gaussian value | Kraskov, Stögbauer and Grassberger (2004); Cover and Thomas (2006) |
-| GMM-BIC multimodality | Dempster, Laird and Rubin (1977); Schwarz (1978); Fraley and Raftery (2002) |
-| Prior railing | Reflecting KDE: Schuster (1985), Jones (1993); related LVK check: pe-configurator; threshold: validation page |
+| GMM-BIC multimodality | Dempster, Laird and Rubin (1977); McLachlan and Peel (2000); Schwarz (1978); Fraley and Raftery (2002); k-means++ starts: Arthur and Vassilvitskii (2007); stopping rule: scikit-learn (Pedregosa et al. 2011); number of starts: zoo check |
+| Prior railing | Bounded KDE: Jones (1993), Jones and Foster (1996); related LVK check: pe-configurator; threshold: validation page |
 | Gaussian surrogates | Efron and Tibshirani (1993) |
 | Mean shift | Glass, McGaw and Smith (1981); Cohen (1988) |
 | Width ratio | Nakagawa et al. (2015) |
@@ -577,13 +595,17 @@ Every method and assumption above cites the sources below. Each module cites the
 | k-sample Anderson–Darling | Scholz and Stephens (1987); SciPy `anderson_ksamp` |
 | 1D W1 | Vallender (1974); SciPy `wasserstein_distance` |
 | JS | Lin (1991); GW usage in nats: Romero-Shaw et al. (2020) |
-| Bounded KDE | Schuster (1985); Jones (1993) |
+| Bounded KDE | Reflection: Schuster (1985); boundary correction: Jones (1993), Jones and Foster (1996), evmix (Hu and Scarrott 2018); bandwidth and dimension limit: Silverman (1986); estimator: SciPy (Virtanen et al. 2020) through JAX (JAX authors 2022) |
+| kNN density and its digamma correction | Loftsgaarden and Quesenberry (1965); Kozachenko and Leonenko (1987); Kraskov, Stögbauer and Grassberger (2004) |
+| Equal weights for kNN; resampling | Wang, Kulkarni and Verdú (2009); Smith and Gelfand (1992) |
+| Circular mean, mean resultant length, Rayleigh test | Mardia and Jupp (2000) |
 | kNN KL | Wang, Kulkarni and Verdú (2009) |
 | kNN JS | Kozachenko and Leonenko (1987); Lin (1991) |
 | Hellinger distance | Hellinger (1909); Bhattacharyya (1943); Gaussian form: Fukunaga (1990); kNN form: Póczos and Schneider (2011), Rényi (1961) |
 | MMD and its median bandwidth | Gretton et al. (2012); Garreau, Jitkrittum and Kanagawa (2017) |
 | Energy distance | Baringhaus and Franz (2004); Székely and Rizzo (2013); Sejdinovic et al. (2013) |
-| C2ST (placeholder) | Lopez-Paz and Oquab (2017); Lueckmann et al. (2021) |
+| C2ST (placeholder) | Lopez-Paz and Oquab (2017); Lueckmann et al. (2021); classifier density ratios: Sugiyama, Suzuki and Kanamori (2012) |
+| Normalizing-flow estimator (placeholder) | Papamakarios et al. (2021) |
 | Sliced W2 | Rabin et al. (2012); Bonneel et al. (2015); ott-jax `ott.tools.sliced` |
 | Sinkhorn divergence | Cuturi (2013); Genevay, Peyré and Cuturi (2018); Feydy et al. (2019); ott-jax (Cuturi et al. 2022) |
 | Positivity of OT costs | Feragen, Lauze and Hauberg (2015); Feydy et al. (2019) |
@@ -623,6 +645,7 @@ Every method and assumption above cites the sources below. Each module cites the
 **Bibliography**
 
 - Anderson, T. W. and Darling, D. A. (1954). A test of goodness of fit. *Journal of the American Statistical Association* 49(268), 765–769.
+- Arthur, D. and Vassilvitskii, S. (2007). k-means++: the advantages of careful seeding. *Proceedings of the Eighteenth Annual ACM-SIAM Symposium on Discrete Algorithms*, 1027–1035.
 - Baringhaus, L. and Franz, C. (2004). On a new multivariate two-sample test. *Journal of Multivariate Analysis* 88(1), 190–206.
 - Barr, D. R. and Sherrill, E. T. (1999). Mean and variance of truncated normal distributions. *The American Statistician* 53(4), 357–361.
 - Bhattacharyya, A. (1943). On a measure of divergence between two statistical populations defined by their probability distributions. *Bulletin of the Calcutta Mathematical Society* 35, 99.
@@ -639,7 +662,7 @@ Every method and assumption above cites the sources below. Each module cites the
 - Cuturi, M. (2013). Sinkhorn distances: Lightspeed computation of optimal transport. *Advances in Neural Information Processing Systems* 26.
 - Cuturi, M., Meng-Papaxanthos, L., Tian, Y., Bunne, C., Davis, G. and Teboul, O. (2022). Optimal Transport Tools (OTT): A JAX toolbox for all things Wasserstein. arXiv:2201.12324.
 - Davis, P. J. and Rabinowitz, P. (1984). *Methods of Numerical Integration*, 2nd edition. Academic Press.
-- Dempster, A. P., Laird, N. M. and Rubin, D. B. (1977). Maximum likelihood from incomplete data via the EM algorithm. *Journal of the Royal Statistical Society B* 39(1), 1–38.
+- Dempster, A. P., Laird, N. M. and Rubin, D. B. (1977). Maximum likelihood from incomplete data via the EM algorithm. *Journal of the Royal Statistical Society B* 39(1), 1–22.
 - Devroye, L. (1986). *Non-Uniform Random Variate Generation*. Springer.
 - Dowson, D. C. and Landau, B. V. (1982). The Fréchet distance between multivariate normal distributions. *Journal of Multivariate Analysis* 12(3), 450–455.
 - Efron, B. and Tibshirani, R. J. (1993). *An Introduction to the Bootstrap*. Chapman & Hall.
@@ -666,15 +689,18 @@ Every method and assumption above cites the sources below. Each module cites the
 - Harris, C. R. et al. (2020). Array programming with NumPy. *Nature* 585, 357–362.
 - Hellinger, E. (1909). Neue Begründung der Theorie quadratischer Formen von unendlichvielen Veränderlichen. *Journal für die reine und angewandte Mathematik* 136, 210.
 - Hermans, J., Delaunoy, A., Rozet, F., Wehenkel, A., Begy, V. and Louppe, G. (2022). A trust crisis in simulation-based inference? Your posterior approximations can be unfaithful. *Transactions on Machine Learning Research*.
+- Hu, Y. and Scarrott, C. (2018). evmix: An R package for extreme value mixture modeling, threshold estimation and boundary corrected kernel density estimation. *Journal of Statistical Software* 84(5).
 - IEEE (2019). IEEE Standard for Floating-Point Arithmetic. IEEE Std 754-2019.
 - Janati, H., Muzellec, B., Peyré, G. and Cuturi, M. (2020). Entropic optimal transport between unbalanced Gaussian measures has a closed form. *Advances in Neural Information Processing Systems* 33.
 - JAX authors (2019). JAX PRNG design. JAX documentation, JAX Enhancement Proposal 263. <https://docs.jax.dev/en/latest/jep/263-prng.html>
+- JAX authors (2022). Gaussian kernel density estimator: jax.scipy.stats.gaussian_kde, added in JAX 0.3.15. JAX documentation. <https://docs.jax.dev/en/latest/_autosummary/jax.scipy.stats.gaussian_kde.html>
 - JAX authors (2022). API compatibility. JAX documentation. <https://docs.jax.dev/en/latest/api_compatibility.html>
 - Jeffreys, H. (1946). An invariant form for the prior probability in estimation problems. *Proceedings of the Royal Society of London A* 186(1007), 453–461.
 - Joanes, D. N. and Gill, C. A. (1998). Comparing measures of sample skewness and kurtosis. *Journal of the Royal Statistical Society D* 47(1), 183–189.
 - Johnson, N. L., Kotz, S. and Balakrishnan, N. (1995). *Continuous Univariate Distributions*, Volume 2, 2nd edition. Wiley.
 - Johnson, R. A. and Wichern, D. W. (2007). *Applied Multivariate Statistical Analysis*, 6th edition. Pearson.
 - Jones, M. C. (1993). Simple boundary correction for kernel density estimation. *Statistics and Computing* 3(3), 135–146.
+- Jones, M. C. and Foster, P. J. (1996). A simple nonnegative boundary correction method for kernel density estimation. *Statistica Sinica* 6(4), 1005–1013.
 - Karnesis, N., Katz, M. L., Korsakova, N., Gair, J. R. and Stergioulas, N. (2023). Eryn: a multipurpose sampler for Bayesian inference. *Monthly Notices of the Royal Astronomical Society* 526(4), 4814–4830. arXiv:2303.02164.
 - Kessy, A., Lewin, A. and Strimmer, K. (2018). Optimal whitening and decorrelation. *The American Statistician* 72(4), 309–314.
 - Kish, L. (1965). *Survey Sampling*. Wiley.
@@ -685,18 +711,21 @@ Every method and assumption above cites the sources below. Each module cites the
 - Leone, F. C., Nelson, L. S. and Nottingham, R. B. (1961). The folded normal distribution. *Technometrics* 3(4), 543–550.
 - Lin, J. (1991). Divergence measures based on the Shannon entropy. *IEEE Transactions on Information Theory* 37(1), 145–151.
 - Lindblom, L., Owen, B. J. and Brown, D. A. (2008). Model waveform accuracy standards for gravitational wave data analysis. *Physical Review D* 78(12), 124020.
+- Loftsgaarden, D. O. and Quesenberry, C. P. (1965). A nonparametric estimate of a multivariate density function. *Annals of Mathematical Statistics* 36(3), 1049–1051.
 - Lopez-Paz, D. and Oquab, M. (2017). Revisiting classifier two-sample tests. *International Conference on Learning Representations*.
 - Lueckmann, J.-M., Boelts, J., Greenberg, D., Gonçalves, P. and Macke, J. (2021). Benchmarking simulation-based inference. *Proceedings of AISTATS*, PMLR 130, 343–351.
 - Lyons, R. (2013). Distance covariance in metric spaces. *Annals of Probability* 41(5), 3284–3305.
 - Madras, N. and Sokal, A. D. (1988). The pivot algorithm: a highly efficient Monte Carlo method for the self-avoiding walk. *Journal of Statistical Physics* 50(1–2), 109–186.
 - Mahalanobis, P. C. (1936). On the generalised distance in statistics. *Proceedings of the National Institute of Sciences of India* 2(1), 49–55.
 - Mardia, K. V. and Jupp, P. E. (2000). *Directional Statistics*. Wiley.
+- McLachlan, G. and Peel, D. (2000). *Finite Mixture Models*. Wiley.
 - Moran, P. A. P. (1948). Rank correlation and product-moment correlation. *Biometrika* 35(1/2), 203–206.
 - Nakagawa, S., Poulin, R., Mengersen, K., Reinhold, K., Engqvist, L., Lagisz, M. and Senior, A. M. (2015). Meta-analysis of variation: ecological and evolutionary applications and beyond. *Methods in Ecology and Evolution* 6(2), 143–152.
 - National Institute of Standards and Technology (2015). Secure Hash Standard (SHS). Federal Information Processing Standards Publication 180-4.
 - Papamakarios, G., Nalisnick, E., Rezende, D. J., Mohamed, S. and Lakshminarayanan, B. (2021). Normalizing flows for probabilistic modeling and inference. *Journal of Machine Learning Research* 22(57), 1–64.
 - Payne, E., Talbot, C. and Thrane, E. (2019). Higher order gravitational-wave modes with likelihood reweighting. *Physical Review D* 100(12), 123017.
 - pe-configurator (Estelles, H., Ossokine, S. and Williams, D.). Waveform settings and prior bounds for gravitational-wave parameter estimation, MIT license. <https://pypi.org/project/pe-configurator>
+- Pedregosa, F. et al. (2011). Scikit-learn: Machine learning in Python. *Journal of Machine Learning Research* 12(85), 2825–2830.
 - Pettitt, A. N. (1976). A two-sample Anderson-Darling rank statistic. *Biometrika* 63(1), 161–168.
 - Peyré, G. and Cuturi, M. (2019). Computational optimal transport. *Foundations and Trends in Machine Learning* 11(5–6), 355–607.
 - Phipson, B. and Smyth, G. K. (2010). Permutation P-values should never be zero: calculating exact P-values when permutations are randomly drawn. *Statistical Applications in Genetics and Molecular Biology* 9(1), article 39.
@@ -716,10 +745,13 @@ Every method and assumption above cites the sources below. Each module cites the
 - Schwarz, G. (1978). Estimating the dimension of a model. *Annals of Statistics* 6(2), 461–464.
 - Sejdinovic, D., Sriperumbudur, B., Gretton, A. and Fukumizu, K. (2013). Equivalence of distance-based and RKHS-based statistics in hypothesis testing. *Annals of Statistics* 41(5), 2263–2291.
 - Sejdinovic, D., Strathmann, H., Garcia, M. L., Andrieu, C. and Gretton, A. (2014). Kernel adaptive Metropolis-Hastings. *Proceedings of the 31st International Conference on Machine Learning*, PMLR 32(2), 1665–1673.
+- Silverman, B. W. (1986). *Density Estimation for Statistics and Data Analysis*. Chapman and Hall.
 - Smirnov, N. (1948). Table for estimating the goodness of fit of empirical distributions. *Annals of Mathematical Statistics* 19(2), 279–281.
+- Smith, A. F. M. and Gelfand, A. E. (1992). Bayesian statistics without tears: a sampling-resampling perspective. *The American Statistician* 46(2), 84–88.
 - Sokal, A. D. (1997). Monte Carlo methods in statistical mechanics: foundations and new algorithms. In *Functional Integration: Basics and Applications*, NATO ASI Series B 361, 131–192. Springer US.
 - Spearman, C. (1904). The proof and measurement of association between two things. *American Journal of Psychology* 15(1), 72–101.
 - Stephens, M. A. (1974). EDF statistics for goodness of fit and some comparisons. *Journal of the American Statistical Association* 69(347), 730–737.
+- Sugiyama, M., Suzuki, T. and Kanamori, T. (2012). *Density Ratio Estimation in Machine Learning*. Cambridge University Press.
 - Székely, G. J. and Rizzo, M. L. (2013). Energy statistics: A class of statistics based on distances. *Journal of Statistical Planning and Inference* 143(8), 1249–1272.
 - Székely, G. J., Rizzo, M. L. and Bakirov, N. K. (2007). Measuring and testing dependence by correlation of distances. *Annals of Statistics* 35(6), 2769–2794.
 - Thompson, M. B. (2010). A comparison of methods for computing autocorrelation time. Technical Report 1007, Department of Statistics, University of Toronto. arXiv:1011.0175.

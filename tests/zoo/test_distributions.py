@@ -11,7 +11,7 @@ import pytest
 from jax.typing import ArrayLike
 from scipy import stats
 
-from mixed_signals.core.topology import AZIMUTH_PERIOD, PolarForm
+from mixed_signals.core.topology import AZIMUTH_PERIOD, PolarForm, unit_vectors
 from mixed_signals.zoo import closed_forms
 from mixed_signals.zoo.distributions import (
     Gaussian,
@@ -21,9 +21,6 @@ from mixed_signals.zoo.distributions import (
     VonMisesFisher,
     WrappedGaussian,
     ZooDistribution,
-    sphere_coordinates,
-    unit_vectors,
-    wrap,
 )
 
 type GridIntegral = Callable[..., float]
@@ -255,15 +252,6 @@ def test_wrapped_gaussian_draws_lie_on_the_circle(key: jax.Array) -> None:
     )
 
 
-def test_wrap_maps_onto_the_half_open_interval() -> None:
-    """Values reduce onto [lower, lower + period), including tiny negative offsets."""
-    values = jnp.array([-1e-20, 0.0, 2 * math.pi, 7.0, -7.0])
-    wrapped = np.asarray(wrap(values, 0.0, AZIMUTH_PERIOD))
-    assert np.all((wrapped >= 0) & (wrapped < AZIMUTH_PERIOD))
-    assert wrapped[0] == 0.0
-    assert wrapped[3] == pytest.approx(7.0 - AZIMUTH_PERIOD)
-
-
 # * von Mises-Fisher
 
 
@@ -323,19 +311,6 @@ def test_von_mises_fisher_polar_forms_describe_the_same_points(key: jax.Array) -
         vectors.append(np.asarray(unit))
     for other in vectors[1:]:
         np.testing.assert_allclose(other, vectors[0], atol=1e-12)
-
-
-def test_sphere_coordinates_round_trip() -> None:
-    """Coordinates of unit vectors convert back to the same vectors."""
-    rng = np.random.default_rng(3)
-    vectors = rng.normal(size=(20, 3))
-    vectors /= np.linalg.norm(vectors, axis=1, keepdims=True)
-    for polar_form in PolarForm:
-        azimuth, polar = sphere_coordinates(jnp.asarray(vectors), polar_form)
-        assert bool(jnp.all((azimuth >= 0) & (azimuth < AZIMUTH_PERIOD)))
-        back, _, inside = unit_vectors(azimuth, polar, polar_form)
-        assert bool(jnp.all(inside))
-        np.testing.assert_allclose(back, vectors, atol=1e-12)
 
 
 def test_von_mises_fisher_density_is_zero_outside_the_polar_range() -> None:

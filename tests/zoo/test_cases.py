@@ -20,7 +20,12 @@ from scipy import stats
 from mixed_signals.core.chains import Chains
 from mixed_signals.core.samples import SampleSet
 from mixed_signals.core.space import ParamSpace
-from mixed_signals.core.topology import AZIMUTH_PERIOD, PolarForm, Topology
+from mixed_signals.core.topology import (
+    AZIMUTH_PERIOD,
+    PolarForm,
+    Topology,
+    unit_vectors,
+)
 from mixed_signals.zoo import (
     REFERENCE_SCHEMA,
     ChainCase,
@@ -38,7 +43,7 @@ from mixed_signals.zoo import (
     von_mises_fisher,
     wrapped_gaussians,
 )
-from mixed_signals.zoo.distributions import Gaussian, unit_vectors
+from mixed_signals.zoo.distributions import Gaussian
 
 STANDARD_ERRORS = 5.0
 SAMPLE_COUNT = 40_000

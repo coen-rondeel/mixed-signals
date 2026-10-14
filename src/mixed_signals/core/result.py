@@ -15,7 +15,7 @@ columns, so the results of different engines and runs concatenate.
     How the functional is estimated, such as ``"knn"``, or ``"empirical"`` for
     a metric computed from the samples directly.
 ``estimator_settings``
-    The estimator settings as a JSON object, such as ``{"k": 5}``.
+    The estimator settings as a JSON object, such as ``{"neighbours": 5}``.
 ``space``
     The transform chain in which the metric was computed.
 ``parameters``

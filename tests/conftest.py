@@ -1,4 +1,4 @@
-"""Shared helpers for the zoo tests."""
+"""Shared helpers for the tests of the zoo and the estimators."""
 
 import functools
 from collections.abc import Callable

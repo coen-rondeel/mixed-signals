@@ -92,7 +92,13 @@ from jaxtyping import Array, Float, PRNGKeyArray
 from mixed_signals.core.chains import Chains
 from mixed_signals.core.samples import SampleSet
 from mixed_signals.core.space import Parameter, ParamSpace
-from mixed_signals.core.topology import AZIMUTH_PERIOD, PolarForm, Sphere, Topology
+from mixed_signals.core.topology import (
+    AZIMUTH_PERIOD,
+    PolarForm,
+    Sphere,
+    Topology,
+    wrap,
+)
 from mixed_signals.prng import derive_key
 from mixed_signals.zoo import closed_forms
 from mixed_signals.zoo._checks import (
@@ -111,7 +117,6 @@ from mixed_signals.zoo.distributions import (
     VonMisesFisher,
     WrappedGaussian,
     ZooDistribution,
-    wrap,
 )
 
 REFERENCE_SCHEMA: Final = pl.Schema(
