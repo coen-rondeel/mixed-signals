@@ -81,6 +81,7 @@ dev = [
 ]
 test = [
     "beartype>=0.23.1",
+    "emcee>=3.1.6",
     "pytest>=9.1.1",
     "pytest-cov>=7.1.0",
 ]
@@ -145,8 +146,8 @@ select = [
 ]
 # * jaxtyping shape strings such as "sample param" are not Python, but F722 parses them as annotations.
 ignore = ["F722"]
-# * Scientific docstrings write σ and the minus sign −, which the confusable-character rules flag.
-allowed-confusables = ["σ", "−"]
+# * Scientific docstrings write σ, ρ and the minus sign −, which the confusable-character rules flag.
+allowed-confusables = ["σ", "ρ", "−"]
 
 [tool.ruff.lint.per-file-ignores]
 # * Re-exports in the package root must follow the float64 switch.

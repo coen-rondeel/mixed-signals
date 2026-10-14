@@ -12,8 +12,8 @@ The implementation is split into twenty focused sessions, numbered 0 to 19. They
 | 2 | Sample containers | A | 1 | Done (2026-10-13) |
 | 3 | Validation zoo | B | 2 | Done (2026-10-13) |
 | 4 | Transforms and whitening | B | 2 | Done (2026-10-14) |
-| 5 | MCMC tools | B | 2 | Next |
-| 6 | Estimators | B | 2 | Open |
+| 5 | MCMC tools | B | 2 | Done (2026-10-14) |
+| 6 | Estimators | B | 2 | Next |
 | 7 | eryn adapters and priors | C | 2, 4 | Open |
 | 8 | Metrics I: moments and marginals | C | 3, 6 | Open |
 | 9 | Metrics II: divergences, kernels and classifiers | C | 3, 6 | Open |
@@ -118,6 +118,8 @@ Scope: `mcmc/autocorr.py`, `mcmc/ess.py`, `mcmc/reduce.py`.
 - Test data: the zoo's `ar1_chains` gives τ in closed form, τ < 1 for negative φ, and a known transient through its `start` argument.
 - Done when τ matches the analytic value for AR(1) chains, and a reduction can be repeated from its record.
 
+Outcome (2026-10-14): the developers decided twelve items, now in `DESIGN.md`. Sokal's window, as emcee applies it, gave τ ≈ 0 or below for AR(1) chains with φ ≤ −0.5, so τ now truncates emcee's walker-averaged autocorrelation function with Geyer's initial monotone sequence and the antithetic correction of Vehtari et al. (2021), floored at 1/log₁₀ S; it recovers (1 + φ)/(1 − φ) from φ = 0.9 down to φ = −0.5. Kernels take arrays shaped (step, walker, param): `integrated_autocorrelation_time`, `autocorrelation_function`, `effective_sample_size` (the raw S·W/τ), `split_chain_ks` (the statistic and its asymptotic Kolmogorov p-value, on halves thinned per parameter and pooled over the walkers) and `rank_normalized_split_rhat` (the larger of bulk and folded R̂, always with a `CoupledChainsWarning`). `reduce_chains` takes `Chains`: cold chain, an explicit burn-in, thinning by the largest max(1, ⌈τ − 2ε⌉) over the parameters, with ε the error of τ of Madras and Sokal (1988), and `n_eff` = N/τ_k from every k-th lag, clipped to [1, N]; its `ReductionRecord` holds the chain shape, cold index, burn-in, factor, τ, τ_k, `n_eff` and the SHA-256 of the chains, and a call with the recorded burn-in and factor repeats it exactly. The weighted two-sample KS statistic, which session 8 also needs, now lives in `metrics/marginal.py`, and emcee joined the test group as a reference. Each walker is centred on its own mean, so its autocorrelations sum to ½; lag pairs that stay positive to the end of the chain therefore put τ at its floor, and the check that warns about them flags chains that are too short. `jnp.searchsorted` returns int32, which JAX divides in float32 even with x64 on, so integer positions are cast to float64 before any arithmetic. Later sessions take chain health from the `mcmc` kernels on the cold chain, reduce chains with `reduce_chains`, and size nulls and subsamples with its `n_eff`.
+
 ### 6. Estimators
 
 Scope: `estimators/`.
@@ -145,7 +147,7 @@ Scope: `metrics/_cap.py`, `metrics/moments.py`, `metrics/marginal.py`.
 - A subsampling cap for metrics that scale as N², with a warning and a keyword that sets the cap.
 - Per-parameter mean shift and width ratio; Gaussian KL in both directions, W2 and Hellinger, split into location and shape terms.
 - Widths come from `core.samples.weighted_covariance`; the pooled σ of mode B is the scale of the pooled z-score (`Whitening.from_samples` with `decorrelate=False`), so per-parameter and joint units agree.
-- Marginals: Kolmogorov-Smirnov, k-sample Anderson-Darling, one-dimensional W1, and Jensen-Shannon in nats and Hellinger with a bounded KDE.
+- Marginals: Kolmogorov-Smirnov, k-sample Anderson-Darling, one-dimensional W1, and Jensen-Shannon in nats and Hellinger with a bounded KDE. Session 5 built the weighted two-sample KS statistic, `metrics.marginal.ks_statistic`; this session adds its rows, its name and its σ_eff map.
 - Every kernel is pure JAX, honours `log_weights`, carries jaxtyping annotations and cites its sources.
 - Name the result metrics as the zoo's reference tables do (`kl`, `kl_location`, `w2`, `ks`, `js`, `ad` and so on), or rename the zoo's in the same change, so results join their truth.
 - Done when the zoo's closed-form values are recovered.
@@ -180,7 +182,7 @@ Scope: `diagnostics/`.
 - Every shape and dependence statistic is compared with Gaussian surrogates at the posterior's N_eff, so each row gets a null, a p-value and σ_sig.
 - Multimodality through GMM-BIC.
 - Prior railing: the marginal posterior density at a finite bound over its peak density, from the reflecting bounded KDE, with a flag threshold calibrated on the zoo's railed cases.
-- Chain health from session 5 (τ, effective sample size, split-chain tests, informational R̂, and acceptance and swap rates for eryn backends, from the counts and proposals in `Chains`) as diagnostic rows.
+- Chain health from session 5 (τ, effective sample size, split-chain tests, informational R̂, and acceptance and swap rates for eryn backends, from the counts and proposals in `Chains`) as diagnostic rows. The `mcmc` kernels take the cold chain shaped (step, walker, param); the split-chain test brings its own asymptotic p-value, and R̂ raises a `CoupledChainsWarning` that the rows capture.
 - Done when the zoo's bananas, mixtures and railed cases are flagged and its Gaussians are not.
 
 ### 12. Nulls and σ
@@ -228,6 +230,7 @@ Scope: `generators/`, `dataspace/` and the data-space engine function.
 Scope: `pipeline/`, `cli.py`.
 
 - pydantic models for the YAML config, and a runner that writes `results.parquet` and its provenance, including the config hash. All keys derive from one config seed.
+- Chain reduction through `mcmc.reduce_chains`, with the burn-in and thinning in the config, and each run's `ReductionRecord` written next to the results.
 - `mixed-signals run config.yaml`, including the dry-run cost estimate.
 - Done when an example config runs from the shell and gives the same table again from the same seed.
 

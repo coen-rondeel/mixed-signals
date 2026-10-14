@@ -38,6 +38,28 @@
    :show-inheritance:
 ```
 
+## MCMC tools
+
+```{eval-rst}
+.. automodule:: mixed_signals.mcmc
+
+.. automodule:: mixed_signals.mcmc.autocorr
+   :members:
+
+.. automodule:: mixed_signals.mcmc.ess
+   :members:
+
+.. automodule:: mixed_signals.mcmc.reduce
+   :members:
+```
+
+## Marginal metrics
+
+```{eval-rst}
+.. automodule:: mixed_signals.metrics.marginal
+   :members:
+```
+
 ## Validation zoo
 
 ```{eval-rst}

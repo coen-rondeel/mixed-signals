@@ -49,7 +49,7 @@ In v1:
 
 ## Decisions so far
 
-The developers have agreed 130 decisions: 88 from rounds 1–8, the repository setup and the design close-out, 7 from roadmap session 1 (Foundations), 7 from roadmap session 2 (Sample containers) and 14 from roadmap session 3 (Validation zoo), all on 2026-10-13, and 14 from roadmap session 4 (Transforms and whitening) on 2026-10-14.
+The developers have agreed 142 decisions: 88 from rounds 1–8, the repository setup and the design close-out, 7 from roadmap session 1 (Foundations), 7 from roadmap session 2 (Sample containers) and 14 from roadmap session 3 (Validation zoo), all on 2026-10-13, and 14 from roadmap session 4 (Transforms and whitening) and 12 from roadmap session 5 (MCMC tools), both on 2026-10-14.
 
 | Topic | Decision |
 | --- | --- |
@@ -121,7 +121,7 @@ The developers have agreed 130 decisions: 88 from rounds 1–8, the repository s
 | Transforms | Forward, inverse, log\|J\| and full Jacobian, which defaults to `jax.jacfwd` |
 | Domain-agnostic core | GW conventions, readers, waveform helpers and the PSD-weighted inner product live in `gw/` |
 | Core objects | `ParamSpace`, `Chains`, `SampleSet`, `Transform`, `Estimator` and `Result`, with the fields under Data model |
-| Effective sample size | An optional `n_eff` per batch and posterior, set by `reduce` or the user; Kish ESS of the weights by default |
+| Effective sample size | An optional `n_eff` per batch and posterior, set by `reduce_chains` or the user; Kish ESS of the weights by default |
 | Structure layering | equinox for anything crossing jit, pydantic for configs, `ParamSpace` and provenance, polars for results; metadata outside pytrees |
 | Comparison topologies | Against a reference (mode A default) and all pairs (mode B default) |
 | KL direction | Both directions, as separate rows, in modes A and B |
@@ -183,6 +183,18 @@ The developers have agreed 130 decisions: 88 from rounds 1–8, the repository s
 | Composition | `Compose` applies its transforms from left to right, and the space column joins their descriptions with " \| " |
 | Weighted widths | The unbiased reliability-weight covariance of `numpy.cov` with `aweights`, computed on samples shifted by the sample of largest weight; the package convention for widths |
 | Densities under transforms | `map_sample_set` subtracts ln\|det ∂f/∂x\| from `log_prior` and `log_q` and keeps `log_like`, `log_weights` and `n_eff` |
+| τ estimator | emcee's walker-averaged autocorrelation function, truncated by Geyer's initial monotone sequence of lag pairs with the antithetic correction of Vehtari et al. (2021); it replaces Sokal's window, which gives τ ≈ 0 or below for anticorrelated chains |
+| τ floor and ESS | τ is floored at 1/log₁₀ S for S draws; diagnostic rows report the raw S/τ, above S for antithetic chains |
+| Reduced `n_eff` | N/τ_k of the slowest parameter for N kept samples, with τ_k from every k-th lag of the full autocorrelation function, clipped to [1, N] |
+| Burn-in | An explicit number of steps, recorded; nothing is detected automatically, and the split-chain KS test flags a remaining transient |
+| Thinning factor | For `thin="tau"`, the largest max(1, ⌈τ − 2ε⌉) over the parameters, with ε the a priori error of τ, so noise in τ does not thin uncorrelated chains; the split-chain test uses the same factor per parameter |
+| R̂ form | The larger of the rank-normalised split-R̂ of the draws and of the folded draws |
+| KS kernel | One weighted two-sample KS statistic in `metrics/marginal.py`, built in session 5 for the split-chain test and reused by session 8 |
+| Split-chain KS output | The statistic and its asymptotic Kolmogorov p-value, with the halves thinned per parameter and pooled over the walkers |
+| Reduction record | A frozen pydantic `ReductionRecord`: chain shape, cold index, burn-in, thinning factor, τ and τ_k, `n_eff` and the SHA-256 of the chains; `reduce_chains` with the recorded burn-in and factor repeats it exactly |
+| emcee in tests | emcee joins the test group as the reference for the autocorrelation function and τ, next to eryn's estimator |
+| MCMC validity checks | Fewer than 50τ steps and lag pairs positive to the end warn; walkers that never move leave the average, and τ is NaN when none moves; R̂ warns below 50 effective samples per split chain |
+| MCMC interfaces | The τ, ESS, split-chain KS and R̂ kernels take arrays shaped (step, walker, param); `reduce_chains` takes `Chains` |
 
 ## Design principles
 
@@ -215,8 +227,8 @@ Comparisons run on flat samples shaped (B, K, N, D); diagnostics also read chain
 
 - Per branch: chain (nsteps, ntemps, nwalkers, nleaves, ndim); log_like and log_prior (nsteps, ntemps, nwalkers); betas (nsteps, ntemps). Chains read from an eryn backend also carry the acceptance counts (ntemps, nwalkers) and the accepted swaps between neighbouring temperatures (ntemps − 1), each with the number of proposals behind it: eryn counts over the whole run, so the stored steps of a cut or thinned chain are not the denominator of a rate. `log_like` and `log_prior` are optional, for samplers that store only the log posterior; a run with one temperature may also come as (nsteps, nwalkers, ndim), as from emcee.
 - v1 reads the cold chain (β = 1) of a single branch from a run with one independent sampler. Runs with several leaves wait for the catalog work, because leaves are not batch entries. Diagnostics read chains directly. Comparisons use flat samples from an explicit, recorded reduction: cold chain, burn-in, thinning by τ. The package ships these tools; pipelines take reduction as an optional argument, and direct metric calls assume cleaned samples.
-- τ comes from our own estimator of walker-averaged autocorrelation functions with automatic windowing (Sokal 1997; Goodman and Weare 2010), with eryn's and emcee's estimators as reference examples.
-- R̂ assumes independent chains (Gelman and Rubin 1992), but eryn's ensemble moves couple the walkers, and the emcee documentation advises against Gelman-Rubin across the walkers of one ensemble. `diagnose` therefore reports rank-normalised split-R̂ across walkers (Vehtari et al. 2021) only as an informational row, always with a warning that the walkers are coupled; it never decides pass/fail.
+- τ comes from our own estimator: the walker-averaged autocorrelation function of emcee (Foreman-Mackey 2017), summed over all lags as Goodman and Weare (2010) define τ, and truncated by Geyer's initial monotone sequence (Geyer 1992) with the antithetic correction of Vehtari et al. (2021). eryn's and emcee's estimators serve as reference examples in the tests. Sokal's automatic window (Sokal 1997), which emcee uses, gives τ ≈ 0 or below for anticorrelated chains.
+- R̂ assumes independent chains (Gelman and Rubin 1992), but eryn's ensemble moves couple the walkers, and the emcee documentation advises against Gelman-Rubin across the walkers of one ensemble. `diagnose` therefore reports rank-normalised split-R̂ across walkers (Vehtari et al. 2021), the larger of the values for the draws and the folded draws, only as an informational row, always with a warning that the walkers are coupled; it never decides pass/fail.
 
 **Core objects (Decided)**
 
@@ -229,11 +241,13 @@ Comparisons run on flat samples shaped (B, K, N, D); diagnostics also read chain
 | `Estimator` | Gaussian, bounded KDE, kNN and GMM; classifier and normalizing-flow placeholders |
 | `Result` | One row per problem, pair, metric, estimator, space and parameter subset, with the columns under Statistical reporting |
 
-**Effective sample size (Decided).** `n_eff` sizes every null and every subsample. `reduce` sets it from τ, and users may set it for correlated samples; otherwise it is the Kish effective sample size of `log_weights` (Kish 1965), which assumes independent samples. A given `n_eff` lies between 1 and the number of samples with positive weight, the range of the Kish value, because nulls cannot subsample more samples than exist.
+**Effective sample size (Decided).** `n_eff` sizes every null and every subsample. `reduce_chains` sets it from τ_k of the thinned chain, and users may set it for correlated samples; otherwise it is the Kish effective sample size of `log_weights` (Kish 1965), which assumes independent samples. A given `n_eff` lies between 1 and the number of samples with positive weight, the range of the Kish value, because nulls cannot subsample more samples than exist.
 
 **Sample containers (session 2).** Every input layout becomes (B, K, N, D) with float64 fields. `log_weights` stay unnormalised; methods normalise them per posterior where needed. Inputs narrower than float64 are cast with a `PrecisionWarning`, because neighbouring float32 values differ by up to 1.2 × 10⁻⁷ of their magnitude (IEEE 2019). The constructors check shapes and types always, and values (finite samples, log weights without NaN or +∞, a positive weight per posterior, the `n_eff` range, whole and consistent counts) when the inputs are concrete; inside `jax.jit` the values are unknown. NumPy inputs are copied into JAX; torch and CuPy arrays share memory through DLPack (Consortium for Python Data API Standards 2021), so they must not change in place afterwards.
 
 **Transforms and whitening (session 4).** A `Transform` maps the parameter vectors of one problem, at points of any leading shape; `jax.vmap` gives one transform per problem. Its log-determinant moves `log_prior` and `log_q` with the samples (Papamakarios et al. 2021), and the Jacobian of its inverse maps Fisher matrices as Γ′ = JᵀΓJ, because the information form is invariant under a change of parameters (Jeffreys 1946). `Whitening` groups the parameters with `ParamSpace.axis_blocks`: it centres and whitens the Euclidean block with ZCA-cor (Kessy, Lewin and Strimmer 2018), divides each circle by its circular standard deviation (Mardia and Jupp 2000) and leaves sphere pairs alone. Reference whitening takes the covariance of one posterior, pooled whitening the mean of the two covariances of a pair (Mahalanobis 1936; Johnson and Wichern 2007), and Fisher whitening the marginal blocks of Γ⁻¹, the posterior covariance at high signal-to-noise ratio (Vallisneri 2008). The covariance of the pooled samples would shrink a Mahalanobis shift d to d/√(1 + d²/4). Covariances are the unbiased weighted estimates of `numpy.cov` with `aweights` (Harris et al. 2020), computed on samples shifted by the sample of largest weight, so a constant parameter gives exact zeros and a 3 mHz offset cancels before any sum (Chan, Golub and LeVeque 1983). Checks act on matrices scaled to unit diagonal, whose condition number lies within a factor D of the best diagonal scaling (van der Sluis 1969). A singular sample covariance gives a NaN whitening with a `ValidityWarning`, an invalid Fisher matrix raises, and a condition number above 1/√ε warns, because inversion loses up to log₁₀ κ digits (Vallisneri 2008).
+
+**MCMC tools (session 5).** The kernels take chains shaped (step, walker, param) after burn-in. τ = Σₜ ρ(t), summed over all lags (Goodman and Weare 2010), comes from emcee's average of each walker's autocorrelation function (Foreman-Mackey 2017), truncated by Geyer's initial monotone sequence of lag pairs (Geyer 1992), plus the next even lag when it is positive (Vehtari et al. 2021), and floored at 1/log₁₀ S, so a chain holds at most S log₁₀ S effective samples. Sokal's window (Sokal 1997) gave −0.003 for an AR(1) chain with φ = −0.5, whose τ is 1/3, and −0.80 for φ = −0.9, whose τ is 0.053; Geyer's pairs recover the first and stop at the floor for the second, and on AR(1) chains with φ of 0.9 and 0.95 the estimate has about 60% of the scatter of emcee's. Each walker is centred on its own mean, so its autocorrelations sum to ½ over all lags; lag pairs that stay positive to the end of the chain therefore put τ at its floor, and warn as a sign of too short chains. The ESS is S·W/τ. Thinning keeps every k-th step with k = max(1, ⌈τ − 2ε⌉) and ε = τ√(2(2M + 1)/(SW)), the a priori error of a sum to lag M (Madras and Sokal 1988; Wolff 2004): with ⌈τ⌉ alone, noise put τ above 1 in 60% of runs of uncorrelated chains and halved their samples. A reduction keeps the cold chain, drops an explicit burn-in, thins by the largest factor over the parameters and sets `n_eff` = N/τ_k, clipped to [1, N], with τ_k from every k-th lag of the full autocorrelation function, which matched (1 + φᵏ)/(1 − φᵏ) of AR(1) chains within 1%. The split-chain test compares the thinned halves pooled over the walkers with the weighted KS statistic of `metrics/marginal.py` and the limiting Kolmogorov distribution (Smirnov 1948); its p-values were uniform for stationary chains. R̂ uses average ranks for ties and Blom's normal scores (Blom 1958), and is NaN for a parameter that never moves.
 
 **Structure layering (Decided)**
 
@@ -262,7 +276,7 @@ Four engines share the data model and declare what they need. The menus below ar
 - MMD uses a Gaussian kernel whose bandwidth is the median pairwise distance of the pooled whitened samples (Gretton et al. 2012). It is fixed once per comparison, so the observed value and the null draws share it, and it is recorded in the recipe.
 - Sliced W2 runs on the Euclidean block only, because slicing ignores circles and spheres.
 - C2ST and the normalizing-flow estimator are placeholders: their functions exist with final signatures and raise `NotImplementedError` until the classifier and its training setup are chosen.
-- Split-chain KS compares the τ-thinned halves of a chain, because the test assumes independent draws (Brooks, Giudici and Philippe 2003).
+- Split-chain KS compares the τ-thinned halves of a chain, pooled over the walkers, because the test assumes independent draws (Brooks, Giudici and Philippe 2003); its p-value comes from the limiting Kolmogorov distribution (Smirnov 1948) and is approximate for coupled walkers.
 - Gaussianity and dependence statistics are compared with Gaussian surrogates; see Null construction.
 - The prior-railing score is the marginal posterior density at a finite bound divided by its peak density, both from the reflecting bounded KDE. No paper defines a railing diagnostic. The LVK tool pe-configurator checks chirp-mass railing with a histogram; our flag threshold is calibrated on the zoo's railed cases and shown on the validation page.
 
@@ -504,7 +518,7 @@ mixed-signals/
 └── docs/                   # Sphinx, references.bib, validation page
 ```
 
-Decided at setup: core dependencies are jax, ott-jax, equinox, jaxtyping, numpy, polars, pydantic and pyyaml; session 3 added scipy, which JAX already requires, as a core dependency for later sessions; the zoo computes in JAX, and the tests use SciPy as an independent check, with `scipy-stubs` in the lint group. jaxtyping is listed directly because every kernel imports it. eryn is the `eryn` extra, because its runtime dependencies include matplotlib, pandas, seaborn and pytest, and only `io/eryn_backend.py` and `priors/eryn_container.py` use it; both import it lazily. The other extras are plot (cantuccio), report (marimo, cantuccio), torch, and cuda12 and cuda13, which install the JAX CUDA plugin with the matching CuPy wheel and exclude each other; the gw extra arrives with its module. The dev dependency group installs every extra except the CUDA ones, with CPU-only torch from the PyTorch index on Linux and Windows, beartype sits in the test group, and Sphinx in the docs group, where sphinxcontrib-bibtex renders the citations from `docs/references.bib`.
+Decided at setup: core dependencies are jax, ott-jax, equinox, jaxtyping, numpy, polars, pydantic and pyyaml; session 3 added scipy, which JAX already requires, as a core dependency for later sessions; the zoo computes in JAX, and the tests use SciPy as an independent check, with `scipy-stubs` in the lint group. jaxtyping is listed directly because every kernel imports it. eryn is the `eryn` extra, because its runtime dependencies include matplotlib, pandas, seaborn and pytest, and only `io/eryn_backend.py` and `priors/eryn_container.py` use it; both import it lazily. The other extras are plot (cantuccio), report (marimo, cantuccio), torch, and cuda12 and cuda13, which install the JAX CUDA plugin with the matching CuPy wheel and exclude each other; the gw extra arrives with its module. The dev dependency group installs every extra except the CUDA ones, with CPU-only torch from the PyTorch index on Linux and Windows, beartype and emcee sit in the test group, and Sphinx in the docs group, where sphinxcontrib-bibtex renders the citations from `docs/references.bib`.
 
 ## Open questions
 
@@ -538,10 +552,11 @@ Every method and assumption above cites the sources below. Each module cites the
 
 | Method or assumption | Sources |
 | --- | --- |
-| Integrated autocorrelation time τ | Sokal (1997); Goodman and Weare (2010); Foreman-Mackey et al. (2013); emcee documentation |
-| Effective sample size | Geyer (1992); Kish (1965) for weights |
-| Split-chain KS | Brooks, Giudici and Philippe (2003); LaplacesDemon R package, `KS.Diagnostic` |
-| R̂, informational only | Gelman and Rubin (1992); Vehtari et al. (2021); emcee documentation |
+| Integrated autocorrelation time τ | Geyer (1992); Vehtari et al. (2021); Goodman and Weare (2010); Sokal (1997); Foreman-Mackey et al. (2013); emcee documentation |
+| Effective sample size | Geyer (1992); Vehtari et al. (2021); Kish (1965) for weights |
+| Thinning factor; error of τ | Madras and Sokal (1988); Wolff (2004) |
+| Split-chain KS | Brooks, Giudici and Philippe (2003); LaplacesDemon R package, `KS.Diagnostic` (Hall, Hall and Statisticat 2026); Smirnov (1948) |
+| R̂, informational only | Gelman and Rubin (1992); Vehtari et al. (2021); Blom (1958); emcee documentation |
 | Acceptance rates of ensemble moves; the (step, walker, param) chain layout | Foreman-Mackey et al. (2013) |
 | Swap rates and the cold chain of parallel tempering | Vousden, Farr and Mandel (2016) |
 | eryn | Karnesis et al. (2023) |
@@ -612,7 +627,8 @@ Every method and assumption above cites the sources below. Each module cites the
 - Barr, D. R. and Sherrill, E. T. (1999). Mean and variance of truncated normal distributions. *The American Statistician* 53(4), 357–361.
 - Bhattacharyya, A. (1943). On a measure of divergence between two statistical populations defined by their probability distributions. *Bulletin of the Calcutta Mathematical Society* 35, 99.
 - Bonneel, N., Rabin, J., Peyré, G. and Pfister, H. (2015). Sliced and Radon Wasserstein barycenters of measures. *Journal of Mathematical Imaging and Vision* 51(1), 22–45.
-- Brooks, S. P., Giudici, P. and Philippe, A. (2003). On non-parametric convergence assessment for MCMC model selection. *Journal of Computational and Graphical Statistics* 12(1), 1–22.
+- Blom, G. (1958). *Statistical Estimates and Transformed Beta-Variables*. Wiley.
+- Brooks, S. P., Giudici, P. and Philippe, A. (2003). Nonparametric convergence assessment for MCMC model selection. *Journal of Computational and Graphical Statistics* 12(1), 1–22.
 - Chan, T. F., Golub, G. H. and LeVeque, R. J. (1983). Algorithms for computing the sample variance: analysis and recommendations. *The American Statistician* 37(3), 242–247.
 - Claessen, K. and Pałka, M. H. (2013). Splittable pseudorandom number generators using cryptographic hashing. *Proceedings of the 2013 ACM SIGPLAN Symposium on Haskell*, 47–58.
 - Cohen, J. (1988). *Statistical Power Analysis for the Behavioral Sciences*, 2nd edition. Lawrence Erlbaum.
@@ -646,6 +662,7 @@ Every method and assumption above cites the sources below. Each module cites the
 - Goodman, J. and Weare, J. (2010). Ensemble samplers with affine invariance. *Communications in Applied Mathematics and Computational Science* 5(1), 65–80.
 - Gretton, A., Borgwardt, K. M., Rasch, M. J., Schölkopf, B. and Smola, A. (2012). A kernel two-sample test. *Journal of Machine Learning Research* 13, 723–773.
 - Haario, H., Saksman, E. and Tamminen, J. (1999). Adaptive proposal distribution for random walk Metropolis algorithm. *Computational Statistics* 14(3), 375–395.
+- Hall, B., Hall, M. and Statisticat, LLC (2026). KS.Diagnostic: Kolmogorov-Smirnov convergence diagnostic. LaplacesDemon R package, version 16.1.8. <https://www.rdocumentation.org/packages/LaplacesDemon/versions/16.1.8/topics/KS.Diagnostic>
 - Harris, C. R. et al. (2020). Array programming with NumPy. *Nature* 585, 357–362.
 - Hellinger, E. (1909). Neue Begründung der Theorie quadratischer Formen von unendlichvielen Veränderlichen. *Journal für die reine und angewandte Mathematik* 136, 210.
 - Hermans, J., Delaunoy, A., Rozet, F., Wehenkel, A., Begy, V. and Louppe, G. (2022). A trust crisis in simulation-based inference? Your posterior approximations can be unfaithful. *Transactions on Machine Learning Research*.
@@ -665,13 +682,13 @@ Every method and assumption above cites the sources below. Each module cites the
 - Kozachenko, L. F. and Leonenko, N. N. (1987). Sample estimate of the entropy of a random vector. *Problems of Information Transmission* 23(2), 95–101.
 - Kraskov, A., Stögbauer, H. and Grassberger, P. (2004). Estimating mutual information. *Physical Review E* 69(6), 066138.
 - Kullback, S. and Leibler, R. A. (1951). On information and sufficiency. *Annals of Mathematical Statistics* 22(1), 79–86.
-- LaplacesDemon R package. KS.Diagnostic: Kolmogorov-Smirnov convergence diagnostic. <https://www.rdocumentation.org/packages/LaplacesDemon/versions/16.1.8/topics/KS.Diagnostic>
 - Leone, F. C., Nelson, L. S. and Nottingham, R. B. (1961). The folded normal distribution. *Technometrics* 3(4), 543–550.
 - Lin, J. (1991). Divergence measures based on the Shannon entropy. *IEEE Transactions on Information Theory* 37(1), 145–151.
 - Lindblom, L., Owen, B. J. and Brown, D. A. (2008). Model waveform accuracy standards for gravitational wave data analysis. *Physical Review D* 78(12), 124020.
 - Lopez-Paz, D. and Oquab, M. (2017). Revisiting classifier two-sample tests. *International Conference on Learning Representations*.
 - Lueckmann, J.-M., Boelts, J., Greenberg, D., Gonçalves, P. and Macke, J. (2021). Benchmarking simulation-based inference. *Proceedings of AISTATS*, PMLR 130, 343–351.
 - Lyons, R. (2013). Distance covariance in metric spaces. *Annals of Probability* 41(5), 3284–3305.
+- Madras, N. and Sokal, A. D. (1988). The pivot algorithm: a highly efficient Monte Carlo method for the self-avoiding walk. *Journal of Statistical Physics* 50(1–2), 109–186.
 - Mahalanobis, P. C. (1936). On the generalised distance in statistics. *Proceedings of the National Institute of Sciences of India* 2(1), 49–55.
 - Mardia, K. V. and Jupp, P. E. (2000). *Directional Statistics*. Wiley.
 - Moran, P. A. P. (1948). Rank correlation and product-moment correlation. *Biometrika* 35(1/2), 203–206.
@@ -700,7 +717,7 @@ Every method and assumption above cites the sources below. Each module cites the
 - Sejdinovic, D., Sriperumbudur, B., Gretton, A. and Fukumizu, K. (2013). Equivalence of distance-based and RKHS-based statistics in hypothesis testing. *Annals of Statistics* 41(5), 2263–2291.
 - Sejdinovic, D., Strathmann, H., Garcia, M. L., Andrieu, C. and Gretton, A. (2014). Kernel adaptive Metropolis-Hastings. *Proceedings of the 31st International Conference on Machine Learning*, PMLR 32(2), 1665–1673.
 - Smirnov, N. (1948). Table for estimating the goodness of fit of empirical distributions. *Annals of Mathematical Statistics* 19(2), 279–281.
-- Sokal, A. D. (1997). Monte Carlo methods in statistical mechanics: foundations and new algorithms. In *Functional Integration: Basics and Applications*, NATO ASI Series B 361. Plenum.
+- Sokal, A. D. (1997). Monte Carlo methods in statistical mechanics: foundations and new algorithms. In *Functional Integration: Basics and Applications*, NATO ASI Series B 361, 131–192. Springer US.
 - Spearman, C. (1904). The proof and measurement of association between two things. *American Journal of Psychology* 15(1), 72–101.
 - Stephens, M. A. (1974). EDF statistics for goodness of fit and some comparisons. *Journal of the American Statistical Association* 69(347), 730–737.
 - Székely, G. J. and Rizzo, M. L. (2013). Energy statistics: A class of statistics based on distances. *Journal of Statistical Planning and Inference* 143(8), 1249–1272.
@@ -715,3 +732,4 @@ Every method and assumption above cites the sources below. Each module cites the
 - Virtanen, P. et al. (2020). SciPy 1.0: fundamental algorithms for scientific computing in Python. *Nature Methods* 17, 261–272.
 - Vousden, W. D., Farr, W. M. and Mandel, I. (2016). Dynamic temperature selection for parallel tempering in Markov chain Monte Carlo simulations. *Monthly Notices of the Royal Astronomical Society* 455(2), 1919–1937.
 - Wang, Q., Kulkarni, S. R. and Verdú, S. (2009). Divergence estimation for multidimensional densities via k-nearest-neighbor distances. *IEEE Transactions on Information Theory* 55(5), 2392–2405.
+- Wolff, U. (2004). Monte Carlo errors with less errors. *Computer Physics Communications* 156(2), 143–153.
