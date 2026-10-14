@@ -85,6 +85,8 @@ def circular_mean(angles: np.ndarray, period: float) -> float:
 
 def signed_arc(origin: Any, target: Any, period: float) -> Any:
     """Return the shortest signed arc from origin to target."""
+    # ! x % inf is an invalid operation: NumPy warns on Linux but not on macOS.
+    assert math.isfinite(period), "signed_arc needs the finite period of a circle"
     return (target - origin + 0.5 * period) % period - 0.5 * period
 
 
@@ -148,17 +150,23 @@ def estimate_row(
     second = case.names.index(pair[1]) if len(pair) == 2 else first
     columns = [case.space.index(parameter) for parameter in parameters]
     first_draws, second_draws = draws[first][:, columns], draws[second][:, columns]
-    circle = [
-        case.space.parameters[column].topology is Topology.CIRCLE for column in columns
-    ]
-    period = case.space.parameters[columns[0]].period or math.inf
+    periods = [case.space.parameters[column].period for column in columns]
+    period = periods[0] or math.inf
 
     def difference(slice_: slice) -> np.ndarray:
         means_first = first_draws[slice_].mean(axis=0)
         means_second = second_draws[slice_].mean(axis=0)
-        gap = means_second - means_first
-        arc = signed_arc(means_first, means_second, period)
-        return np.asarray(np.where(circle, arc, gap))
+        # * Each circle wraps with its own period; the other axes take the plain gap.
+        return np.array(
+            [
+                mean_second - mean_first
+                if column_period is None
+                else signed_arc(mean_first, mean_second, column_period)
+                for mean_first, mean_second, column_period in zip(
+                    means_first, means_second, periods, strict=True
+                )
+            ]
+        )
 
     if metric == "mean":
         return (*mean_estimate(first_draws[:, 0]), 0.0)
