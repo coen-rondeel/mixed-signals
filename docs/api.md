@@ -24,6 +24,20 @@
    :members:
 ```
 
+## Transforms and whitening
+
+```{eval-rst}
+.. automodule:: mixed_signals.transforms
+
+.. automodule:: mixed_signals.transforms.base
+   :members:
+   :show-inheritance:
+
+.. automodule:: mixed_signals.transforms.whiten
+   :members:
+   :show-inheritance:
+```
+
 ## Validation zoo
 
 ```{eval-rst}

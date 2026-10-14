@@ -23,6 +23,10 @@ Effective sample size
     samples; set ``n_eff`` for correlated samples. A given ``n_eff`` must lie
     between 1 and the number of samples with positive weight, the range of
     the Kish value.
+Weighted statistics
+    :func:`weighted_covariance` and :func:`circular_standard_deviation` are
+    the package's estimators of widths from weighted samples, shared by the
+    transforms, metrics and diagnostics.
 Precision
     Every field is stored in float64. Narrower float inputs are cast and raise
     a :class:`~mixed_signals.errors.PrecisionWarning`, because the cast cannot
@@ -40,7 +44,9 @@ Checks
     types are checked.
 
 References:
-    :cite:t:`kish1965survey`; :cite:t:`ieee2019ieee`.
+    :cite:t:`kish1965survey`; :cite:t:`ieee2019ieee`;
+    :cite:t:`harris2020array`; :cite:t:`chan1983algorithms`;
+    :cite:t:`mardia2000directional`.
 """
 
 import dataclasses
@@ -116,6 +122,92 @@ def kish_effective_sample_size(
     return jnp.exp(
         2 * logsumexp(log_weights, axis=-1) - logsumexp(2 * log_weights, axis=-1)
     )
+
+
+def weighted_covariance(
+    samples: Float[Array, "*leading sample param"],
+    log_weights: Float[Array, "*leading sample"],
+) -> tuple[Float[Array, "*leading param"], Float[Array, "*leading param param"]]:
+    """Return the weighted mean and the unbiased weighted covariance of samples.
+
+    With the weights wᵢ normalised to sum to one, the mean is x̄ = Σ wᵢ xᵢ and
+    the covariance Σ wᵢ (xᵢ − x̄)(xᵢ − x̄)ᵀ / (1 − Σ wᵢ²), the reliability-weight
+    estimator of ``numpy.cov`` with ``aweights`` (Harris et al. 2020). It is
+    unbiased for independent samples and reduces to the usual 1/(N − 1) form
+    for equal weights. A single sample with positive weight gives NaN.
+
+    The samples are first shifted by the sample of largest weight, which
+    avoids cancellation (Chan, Golub and LeVeque 1983): a parameter that
+    never changes gets a variance of exactly zero, and an offset far above
+    the width, such as a frequency of 3 mHz known to 1e-11 Hz, cancels before
+    any sum.
+
+    Args:
+        samples: Parameter values, shaped (..., N, D).
+        log_weights: Natural logarithms of unnormalised weights, shaped
+            (..., N); −∞ for zero.
+
+    Returns:
+        The mean, shaped (..., D), and the covariance, shaped (..., D, D).
+
+    References:
+        :cite:t:`harris2020array`; :cite:t:`chan1983algorithms`.
+    """
+    weights = jax.nn.softmax(log_weights, axis=-1)
+    anchor = jnp.take_along_axis(
+        samples, jnp.argmax(log_weights, axis=-1)[..., None, None], axis=-2
+    )
+    shifted = samples - anchor
+    offset = jnp.einsum("...s,...sp->...p", weights, shifted)
+    centred = shifted - offset[..., None, :]
+    scatter = jnp.einsum("...s,...sp,...sq->...pq", weights, centred, centred)
+    correction = 1 - jnp.sum(weights**2, axis=-1)
+    return anchor[..., 0, :] + offset, scatter / correction[..., None, None]
+
+
+def circular_standard_deviation(
+    samples: Float[Array, "*leading sample"],
+    log_weights: Float[Array, "*leading sample"],
+    period: float,
+) -> Float[Array, " *leading"]:
+    """Return the weighted circular standard deviation of values on a circle.
+
+    The values x map to angles 2πx/P, and R̄ is the length of the weighted
+    mean of the unit vectors exp(2πi xᵢ/P), for weights summing to one. The
+    circular standard deviation √(−2 ln R̄), converted back to the units of x by
+    the factor P/(2π), equals σ for a normal of width σ wrapped onto the circle
+    (Mardia and Jupp 2000). It is zero when all values coincide and grows
+    without bound as R̄ falls to zero.
+
+    The angles are measured from the value of largest weight, which leaves R̄
+    unchanged, and 1 − R̄² follows from half-angle sines, so narrow circles keep
+    their width and coinciding values give exactly zero, as in the shifted
+    computation of :func:`weighted_covariance`.
+
+    Args:
+        samples: Values on the circle, shaped (..., N).
+        log_weights: Natural logarithms of unnormalised weights, shaped
+            (..., N); −∞ for zero.
+        period: Period P of the circle.
+
+    Returns:
+        The circular standard deviation in the units of the values, shaped
+        (...).
+
+    References:
+        :cite:t:`mardia2000directional`.
+    """
+    weights = jax.nn.softmax(log_weights, axis=-1)
+    anchor = jnp.take_along_axis(
+        samples, jnp.argmax(log_weights, axis=-1)[..., None], axis=-1
+    )
+    half_angles = jnp.pi * (samples - anchor) / period
+    total = jnp.sum(weights, axis=-1)
+    # * With versine v = Σ w (1 − cos Δφ) and sine s = Σ w sin Δφ, R̄² = (1 − v)² + s².
+    versine = jnp.sum(weights * 2 * jnp.sin(half_angles) ** 2, axis=-1) / total
+    sine = jnp.sum(weights * jnp.sin(2 * half_angles), axis=-1) / total
+    deficit = jnp.clip(2 * versine - versine**2 - sine**2, 0.0, 1.0)
+    return jnp.sqrt(-jnp.log1p(-deficit)) * period / (2 * jnp.pi)
 
 
 class SampleSet(eqx.Module):

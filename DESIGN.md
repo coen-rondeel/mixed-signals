@@ -49,7 +49,7 @@ In v1:
 
 ## Decisions so far
 
-The developers have agreed 116 decisions: 88 from rounds 1–8, the repository setup and the design close-out, 7 from roadmap session 1 (Foundations), 7 from roadmap session 2 (Sample containers) and 14 from roadmap session 3 (Validation zoo), all on 2026-10-13.
+The developers have agreed 130 decisions: 88 from rounds 1–8, the repository setup and the design close-out, 7 from roadmap session 1 (Foundations), 7 from roadmap session 2 (Sample containers) and 14 from roadmap session 3 (Validation zoo), all on 2026-10-13, and 14 from roadmap session 4 (Transforms and whitening) on 2026-10-14.
 
 | Topic | Decision |
 | --- | --- |
@@ -81,7 +81,7 @@ The developers have agreed 116 decisions: 88 from rounds 1–8, the repository s
 | Fixed and discrete parameters | With eryn priors, `DeltaFunction` parameters are dropped and discrete priors stay out of v1; otherwise nothing is dropped |
 | Periodic parameters | A non-Euclidean space inside optimal transport |
 | Sky position | A coupled sphere topology with great-circle OT costs |
-| Periodic whitening | For now, whiten the Euclidean block only and scale periodic axes by circular spread; optional |
+| Periodic whitening | For now, whiten the Euclidean block only and scale periodic axes by their circular standard deviation √(−2 ln R̄); optional |
 | Nulls | Every comparison ships with a finite-sample null |
 | Null construction | Configurable; each method has a standard default |
 | Null defaults | 200 resamples, both sets subsampled to the smaller N_eff; more resamples for significance claims |
@@ -169,6 +169,20 @@ The developers have agreed 116 decisions: 88 from rounds 1–8, the repository s
 | Zoo railed cases | Unit normals truncated at one bound, one per offset, with the railing score, truncated moments and closed-form KL |
 | Zoo AR(1) chains | AR(1) chains as `Chains` with τ = (1 + φ)/(1 − φ), built in session 3 for sessions 5, 11 and 12 |
 | Zoo base Gaussians | The shift and scale builders take an optional mean and covariance, and the rotation builder a mean and per-parameter scales; shifts stay in Mahalanobis units |
+| Pooled whitening | The mean of the within-posterior covariances, each posterior weighted equally, the pooled within-group covariance of the Mahalanobis distance; circles take the root mean square of their circular standard deviations. The covariance of the pooled samples would shrink a shift d to d/√(1 + d²/4) |
+| Pooling scope | Pooled whitening pools the two posteriors of each pair, so a row does not depend on the other posteriors of a run |
+| Whitening rotation | ZCA-cor, W = P^(−1/2) V^(−1/2): whitened axes keep their parameter names, and the units of the parameters do not matter |
+| Z-score mode | `decorrelate=False` scales the Euclidean block without decorrelating it, so interval bounds map exactly |
+| Fisher whitening | Γ⁻¹ is the covariance: the Euclidean block takes its marginal block of Γ⁻¹ and each circle the square root of its diagonal entry; Γ must be finite, symmetric and positive definite; rank truncation is deferred |
+| Conditioning | Checks act on matrices scaled to unit diagonal: singular below D·ε times the largest eigenvalue, and a `ValidityWarning` above the condition number 1/√ε ≈ 6.7e7 |
+| Singular widths | A singular covariance from samples gives a NaN whitening and a `ValidityWarning` that names the axes, so the other problems of a batch go on; an invalid Fisher matrix raises ValueError; inside jit, NaN |
+| Whitened bounds | Decorrelated Euclidean axes become real lines without units; methods that need bounds run in the original space; circles stay circles, of period P/s |
+| Spheres in whitening | Sphere pairs pass unchanged; how a sphere cost weighs against the whitened block belongs to the OT session |
+| Axis blocks | `ParamSpace.axis_blocks` gives the positions of the Euclidean block (real and interval axes outside spheres), the circles and the sphere pairs, the port of catpylisa's geometry schema |
+| Transform API | One problem per object, with methods on points of any leading shape: `forward`, `inverse`, `log_abs_det_jacobian`, `jacobian`, `map_fisher`, `map_space`, `map_sample_set` and `description`; B problems get B transforms through `jax.vmap` |
+| Composition | `Compose` applies its transforms from left to right, and the space column joins their descriptions with " \| " |
+| Weighted widths | The unbiased reliability-weight covariance of `numpy.cov` with `aweights`, computed on samples shifted by the sample of largest weight; the package convention for widths |
+| Densities under transforms | `map_sample_set` subtracts ln\|det ∂f/∂x\| from `log_prior` and `log_q` and keeps `log_like`, `log_weights` and `n_eff` |
 
 ## Design principles
 
@@ -219,6 +233,8 @@ Comparisons run on flat samples shaped (B, K, N, D); diagnostics also read chain
 
 **Sample containers (session 2).** Every input layout becomes (B, K, N, D) with float64 fields. `log_weights` stay unnormalised; methods normalise them per posterior where needed. Inputs narrower than float64 are cast with a `PrecisionWarning`, because neighbouring float32 values differ by up to 1.2 × 10⁻⁷ of their magnitude (IEEE 2019). The constructors check shapes and types always, and values (finite samples, log weights without NaN or +∞, a positive weight per posterior, the `n_eff` range, whole and consistent counts) when the inputs are concrete; inside `jax.jit` the values are unknown. NumPy inputs are copied into JAX; torch and CuPy arrays share memory through DLPack (Consortium for Python Data API Standards 2021), so they must not change in place afterwards.
 
+**Transforms and whitening (session 4).** A `Transform` maps the parameter vectors of one problem, at points of any leading shape; `jax.vmap` gives one transform per problem. Its log-determinant moves `log_prior` and `log_q` with the samples (Papamakarios et al. 2021), and the Jacobian of its inverse maps Fisher matrices as Γ′ = JᵀΓJ, because the information form is invariant under a change of parameters (Jeffreys 1946). `Whitening` groups the parameters with `ParamSpace.axis_blocks`: it centres and whitens the Euclidean block with ZCA-cor (Kessy, Lewin and Strimmer 2018), divides each circle by its circular standard deviation (Mardia and Jupp 2000) and leaves sphere pairs alone. Reference whitening takes the covariance of one posterior, pooled whitening the mean of the two covariances of a pair (Mahalanobis 1936; Johnson and Wichern 2007), and Fisher whitening the marginal blocks of Γ⁻¹, the posterior covariance at high signal-to-noise ratio (Vallisneri 2008). The covariance of the pooled samples would shrink a Mahalanobis shift d to d/√(1 + d²/4). Covariances are the unbiased weighted estimates of `numpy.cov` with `aweights` (Harris et al. 2020), computed on samples shifted by the sample of largest weight, so a constant parameter gives exact zeros and a 3 mHz offset cancels before any sum (Chan, Golub and LeVeque 1983). Checks act on matrices scaled to unit diagonal, whose condition number lies within a factor D of the best diagonal scaling (van der Sluis 1969). A singular sample covariance gives a NaN whitening with a `ValidityWarning`, an invalid Fisher matrix raises, and a condition number above 1/√ε warns, because inversion loses up to log₁₀ κ digits (Vallisneri 2008).
+
 **Structure layering (Decided)**
 
 - equinox modules for anything crossing jit: samples, weights, transforms, estimator state.
@@ -239,7 +255,7 @@ Four engines share the data model and declare what they need. The menus below ar
 
 **Method details**
 
-- Mean shifts are in units of the reference σ in mode A and of the pooled σ in mode B, as in Glass's Δ and Cohen's d. Width ratios are σ/σ_ref per parameter.
+- Mean shifts are in units of the reference σ in mode A and of the pooled σ in mode B, as in Glass's Δ and Cohen's d; the pooled σ is the root mean square of the two widths, the scale of the pooled z-score. Width ratios are σ/σ_ref per parameter.
 - KL rows come in both directions, in both modes. In mode A, KL(reference ‖ approximation) grows when the approximation is overconfident, the main failure of amortised SBI posteriors (Hermans et al. 2022); KL(approximation ‖ reference) grows when it puts mass where the reference has none.
 - JS values are in nats, the unit of the bilby validation study (Romero-Shaw et al. 2020). The joint kNN JS combines Kozachenko–Leonenko entropy estimates, JS = H(m) − ½H(p) − ½H(q), with the pooled samples standing for the mixture m.
 - The Hellinger distance comes in three forms. The Gaussian form follows from the Bhattacharyya distance D_B between the moment-matched Gaussians, H² = 1 − exp(−D_B), whose location and shape terms add (Bhattacharyya 1943; Fukunaga 1990). The marginal form uses the bounded KDE. The joint form uses the kNN Rényi-α estimator at α = ½ (Póczos and Schneider 2011), since H² = 1 − exp(−D_½/2) for the Rényi divergence D_½ (Rényi 1961). Hellinger is symmetric, so it gives one row per pair in both modes.
@@ -338,7 +354,7 @@ Distributions with known answers serve as the test suite, as the source of the �
 - **Families (Decided).** Periodic cases use wrapped normals, whose circular standard deviation equals σ (Mardia and Jupp 2000); they draw exactly, and wrapping one coordinate of a correlated normal correlates a circle with real axes. Sphere cases use von Mises-Fisher distributions (Fisher 1953), drawn by inversion on the 2-sphere (Fisher, Lewis and Embleton 1987). Rotated Gaussians turn by ±α/2, so their marginals stay identical. The mixture's partners cover moment matching, mode dropping and mode reweighting; with equal weights it is bimodal when its separation exceeds 2 (Schilling, Watkins and Watkins 2002). Railed cases share one bound, with truncated moments from Barr and Sherrill (1999). The shift and scale builders take an optional mean and covariance, and the rotation builder a mean and per-parameter scales, so whitening and float64 can be tested at GW scales.
 - **AR(1) chains (Decided).** Chains with known τ (Thompson 2010), summed over all lags as in emcee, with an optional start far from zero whose transient decays as φ^t.
 - **Checks.** The tests reproduce every reference value from draws within five standard errors, and every closed form against an independent SciPy computation; an error of 10 per cent in any reference value fails them.
-- **For session 4.** The covariance of pooled samples includes the spread between the means, which shrinks a Mahalanobis shift d to d/√(1 + d²/4), below 2 for every d. The zoo states shifts against the first posterior's covariance.
+- **Shifts and pooled whitening.** Pooled whitening averages the two covariances of a pair, so for posteriors with equal covariances it keeps the zoo's shifts, which are stated against the first posterior's covariance. The covariance of the pooled samples would shrink a Mahalanobis shift d to d/√(1 + d²/4), below 2 for every d.
 
 **Importable zoo (Decided).** `mixed_signals.zoo` is public and documented, so users can test their own metrics against it.
 
@@ -498,7 +514,7 @@ One item stays open by the developers' decision.
 
 ## Deferred
 
-Twelve items wait until the v1 core is stable; replicate runs may never come.
+Thirteen items wait until the v1 core is stable; replicate runs may never come.
 
 - **Trans-dimensional catalogs:** cross-matching and label switching, including multi-leaf eryn runs; comparing summed signals in data space avoids matching for the global check.
 - **Injection-ensemble calibration:** PP plots, SBC, TARP; needs an ensemble container with true parameters.
@@ -511,6 +527,7 @@ Twelve items wait until the v1 core is stable; replicate runs may never come.
 - **Nested-sampling weights:** converting the weights that nested samplers report into `log_weights` in `io/weights.py`; until then users pass the logarithm of those weights.
 - **Independent eryn samplers:** eryn runs with several independent samplers (`nsamplers` > 1), each of which can stop at its own step; v1 reads runs with one sampler.
 - **Weighted zoo draws:** draws from a wider proposal with `log_weights` = ln p − ln q, to test that every kernel honours weights; until then sessions 8 and 13 build weights in their tests.
+- **Rank-truncated Fisher projection:** catpylisa's projection onto the measurable directions of a singular Fisher matrix. It is not a bijection, so it has no inverse and no log-determinant; until data-space comparisons need it, Fisher whitening needs a positive-definite Γ.
 - **Independent-data tension:** the parameter-shift probability (Raveri and Hu 2019; Raveri and Doux 2021), for posteriors from independent data, such as multiband sources seen by LISA and by ground-based detectors. Modes A and B analyse the same data, where every shift is a systematic difference.
 
 ## References
@@ -565,9 +582,14 @@ Every method and assumption above cites the sources below. Each module cites the
 | PSIS k̂ | Vehtari et al. (2024) |
 | Noise-weighted inner product | Finn (1992); Cutler and Flanagan (1994) |
 | Indistinguishability, ‖δh‖ ≲ 1 | Lindblom, Owen and Brown (2008) |
-| Fisher matrix and Γ′ = JᵀΓJ | Vallisneri (2008) |
+| Fisher matrix as the high-SNR covariance; conditioning of its inverse | Vallisneri (2008) |
+| Γ′ = JᵀΓJ, the invariance of the information form | Jeffreys (1946) |
 | Energy distance in a Hilbert space | Lyons (2013) |
-| Whitening | Kessy, Lewin and Strimmer (2018) |
+| Whitening; ZCA-cor | Kessy, Lewin and Strimmer (2018) |
+| Pooled within-group covariance | Mahalanobis (1936); Johnson and Wichern (2007) |
+| Condition numbers after unit-diagonal scaling | van der Sluis (1969) |
+| Weighted covariance; shifted-data computation | Harris et al. (2020); Chan, Golub and LeVeque (1983) |
+| Densities under a change of variables; log-determinants of compositions | Papamakarios et al. (2021) |
 | Circular spread; wrapped normals | Mardia and Jupp (2000) |
 | Banana distributions | Haario, Saksman and Tamminen (1999); parameter values: Sejdinovic et al. (2014); KL to the moment-matched Gaussian: Cover and Thomas (2006) |
 | von Mises-Fisher distribution and its draws | Fisher (1953); Fisher, Lewis and Embleton (1987); Mardia and Jupp (2000) |
@@ -591,6 +613,7 @@ Every method and assumption above cites the sources below. Each module cites the
 - Bhattacharyya, A. (1943). On a measure of divergence between two statistical populations defined by their probability distributions. *Bulletin of the Calcutta Mathematical Society* 35, 99.
 - Bonneel, N., Rabin, J., Peyré, G. and Pfister, H. (2015). Sliced and Radon Wasserstein barycenters of measures. *Journal of Mathematical Imaging and Vision* 51(1), 22–45.
 - Brooks, S. P., Giudici, P. and Philippe, A. (2003). On non-parametric convergence assessment for MCMC model selection. *Journal of Computational and Graphical Statistics* 12(1), 1–22.
+- Chan, T. F., Golub, G. H. and LeVeque, R. J. (1983). Algorithms for computing the sample variance: analysis and recommendations. *The American Statistician* 37(3), 242–247.
 - Claessen, K. and Pałka, M. H. (2013). Splittable pseudorandom number generators using cryptographic hashing. *Proceedings of the 2013 ACM SIGPLAN Symposium on Haskell*, 47–58.
 - Cohen, J. (1988). *Statistical Power Analysis for the Behavioral Sciences*, 2nd edition. Lawrence Erlbaum.
 - Consortium for Python Data API Standards (2021). Python array API standard, version 2025.12: Data interchange mechanisms. <https://data-apis.org/array-api/latest/design_topics/data_interchange.html>
@@ -623,12 +646,14 @@ Every method and assumption above cites the sources below. Each module cites the
 - Goodman, J. and Weare, J. (2010). Ensemble samplers with affine invariance. *Communications in Applied Mathematics and Computational Science* 5(1), 65–80.
 - Gretton, A., Borgwardt, K. M., Rasch, M. J., Schölkopf, B. and Smola, A. (2012). A kernel two-sample test. *Journal of Machine Learning Research* 13, 723–773.
 - Haario, H., Saksman, E. and Tamminen, J. (1999). Adaptive proposal distribution for random walk Metropolis algorithm. *Computational Statistics* 14(3), 375–395.
+- Harris, C. R. et al. (2020). Array programming with NumPy. *Nature* 585, 357–362.
 - Hellinger, E. (1909). Neue Begründung der Theorie quadratischer Formen von unendlichvielen Veränderlichen. *Journal für die reine und angewandte Mathematik* 136, 210.
 - Hermans, J., Delaunoy, A., Rozet, F., Wehenkel, A., Begy, V. and Louppe, G. (2022). A trust crisis in simulation-based inference? Your posterior approximations can be unfaithful. *Transactions on Machine Learning Research*.
 - IEEE (2019). IEEE Standard for Floating-Point Arithmetic. IEEE Std 754-2019.
 - Janati, H., Muzellec, B., Peyré, G. and Cuturi, M. (2020). Entropic optimal transport between unbalanced Gaussian measures has a closed form. *Advances in Neural Information Processing Systems* 33.
 - JAX authors (2019). JAX PRNG design. JAX documentation, JAX Enhancement Proposal 263. <https://docs.jax.dev/en/latest/jep/263-prng.html>
 - JAX authors (2022). API compatibility. JAX documentation. <https://docs.jax.dev/en/latest/api_compatibility.html>
+- Jeffreys, H. (1946). An invariant form for the prior probability in estimation problems. *Proceedings of the Royal Society of London A* 186(1007), 453–461.
 - Joanes, D. N. and Gill, C. A. (1998). Comparing measures of sample skewness and kurtosis. *Journal of the Royal Statistical Society D* 47(1), 183–189.
 - Johnson, N. L., Kotz, S. and Balakrishnan, N. (1995). *Continuous Univariate Distributions*, Volume 2, 2nd edition. Wiley.
 - Johnson, R. A. and Wichern, D. W. (2007). *Applied Multivariate Statistical Analysis*, 6th edition. Pearson.
@@ -652,6 +677,7 @@ Every method and assumption above cites the sources below. Each module cites the
 - Moran, P. A. P. (1948). Rank correlation and product-moment correlation. *Biometrika* 35(1/2), 203–206.
 - Nakagawa, S., Poulin, R., Mengersen, K., Reinhold, K., Engqvist, L., Lagisz, M. and Senior, A. M. (2015). Meta-analysis of variation: ecological and evolutionary applications and beyond. *Methods in Ecology and Evolution* 6(2), 143–152.
 - National Institute of Standards and Technology (2015). Secure Hash Standard (SHS). Federal Information Processing Standards Publication 180-4.
+- Papamakarios, G., Nalisnick, E., Rezende, D. J., Mohamed, S. and Lakshminarayanan, B. (2021). Normalizing flows for probabilistic modeling and inference. *Journal of Machine Learning Research* 22(57), 1–64.
 - Payne, E., Talbot, C. and Thrane, E. (2019). Higher order gravitational-wave modes with likelihood reweighting. *Physical Review D* 100(12), 123017.
 - pe-configurator (Estelles, H., Ossokine, S. and Williams, D.). Waveform settings and prior bounds for gravitational-wave parameter estimation, MIT license. <https://pypi.org/project/pe-configurator>
 - Pettitt, A. N. (1976). A two-sample Anderson-Darling rank statistic. *Biometrika* 63(1), 161–168.
@@ -683,6 +709,7 @@ Every method and assumption above cites the sources below. Each module cites the
 - Thrane, E. and Talbot, C. (2019). An introduction to Bayesian inference in gravitational-wave astronomy: Parameter estimation, model selection, and hierarchical models. *Publications of the Astronomical Society of Australia* 36, e010.
 - Vallender, S. S. (1974). Calculation of the Wasserstein distance between probability distributions on the line. *Theory of Probability and Its Applications* 18(4), 784–786.
 - Vallisneri, M. (2008). Use and abuse of the Fisher information matrix in the assessment of gravitational-wave parameter-estimation prospects. *Physical Review D* 77(4), 042001.
+- van der Sluis, A. (1969). Condition numbers and equilibration of matrices. *Numerische Mathematik* 14(1), 14–23.
 - Vehtari, A., Gelman, A., Simpson, D., Carpenter, B. and Bürkner, P.-C. (2021). Rank-normalization, folding, and localization: An improved R̂ for assessing convergence of MCMC. *Bayesian Analysis* 16(2), 667–718.
 - Vehtari, A., Simpson, D., Gelman, A., Yao, Y. and Gabry, J. (2024). Pareto smoothed importance sampling. *Journal of Machine Learning Research* 25(72), 1–58.
 - Virtanen, P. et al. (2020). SciPy 1.0: fundamental algorithms for scientific computing in Python. *Nature Methods* 17, 261–272.

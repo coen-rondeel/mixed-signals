@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 
-from mixed_signals.core.space import Parameter, ParamSpace
+from mixed_signals.core.space import AxisBlocks, Parameter, ParamSpace
 from mixed_signals.core.topology import PolarForm, Sphere, Topology
 
 # * A galactic-binary-like space with every topology and a sky-position sphere.
@@ -122,6 +122,35 @@ def test_accessors_follow_the_sample_axis(space: ParamSpace) -> None:
     assert len(space) == 5
     assert space.index("phase") == 2
     assert space["phase"] is space.parameters[2]
+
+
+def test_axis_blocks_group_the_parameters_by_geometry(space: ParamSpace) -> None:
+    """Sphere axes belong to their sphere only; the rest are Euclidean or circles."""
+    assert space.axis_blocks == AxisBlocks(
+        euclidean=(0, 1), circles=(2,), spheres=((3, 4),)
+    )
+
+
+def test_axis_blocks_keep_azimuth_then_polar_for_every_sphere() -> None:
+    """Each sphere lists its azimuth first, whatever the parameter order."""
+    circle = {"topology": "circle", "bounds": (0.0, 2 * math.pi)}
+    space = ParamSpace.model_validate(
+        {
+            "parameters": [
+                {"name": "beta", "topology": "interval", "bounds": (-1.0, 1.0)},
+                {"name": "lambda", **circle},
+                {"name": "theta", "topology": "interval", "bounds": (0.0, math.pi)},
+                {"name": "phi", **circle},
+            ],
+            "spheres": [
+                {"azimuth": "phi", "polar": "theta", "polar_form": "colatitude"},
+                {"azimuth": "lambda", "polar": "beta", "polar_form": "sin_latitude"},
+            ],
+        }
+    )
+    assert space.axis_blocks == AxisBlocks(
+        euclidean=(), circles=(), spheres=((3, 2), (1, 0))
+    )
 
 
 def test_unknown_names_list_the_known_ones(space: ParamSpace) -> None:

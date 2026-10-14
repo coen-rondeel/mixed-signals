@@ -11,8 +11,8 @@ The implementation is split into twenty focused sessions, numbered 0 to 19. They
 | 1 | Foundations | A | 0 | Done (2026-10-13) |
 | 2 | Sample containers | A | 1 | Done (2026-10-13) |
 | 3 | Validation zoo | B | 2 | Done (2026-10-13) |
-| 4 | Transforms and whitening | B | 2 | Next |
-| 5 | MCMC tools | B | 2 | Open |
+| 4 | Transforms and whitening | B | 2 | Done (2026-10-14) |
+| 5 | MCMC tools | B | 2 | Next |
 | 6 | Estimators | B | 2 | Open |
 | 7 | eryn adapters and priors | C | 2, 4 | Open |
 | 8 | Metrics I: moments and marginals | C | 3, 6 | Open |
@@ -106,6 +106,8 @@ Scope: `transforms/base.py`, `transforms/whiten.py`.
 - Settle with the developers what pooled whitening uses. The covariance of the pooled samples includes the spread between the means, which shrinks a Mahalanobis shift d to d/√(1 + d²/4), below 2 for every d; the average of the within-posterior covariances, as in Cohen's d, does not. The zoo states its shifts against the first posterior's covariance.
 - Done when Jacobians match `jax.jacfwd`, inverses round-trip, Fisher matrices map as Γ′ = JᵀΓJ, and no periodic axis is mixed with another axis.
 
+Outcome (2026-10-14): the developers decided fourteen items, now in `DESIGN.md`, and deferred the rank-truncated Fisher projection. `ParamSpace.axis_blocks` groups the positions into the Euclidean block, the circles and the sphere pairs. A `Transform` describes one problem and maps points of any leading shape, with `jacobian` (`jax.jacfwd` by default), `map_fisher` (Γ′ = JᵀΓJ, now cited to Jeffreys 1946), `map_space`, `map_sample_set` (`log_prior` and `log_q` lose ln|det ∂f/∂x|) and a `description` for the space column; `Compose` acts from left to right and joins the descriptions with " | ". `Whitening` applies ZCA-cor to the Euclidean block, divides each circle by its circular standard deviation and leaves spheres alone. Reference whitening takes one posterior, pooled whitening the equal-weight mean of the two covariances of a pair, and Fisher whitening the marginal blocks of Γ⁻¹; `decorrelate=False` gives a z-score. Checks act on matrices scaled to unit diagonal: a singular sample covariance gives NaN and a `ValidityWarning`, an invalid Fisher matrix raises, and a condition number above 1/√ε warns. `core.samples` gained the package's widths: the unbiased weighted covariance, computed on samples shifted by the sample of largest weight, and the circular standard deviation. A separate commit fixed the session 3 zoo tests, which failed on Linux because a test helper evaluated x % inf. Later sessions build one whitening per problem with `jax.vmap`, pool the two posteriors of each pair, and take widths from `core.samples`.
+
 ### 5. MCMC tools
 
 Scope: `mcmc/autocorr.py`, `mcmc/ess.py`, `mcmc/reduce.py`.
@@ -122,13 +124,14 @@ Scope: `estimators/`.
 
 - Gaussian, bounded KDE (reflecting edges at finite interval bounds, wrapping on circles), kNN and GMM. The classifier and normalizing-flow estimators are placeholders: final signatures that raise `NotImplementedError`.
 - Estimator settings must be reusable by the plots, so that contours and metrics agree.
+- Bounded KDEs run in the original or z-scored space: decorrelated whitened axes are real lines, because their bounds become oblique.
 - Done when the estimators recover zoo densities within tolerance and respect each topology.
 
 ### 7. eryn adapters and priors
 
 Scope: `io/eryn_backend.py`, `priors/protocol.py`, `priors/eryn_container.py`.
 
-- Open first: eryn's transforms are NumPy or CuPy callables that JAX cannot jit or differentiate, so the session starts by settling with the developers how they become `Transform` objects, then builds that form. The options are JAX re-implementations of the built-in families, `jax.pure_callback` wrappers, applying them at load time, or JAX-compatible eryn priors and transform containers upstream.
+- Open first: eryn's transforms are NumPy or CuPy callables that JAX cannot jit or differentiate, so the session starts by settling with the developers how they become `Transform` objects, then builds that form. Whatever the form, it implements the session 4 `Transform` base, including `map_space` for physical bounds. The options are JAX re-implementations of the built-in families, `jax.pure_callback` wrappers, applying them at load time, or JAX-compatible eryn priors and transform containers upstream.
 - Read eryn backends into `Chains`: one branch with all its temperatures, with acceptance and swap counts and the number of proposals behind each. eryn's backend does not store `num_repeats_in_model`, so the acceptance proposals need it from the caller or the sampler. Reject runs with several independent samplers (`nsamplers` > 1), which are deferred.
 - The minimal prior protocol: `logpdf` maps (N, D) samples to (N,) values, and `rvs(size)` returns size + (D,).
 - `ParamSpace.from_eryn_priors`: names from `key_order`, and each prior's label, unit, bounds and boundary. `periodic` gives a circle; every other parameter gives an interval from its bounds, where one bound may be infinite, and `reflective` maps like no flag. eryn stores bounds in the sampling space; physical bounds come from the inverse transform. `DeltaFunction` parameters are dropped and discrete priors are rejected.
@@ -141,6 +144,7 @@ Scope: `metrics/_cap.py`, `metrics/moments.py`, `metrics/marginal.py`.
 
 - A subsampling cap for metrics that scale as N², with a warning and a keyword that sets the cap.
 - Per-parameter mean shift and width ratio; Gaussian KL in both directions, W2 and Hellinger, split into location and shape terms.
+- Widths come from `core.samples.weighted_covariance`; the pooled σ of mode B is the scale of the pooled z-score (`Whitening.from_samples` with `decorrelate=False`), so per-parameter and joint units agree.
 - Marginals: Kolmogorov-Smirnov, k-sample Anderson-Darling, one-dimensional W1, and Jensen-Shannon in nats and Hellinger with a bounded KDE.
 - Every kernel is pure JAX, honours `log_weights`, carries jaxtyping annotations and cites its sources.
 - Name the result metrics as the zoo's reference tables do (`kl`, `kl_location`, `w2`, `ks`, `js`, `ad` and so on), or rename the zoo's in the same change, so results join their truth.
@@ -160,6 +164,7 @@ Scope: `metrics/divergence.py`, `metrics/kernel.py`, `metrics/classifier.py`.
 Scope: `metrics/ot/`. The developers own the method choices, so the session opens with options, not a pick.
 
 - Costs: the wrapped difference min(|Δ|, P − |Δ|) on periodic axes, and great-circle costs on sky-position spheres.
+- Whitening divides each circle by its circular standard deviation, so circle costs use the period P/s of `Whitening.map_space`, and it leaves spheres in radians; how a sphere cost weighs against the whitened Euclidean block is this session's choice.
 - Check that each cost keeps the debiased Sinkhorn divergence non-negative. Squared geodesic costs on circles and spheres do not make exp(−c/ε) a positive definite kernel, so compare chordal costs, unsquared geodesic costs and the current costs on the zoo's periodic and sphere cases before the developers choose.
 - The Sinkhorn divergence through ott-jax, and sliced W2 on the Euclidean block.
 - Port from catpylisa's `common_tools.distances.optimal_transport` module: `geometries.py` (chordal and geodesic sphere costs, composite cost, coupling-scale calibration) and `divergence.py` (adaptive ε, Sinkhorn divergence). Read the ε-scaling notes in `ot_convergence.md`.
@@ -205,6 +210,7 @@ Scope: `engines/` (`compare` and `diagnose`) and the public API in `__init__.py`
 - A dry run that counts metric evaluations times null resamples and warns above a budget.
 - `diagnose` on raw chains and on flat samples.
 - Re-exports in `__init__.py` go below the float64 switch.
+- One whitening per problem through `jax.vmap` of `Whitening.from_samples` (the reference posterior in mode A, the two posteriors of each pair in mode B) or `from_fisher`, with its `description` in the space column. Traced whitenings do not warn, so rebuild a NaN one concretely to capture its `ValidityWarning` in the rows of its problem.
 - Done when a zoo comparison produces the full result table end to end.
 
 ### 15. Data space
@@ -213,7 +219,7 @@ Scope: `generators/`, `dataspace/` and the data-space engine function.
 
 - The minimal generator protocol that data space needs (`generate_template` and a noise model), with capability checks. The full generator contract stays deferred.
 - User code is called at the boundary in chunks, with DLPack hand-off on GPU; it may be CuPy or PyTorch.
-- Energy distance with a noise-weighted inner product supplied by the caller, and Fisher-whitened parameter distances when a Fisher matrix is available; σ_eff from the energy-distance curve, valid at linear order.
+- Energy distance with a noise-weighted inner product supplied by the caller, and Fisher-whitened parameter distances when a Fisher matrix is available, through `Whitening.from_fisher`, which needs a positive-definite Γ (rank truncation is deferred); σ_eff from the energy-distance curve, valid at linear order.
 - Reference only: `estimate_distances.py` in catpylisa's `common_tools.utils` module (waveform distances with JaxGB). The catpylisa team wrote it, so read it rather than port it.
 - Done when a toy generator gives distances in noise-σ units that match the linear-order Fisher prediction.
 

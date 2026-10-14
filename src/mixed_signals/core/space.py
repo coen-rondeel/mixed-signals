@@ -37,7 +37,7 @@ names the parameter or sphere at fault.
 import math
 import os
 from pathlib import Path
-from typing import Any
+from typing import Any, NamedTuple
 
 import yaml
 from pydantic import BaseModel, ConfigDict, field_validator, model_validator
@@ -49,6 +49,22 @@ from mixed_signals.core.topology import (
     check_sphere_azimuth,
     check_sphere_polar,
 )
+
+
+class AxisBlocks(NamedTuple):
+    """Positions of the parameters of a space, grouped by their geometry.
+
+    Transforms, estimators and optimal-transport costs treat the groups
+    differently: the Euclidean block may be rotated and scaled, a circle only
+    scaled, and a sphere pair only handled as a whole.
+    """
+
+    euclidean: tuple[int, ...]
+    """Positions of the real and interval parameters outside every sphere."""
+    circles: tuple[int, ...]
+    """Positions of the circle parameters outside every sphere."""
+    spheres: tuple[tuple[int, int], ...]
+    """Positions of the azimuth and the polar parameter of each sphere."""
 
 
 class Parameter(BaseModel):
@@ -167,6 +183,29 @@ class ParamSpace(BaseModel):
     def names(self) -> tuple[str, ...]:
         """Parameter names, in the order of the last sample axis."""
         return tuple(parameter.name for parameter in self.parameters)
+
+    @property
+    def axis_blocks(self) -> AxisBlocks:
+        """Positions of the parameters in the Euclidean block, circles and spheres.
+
+        A sphere's azimuth is a circle and its polar axis an interval, but both
+        belong to the sphere only.
+        """
+        sphere_pairs = tuple(
+            (self.index(sphere.azimuth), self.index(sphere.polar))
+            for sphere in self.spheres
+        )
+        on_sphere = {position for pair in sphere_pairs for position in pair}
+        free = [
+            (position, parameter.topology is Topology.CIRCLE)
+            for position, parameter in enumerate(self.parameters)
+            if position not in on_sphere
+        ]
+        return AxisBlocks(
+            euclidean=tuple(position for position, circle in free if not circle),
+            circles=tuple(position for position, circle in free if circle),
+            spheres=sphere_pairs,
+        )
 
     def __len__(self) -> int:
         """Return the number of parameters, the size of the last sample axis."""

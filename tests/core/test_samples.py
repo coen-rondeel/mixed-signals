@@ -9,12 +9,15 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
+from scipy import stats
 
 from mixed_signals.core.samples import (
     N_EFF_RELATIVE_TOLERANCE,
     SampleSet,
     SampleShape,
+    circular_standard_deviation,
     kish_effective_sample_size,
+    weighted_covariance,
 )
 from mixed_signals.errors import PrecisionWarning
 
@@ -174,6 +177,119 @@ def test_kish_size_of_one_dominant_weight_is_one() -> None:
     """A weight that dominates all others gives one effective sample."""
     log_weights = jnp.array([0.0, -200.0, -200.0, -200.0])
     assert float(kish_effective_sample_size(log_weights)) == pytest.approx(1.0)
+
+
+def test_weighted_covariance_matches_numpy_with_aweights(
+    rng: np.random.Generator,
+) -> None:
+    """The estimator is numpy.cov with aweights, posterior by posterior."""
+    samples = rng.normal(size=(3, 200, 4)) @ rng.normal(size=(4, 4))
+    log_weights = rng.normal(size=(3, 200))
+    mean, covariance = weighted_covariance(
+        jnp.asarray(samples), jnp.asarray(log_weights)
+    )
+    for posterior in range(3):
+        weights = np.exp(log_weights[posterior])
+        np.testing.assert_allclose(
+            mean[posterior],
+            np.average(samples[posterior], axis=0, weights=weights),
+            rtol=1e-12,
+        )
+        np.testing.assert_allclose(
+            covariance[posterior],
+            np.cov(samples[posterior].T, aweights=weights),
+            rtol=1e-12,
+        )
+
+
+def test_weighted_covariance_of_equal_weights_divides_by_n_minus_one(
+    rng: np.random.Generator,
+) -> None:
+    """Equal weights give the usual unbiased sample covariance."""
+    samples = rng.normal(size=(SAMPLE_COUNT, 3))
+    _, covariance = weighted_covariance(jnp.asarray(samples), jnp.zeros(SAMPLE_COUNT))
+    np.testing.assert_allclose(covariance, np.cov(samples.T, ddof=1), rtol=1e-12)
+
+
+def test_weighted_covariance_ignores_zero_weights(rng: np.random.Generator) -> None:
+    """Samples with log weight −∞ drop out; one positive weight gives NaN."""
+    samples = rng.normal(size=(SAMPLE_COUNT, 2))
+    log_weights = np.zeros(SAMPLE_COUNT)
+    log_weights[::2] = -np.inf
+    _, covariance = weighted_covariance(jnp.asarray(samples), jnp.asarray(log_weights))
+    np.testing.assert_allclose(covariance, np.cov(samples[1::2].T), rtol=1e-12)
+    log_weights[1:] = -np.inf
+    _, single = weighted_covariance(jnp.asarray(samples), jnp.asarray(log_weights))
+    assert bool(jnp.all(jnp.isnan(single)))
+
+
+def test_circular_standard_deviation_matches_scipy(rng: np.random.Generator) -> None:
+    """Equal weights reproduce scipy.stats.circstd on a circle of any period."""
+    lower, period = -1.0, 3.0
+    values = lower + rng.vonmises(0.4, 2.0, size=(2, 300)) * period / (2 * math.pi)
+    computed = circular_standard_deviation(
+        jnp.asarray(values), jnp.zeros(values.shape), period
+    )
+    expected = stats.circstd(values, high=lower + period, low=lower, axis=-1)
+    np.testing.assert_allclose(computed, expected, rtol=1e-12)
+
+
+def test_circular_standard_deviation_honours_weights(rng: np.random.Generator) -> None:
+    """Integer weights act like repeated values."""
+    values = rng.uniform(0.0, 1.0, size=12)
+    repeats = rng.integers(1, 5, size=12)
+    weighted = circular_standard_deviation(
+        jnp.asarray(values), jnp.log(jnp.asarray(repeats, dtype=float)), 1.0
+    )
+    repeated = circular_standard_deviation(
+        jnp.asarray(np.repeat(values, repeats)), jnp.zeros(int(repeats.sum())), 1.0
+    )
+    assert float(weighted) == pytest.approx(float(repeated), rel=1e-12)
+
+
+def test_circular_standard_deviation_of_wrapped_normals_is_their_width() -> None:
+    """A wrapped normal of width σ has circular standard deviation σ."""
+    width, period = 0.4, math.pi
+    draws = width * jax.random.normal(jax.random.key(3), (200_000,)) + 1.3
+    computed = circular_standard_deviation(draws, jnp.zeros(draws.shape), period)
+    assert float(computed) == pytest.approx(width, rel=0.01)
+
+
+def test_coinciding_values_have_exactly_zero_spread(rng: np.random.Generator) -> None:
+    """Shifting by a sample keeps rounding out of constant parameters."""
+    values = (
+        jnp.full((1_000, 2), 0.1234).at[:, 1].set(jnp.asarray(rng.normal(size=1_000)))
+    )
+    log_weights = jnp.asarray(rng.normal(size=1_000))
+    _, covariance = weighted_covariance(values, log_weights)
+    assert float(covariance[0, 0]) == 0.0
+    assert float(covariance[0, 1]) == 0.0
+    width = circular_standard_deviation(values[:, 0], log_weights, 2 * math.pi)
+    assert float(width) == 0.0
+
+
+def test_narrow_circles_keep_their_width(rng: np.random.Generator) -> None:
+    """A width of 1e-7 rad, where 1 − R̄ is near ε, matches the linear width."""
+    values = 1.0 + 1e-7 * rng.normal(size=1_000)
+    width = circular_standard_deviation(
+        jnp.asarray(values), jnp.zeros(1_000), 2 * math.pi
+    )
+    assert float(width) == pytest.approx(float(np.std(values)), rel=1e-6)
+
+
+def test_gw_scale_means_stay_within_one_float64_step(
+    rng: np.random.Generator,
+) -> None:
+    """A 3 mHz frequency known to 2e-11 Hz keeps its weighted mean to one step."""
+    values = 3e-3 + 2e-11 * rng.normal(size=5_000)
+    log_weights = rng.normal(size=5_000)
+    mean, _ = weighted_covariance(
+        jnp.asarray(values)[:, None], jnp.asarray(log_weights)
+    )
+    weights = np.exp(log_weights) / np.exp(log_weights).sum()
+    # * Differences of values within a factor of two are exact in floating point.
+    exact = 3e-3 + np.sum(weights * (values - 3e-3))
+    assert abs(float(mean[0]) - exact) <= np.spacing(3e-3)
 
 
 def test_effective_sample_size_prefers_a_given_n_eff() -> None:
