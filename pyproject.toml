@@ -111,8 +111,9 @@ conflicts = [
 ]
 
 [tool.uv.sources]
-# ! Development only: the prior setup lives on eryn's l2d-dev branch until its release.
-eryn = { git = "https://github.com/mikekatz04/Eryn", branch = "l2d-dev" }
+# ! Development only: eryn's JAX priors live on feat-jaxpriors until their release.
+# ! The branch is not pushed yet, so uv.lock still records l2d-dev; see DESIGN.md.
+eryn = { git = "https://github.com/lisa-analysis-tools/Eryn", branch = "feat-jaxpriors" }
 # * Development installs CPU-only torch; macOS wheels on PyPI are CPU-only already.
 torch = [
     { index = "pytorch-cpu", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },

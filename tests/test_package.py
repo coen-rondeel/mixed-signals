@@ -2,6 +2,8 @@
 
 import importlib
 import pkgutil
+import subprocess
+import sys
 from importlib.metadata import version
 
 import pytest
@@ -27,6 +29,16 @@ def test_every_module_imports() -> None:
     assert "mixed_signals.metrics.ot" in module_names
     for module_name in module_names:
         importlib.import_module(module_name)
+
+
+def test_eryn_is_imported_lazily() -> None:
+    """The eryn adapters import eryn only when called, so the extra stays optional."""
+    code = (
+        "import sys, mixed_signals.io.eryn_backend, mixed_signals.priors;"
+        " sys.exit('eryn' in sys.modules)"
+    )
+    # * A fresh interpreter, because the test session itself imports eryn.
+    assert subprocess.run([sys.executable, "-c", code], check=False).returncode == 0
 
 
 def test_annotations_are_checked_at_runtime() -> None:

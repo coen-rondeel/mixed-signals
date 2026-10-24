@@ -252,6 +252,56 @@ class Chains(eqx.Module):
         self.swaps_accepted = fields.get("swaps_accepted")
         self.swaps_proposed = fields.get("swaps_proposed")
 
+    @classmethod
+    def from_eryn(
+        cls,
+        source: object,
+        *,
+        branch: str | None = None,
+        num_repeats_in_model: int | None = None,
+        priors: object = None,
+    ) -> "Chains":
+        """Read one branch of an eryn run, with all its temperatures.
+
+        The chain stays in eryn's sampling coordinates. Acceptance counts need
+        ``num_repeats_in_model``, which a sampler supplies; swap counts come
+        with every run of several temperatures. With the priors, the columns
+        of ``DeltaFunction`` parameters are dropped, as in the space of
+        :meth:`ParamSpace.from_eryn_priors
+        <mixed_signals.core.space.ParamSpace.from_eryn_priors>`. See
+        :mod:`mixed_signals.io.eryn_backend` for the details.
+
+        Args:
+            source: An eryn ``EnsembleSampler``, an eryn backend, or the path
+                of an HDF5 file of an ``HDFBackend``.
+            branch: Name of the branch; needed only when the run has several.
+            num_repeats_in_model: In-model proposals per step, for the
+                acceptance counts of a backend or file.
+            priors: eryn ``ProbDistContainer`` of the branch, for a backend or
+                file.
+
+        Returns:
+            The chains of the branch.
+
+        Raises:
+            TypeError: If an input has the wrong type.
+            ValueError: If the run, the branch or the priors do not fit.
+            NotImplementedError: For runs with several independent samplers
+                or reversible jumps.
+            MissingDependencyError: If eryn is not installed.
+
+        References:
+            :cite:t:`karnesis2023eryn`.
+        """
+        from mixed_signals.io.eryn_backend import from_eryn
+
+        return from_eryn(
+            source,
+            branch=branch,
+            num_repeats_in_model=num_repeats_in_model,
+            priors=priors,
+        )
+
     @property
     def shape(self) -> ChainShape:
         """Axis sizes (step, temp, walker, leaf, param)."""

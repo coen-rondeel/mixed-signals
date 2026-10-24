@@ -36,6 +36,7 @@ names the parameter or sphere at fault.
 
 import math
 import os
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any, NamedTuple
 
@@ -234,6 +235,46 @@ class ParamSpace(BaseModel):
                 f"no parameter named {name!r}; the space has"
                 f" {', '.join(map(repr, self.names))}"
             ) from None
+
+    @classmethod
+    def from_eryn_priors(
+        cls,
+        priors: object,
+        *,
+        periodic: (
+            Mapping[str, float] | Mapping[int, float] | Mapping[str | int, float] | None
+        ) = None,
+        spheres: Sequence[Sphere] = (),
+    ) -> "ParamSpace":
+        """Build the space of eryn's sampling coordinates from a prior container.
+
+        Names are the keys of the container, or ``x0``, ``x1``, ... for integer
+        keys, and labels and units are eryn's. A parameter is a circle when its
+        prior is periodic or ``periodic`` lists it, and otherwise an interval
+        from the bounds of its prior or the real line. ``DeltaFunction``
+        parameters are left out, and discrete priors raise. See
+        :mod:`mixed_signals.priors.eryn_container` for the details.
+
+        Args:
+            priors: eryn ``ProbDistContainer`` of one branch.
+            periodic: The branch's entry of the sampler's ``periodic`` dict:
+                periods keyed by parameter name or position.
+            spheres: Spheres of the space, named by the parameter names.
+
+        Returns:
+            The validated space.
+
+        Raises:
+            TypeError: If ``priors`` is not a ``ProbDistContainer``.
+            ValueError: If a prior or a period does not fit the space.
+            MissingDependencyError: If eryn is not installed.
+
+        References:
+            :cite:t:`karnesis2023eryn`.
+        """
+        from mixed_signals.priors.eryn_container import from_eryn_priors
+
+        return from_eryn_priors(priors, periodic=periodic, spheres=spheres)
 
     @classmethod
     def from_yaml_text(cls, text: str) -> "ParamSpace":

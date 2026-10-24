@@ -14,8 +14,8 @@ The implementation is split into twenty focused sessions, numbered 0 to 19. They
 | 4 | Transforms and whitening | B | 2 | Done (2026-10-14) |
 | 5 | MCMC tools | B | 2 | Done (2026-10-14) |
 | 6 | Estimators | B | 2 | Done (2026-10-14) |
-| 7 | eryn adapters and priors | C | 2, 4 | Next |
-| 8 | Metrics I: moments and marginals | C | 3, 6 | Open |
+| 7 | eryn adapters and priors | C | 2, 4 | Done (2026-10-24) |
+| 8 | Metrics I: moments and marginals | C | 3, 6 | Next |
 | 9 | Metrics II: divergences, kernels and classifiers | C | 3, 6 | Open |
 | 10 | Optimal transport | C | 3, 4 | Open |
 | 11 | Diagnostics | C | 5, 6 | Open |
@@ -33,11 +33,11 @@ The critical path runs through sessions 0, 1, 2, 3 or 6, 8, 12, 14, 16 and 19. S
 ## How every session runs
 
 1. Read `CLAUDE.md`, `DESIGN.md` and the session's brief below.
-2. Confirm with the developers any Proposed or Open item the session relies on. After session 0, only the form of eryn transforms is open, and session 7 settles it.
+2. Confirm with the developers any Proposed or Open item the session relies on. After session 7, only the eryn pin is open: `pyproject.toml` names eryn's `feat-jaxpriors` branch, which is not pushed yet.
 3. Replace the stubs in scope with working code. Tests mirror `src/` and use the validation zoo once it exists.
 4. Cite every method and assumption: a `References` section in each docstring, with keys in `docs/references.bib`, taken from the References section of `DESIGN.md`. A new method needs a verifiable source before it lands, and a new empirical finding goes on the validation page.
 5. Where a brief names catpylisa code, port it: adapt it to this package's data model, docstrings and style rules instead of copying it.
-6. Run every check: `ruff check`, `ruff format --check`, the style script, `mypy`, `pytest` and the docs build.
+6. Run every check: `ruff check`, `ruff format --check`, the style script, `mypy`, `pytest` and the docs build; until the eryn branch is pushed, through `uv run --no-sync`, as `CLAUDE.md` describes.
 7. Update `DESIGN.md` when a decision changes, and the status table above.
 8. Commit once on `main` with the trailers from `CLAUDE.md`, then hand over to a developer for review.
 
@@ -142,6 +142,8 @@ Scope: `io/eryn_backend.py`, `priors/protocol.py`, `priors/eryn_container.py`.
 - Pitfalls: import eryn inside functions only, so `import mixed_signals` works without it; use `eryn.priors`, because `eryn.prior` is deprecated.
 - Done when a short eryn run round-trips into `Chains` and a `ParamSpace`.
 
+Outcome (2026-10-24): the session paused on 2026-10-14 so that eryn's priors could become JAX-compatible upstream, on eryn's branch `feat-jaxpriors`; the developers then decided fourteen items, now in `DESIGN.md`. `ErynPhysical` wraps eryn's own JAX backend through `to_backend("jax")`: its forward map is eryn's `inverse_transform`, its log-determinant minus eryn's `log_jacobian`, its description `physical(eryn)`, and its `map_space` renames transformed axes to eryn's `name_phys` and turns SineUniform and CosineUniform sphere axes into latitude and colatitude. `Chains.from_eryn` reads a sampler, a backend or an HDF5 file, takes the acceptance proposals from `num_repeats_in_model` (from a sampler, otherwise optional) and the swap proposals from the walkers, and drops `DeltaFunction` columns when it knows the priors. `ParamSpace.from_eryn_priors` names parameters by key, or `x0`, `x1`, ... for integer keys, reads the sampler's `periodic` dict, because nothing in eryn reads `Prior.boundary`, takes `Sphere` objects, and rejects discrete priors, including `PoissonDistribution`, which has no `logpmf`. `PriorDistribution` is the minimal prior protocol, `logpdf` on (N, D) samples and `rvs(size, *, key)`, and `ErynPrior` adapts eryn containers to it in the sampling coordinates. `pyproject.toml` pins lisa-analysis-tools/Eryn at `feat-jaxpriors`, which is not pushed yet, so `uv.lock` still records l2d-dev and the checks run with `uv run --no-sync` until the push: the one Open item. Later sessions read eryn runs with `Chains.from_eryn` and their spaces with `ParamSpace.from_eryn_priors`, map them to physical parameters with `ErynPhysical`, and take priors as `PriorDistribution` objects.
+
 ### 8. Metrics I: moments and marginals
 
 Scope: `metrics/_cap.py`, `metrics/moments.py`, `metrics/marginal.py`.
@@ -187,6 +189,7 @@ Scope: `diagnostics/`.
 - Multimodality through GMM-BIC with `estimators.MixtureDensity`: form BIC from its `mean_log_likelihood` and `parameter_count`, and settle with the developers the n of the penalty for weighted or correlated samples. Under scikit-learn's stopping rule the winning log-likelihood can lie a few nats below the optimum (the session 6 zoo check), which the comparison of component counts must allow for.
 - Prior railing: the marginal posterior density at a finite bound over its peak density, from the one-dimensional `estimators.KernelDensity`, whose Jones-Foster correction recovered the zoo's railing scores within a few per cent, with a flag threshold calibrated on the zoo's railed cases.
 - Chain health from session 5 (τ, effective sample size, split-chain tests, informational R̂, and acceptance and swap rates for eryn backends, from the counts and proposals in `Chains`) as diagnostic rows. The `mcmc` kernels take the cold chain shaped (step, walker, param); the split-chain test brings its own asymptotic p-value, and R̂ raises a `CoupledChainsWarning` that the rows capture.
+- `Chains.from_eryn` gives acceptance counts only with `num_repeats_in_model`, so without it the chain-health rows show swap rates alone.
 - Done when the zoo's bananas, mixtures and railed cases are flagged and its Gaussians are not.
 
 ### 12. Nulls and σ
@@ -206,6 +209,7 @@ Scope: `reweight/` and its engine function.
 - Importance weights for a new prior, a new likelihood or an approximation's density q.
 - The evidence ratio Z_new/Z_old = E_old[L_new/L_old].
 - Effective sample size, the Kish value of `core.samples`, and PSIS k̂ for every weight set, flagged above min(1 − 1/log₁₀ S, 0.7). Weights stay raw; Pareto smoothing is opt-in.
+- New priors are `PriorDistribution` objects; eryn containers enter through `ErynPrior`, whose densities are those of eryn's sampling coordinates, the coordinates of the stored `log_prior`. Add densities of the physical parameters, eryn's `logpdf_physical`, when a reweighting needs them.
 - Done when reweighting between zoo Gaussians recovers the analytic target and k̂ flags heavy-tailed weights.
 
 ### 14. Engines
@@ -236,6 +240,7 @@ Scope: `pipeline/`, `cli.py`.
 
 - pydantic models for the YAML config, and a runner that writes `results.parquet` and its provenance, including the config hash. All keys derive from one config seed.
 - Chain reduction through `mcmc.reduce_chains`, with the burn-in and thinning in the config, and each run's `ReductionRecord` written next to the results.
+- eryn runs load with `Chains.from_eryn`, and their spaces with `ParamSpace.from_eryn_priors`.
 - `mixed-signals run config.yaml`, including the dry-run cost estimate.
 - Done when an example config runs from the shell and gives the same table again from the same seed.
 
@@ -259,5 +264,5 @@ Scope: `gw/`, with a `gw` extra if it needs new dependencies.
 
 - A Sphinx user guide and API pages, the validation page, and marimo examples in `examples/`.
 - The GPU suite on the cluster with a single GPU, and a performance check.
-- Release blockers: reserve `mixed-signals` on PyPI, and wait for eryn to release its new prior setup, because a published package cannot depend on a git branch.
+- Release blockers: reserve `mixed-signals` on PyPI, and wait for eryn to release its JAX-compatible prior setup, now on its `feat-jaxpriors` branch, because a published package cannot depend on a git branch.
 - Done when version 0.1.0 can be published.

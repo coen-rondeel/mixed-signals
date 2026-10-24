@@ -24,6 +24,19 @@
    :members:
 ```
 
+## Priors
+
+```{eval-rst}
+.. automodule:: mixed_signals.priors
+
+.. automodule:: mixed_signals.priors.protocol
+   :members:
+
+.. automodule:: mixed_signals.priors.eryn_container
+   :members:
+   :show-inheritance:
+```
+
 ## Transforms and whitening
 
 ```{eval-rst}
@@ -110,10 +123,13 @@
    :members:
 ```
 
-## Array conversion
+## Array conversion and eryn runs
 
 ```{eval-rst}
 .. automodule:: mixed_signals.io.arrays
+   :members:
+
+.. automodule:: mixed_signals.io.eryn_backend
    :members:
 ```
 
