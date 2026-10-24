@@ -61,11 +61,16 @@ The metrics of the reference table:
 ``w2``, ``w2_location``, ``w2_shape``
     W2 distance between Gaussians, in the units of the parameters.
 ``hellinger``, ``hellinger_location``, ``hellinger_shape``
-    Hellinger distance, over all parameters or, for Gaussian pairs, over one
-    marginal.
+    Hellinger distance, over all parameters or over one marginal.
 ``ks``, ``w1``, ``js``, ``ad``
     Kolmogorov-Smirnov, W1, Jensen-Shannon (nats) and Anderson-Darling
-    distances between one marginal of a Gaussian pair.
+    distances between one marginal of a pair: of Gaussians, of railed
+    normals on their railed axis, and of parameters that a pair shares.
+``kuiper_ks``
+    Kuiper's V between the circle marginals of wrapped Gaussians, whose
+    ``w1`` is measured along the circle, whose ``ad`` cuts the circle
+    opposite the midpoint of the two means, and whose ``js`` and
+    ``hellinger`` integrate over one period.
 
 References:
     :cite:t:`haario1999adaptive`; :cite:t:`sejdinovic2014kernel`;
@@ -143,6 +148,21 @@ _MARGINAL_METRICS: Final = (
     ("js", closed_forms.normal_js, "quadrature"),
     ("ad", closed_forms.normal_anderson_darling, "quadrature"),
 )
+_RAILED_METRICS: Final = (
+    ("ks", closed_forms.truncated_normal_ks, "closed form"),
+    ("w1", closed_forms.truncated_normal_w1, "closed form"),
+    ("hellinger", closed_forms.truncated_normal_hellinger, "closed form"),
+    ("js", closed_forms.truncated_normal_js, "quadrature"),
+    ("ad", closed_forms.truncated_normal_anderson_darling, "quadrature"),
+)
+_WRAPPED_METRICS: Final = (
+    ("kuiper_ks", closed_forms.wrapped_normal_kuiper, "closed form"),
+    ("w1", closed_forms.wrapped_normal_w1, "closed form"),
+    ("ad", closed_forms.wrapped_normal_anderson_darling, "quadrature"),
+    ("js", closed_forms.wrapped_normal_js, "quadrature"),
+    ("hellinger", closed_forms.wrapped_normal_hellinger, "quadrature"),
+)
+_LINE_METRIC_NAMES: Final = ("ks", "ad", "w1", "js", "hellinger")
 
 
 class ReferenceBasis(StrEnum):
@@ -818,6 +838,30 @@ def railed_gaussians(
                 rail_upper,
             ),
         )
+    for first, second in itertools.combinations(range(len(names)), 2):
+        pair = (names[first], names[second])
+        identical = offset_values[first] == offset_values[second]
+        for metric, function, basis in _RAILED_METRICS:
+            # * Equal offsets give exact zeros, without quadrature.
+            value = (
+                0.0
+                if identical
+                else function(
+                    sign * offset_values[first],
+                    sign * offset_values[second],
+                    1.0,
+                    rail_lower,
+                    rail_upper,
+                )
+            )
+            rows.add(
+                pair,
+                metric,
+                param_names[:1],
+                value,
+                ReferenceBasis.CLOSED_FORM if identical else ReferenceBasis(basis),
+            )
+        _identical_marginal_rows(rows, pair, param_names[1:])
     parameters = [
         Parameter(
             name=param_names[0],
@@ -920,6 +964,17 @@ def wrapped_gaussians(
                 jnp.zeros(param_count), covariance, unwrapped_shift
             ),
         )
+    identical = bool(centres[0] == centres[1])
+    for metric, function, basis in _WRAPPED_METRICS:
+        value = 0.0 if identical else function(centres[0], centres[1], width, period)
+        rows.add(
+            names,
+            metric,
+            param_names[:1],
+            value,
+            ReferenceBasis.CLOSED_FORM if identical else ReferenceBasis(basis),
+        )
+    _identical_marginal_rows(rows, names, param_names[1:])
     parameters = [
         Parameter(
             name=param_names[0],
@@ -1275,6 +1330,15 @@ def _gaussian_pair_rows(
                 value,
                 ReferenceBasis.CLOSED_FORM if identical else ReferenceBasis(basis),
             )
+
+
+def _identical_marginal_rows(
+    rows: _Rows, pair: Sequence[str], param_names: Sequence[str]
+) -> None:
+    """Add exact zeros for the marginal metrics of parameters that a pair shares."""
+    for parameter in param_names:
+        for metric in _LINE_METRIC_NAMES:
+            rows.add(pair, metric, (parameter,), 0.0)
 
 
 def _mixture_moments(

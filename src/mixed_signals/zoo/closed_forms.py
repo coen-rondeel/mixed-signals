@@ -16,7 +16,10 @@ Gaussian divergences
     between the covariances (Dowson and Landau 1982; Givens and Shortt 1984).
     The Hellinger distance follows from the Bhattacharyya distance D_B as
     H² = 1 − exp(−D_B), and D_B is a location term plus a shape term
-    (Hellinger 1909; Bhattacharyya 1943; Fukunaga 1990).
+    (Hellinger 1909; Bhattacharyya 1943; Fukunaga 1990). The kernels are
+    those of :mod:`mixed_signals.metrics.moments`, which the metrics share;
+    the functions here check concrete inputs first. Each result is a
+    :class:`~mixed_signals.metrics.moments.Terms`.
 One-dimensional normals
     The Kolmogorov-Smirnov distance, the largest absolute gap between the two
     distribution functions, is reached where the two densities cross
@@ -56,7 +59,7 @@ References:
 import functools
 import math
 from collections.abc import Callable
-from typing import Final, NamedTuple, cast
+from typing import Final, cast
 
 import jax
 import jax.numpy as jnp
@@ -66,6 +69,8 @@ from jax.scipy.special import erf, log_ndtr, logsumexp, ndtr
 from jax.typing import ArrayLike
 from jaxtyping import Array, Float
 
+from mixed_signals.metrics import moments
+from mixed_signals.metrics.moments import Terms
 from mixed_signals.zoo._checks import require, require_covariance
 
 QUADRATURE_REACH: Final = 12.0
@@ -83,6 +88,13 @@ SMALL_CONCENTRATION: Final = 1e-2
 CROSSING_RESOLUTION: Final = 1e-3
 """Narrowest crossing width, as a fraction of the narrower of its two components."""
 
+TRACED_WINDINGS: Final = 13
+"""Windings summed on each side of a wrapped normal inside ``jax.jit``.
+
+Outside ``jax.jit`` the windings follow the width; inside, these 13 cover 12
+widths beyond the circle for widths up to one period, and wider ones give NaN.
+"""
+
 _HALF_LOG_TWO_PI: Final = 0.5 * math.log(2 * math.pi)
 # * Fixed node table: the panels move with the distributions, the rule does not.
 _LEGENDRE_NODES, _LEGENDRE_WEIGHTS = np.polynomial.legendre.leggauss(
@@ -94,21 +106,12 @@ _PANEL_OFFSETS: Final = np.linspace(
 
 
 def _jit[**Parameters, Result](
-    function: Callable[Parameters, Result],
+    function: Callable[Parameters, Result], *static_names: str
 ) -> Callable[Parameters, Result]:
     """Compile a kernel with :func:`jax.jit` and keep its signature for type checks."""
-    return cast(Callable[Parameters, Result], jax.jit(function))
-
-
-class Terms(NamedTuple):
-    """A divergence between two Gaussians, with its location and shape terms."""
-
-    total: Array
-    """The divergence."""
-    location: Array
-    """The part that only the means change."""
-    shape: Array
-    """The part that only the covariances change."""
+    return cast(
+        Callable[Parameters, Result], jax.jit(function, static_argnames=static_names)
+    )
 
 
 def gaussian_kl(
@@ -130,7 +133,8 @@ def gaussian_kl(
         cov_q: Covariance of q, shaped (D, D).
 
     Returns:
-        The divergence and its location and shape terms.
+        The divergence, its location and shape terms and the log-determinant
+        ratio ln(det Σ_q/det Σ_p).
 
     Raises:
         ValueError: If concrete inputs are not finite, or a covariance is not
@@ -139,7 +143,7 @@ def gaussian_kl(
     References:
         :cite:t:`kullback1951information`; :cite:t:`rasmussen2006gaussian`.
     """
-    return _gaussian_kl(*_gaussian_inputs(mean_p, cov_p, mean_q, cov_q))
+    return moments.gaussian_kl(*_gaussian_inputs(mean_p, cov_p, mean_q, cov_q))
 
 
 def gaussian_w2(
@@ -165,7 +169,8 @@ def gaussian_w2(
         cov_q: Covariance of q, shaped (D, D).
 
     Returns:
-        The distance and its location and shape terms.
+        The distance, its location and shape terms and the log-determinant
+        ratio ln(det Σ_q/det Σ_p).
 
     Raises:
         ValueError: If concrete inputs are not finite, or a covariance is not
@@ -174,7 +179,7 @@ def gaussian_w2(
     References:
         :cite:t:`dowson1982frechet`; :cite:t:`givens1984class`.
     """
-    return _gaussian_w2(*_gaussian_inputs(mean_p, cov_p, mean_q, cov_q))
+    return moments.gaussian_w2(*_gaussian_inputs(mean_p, cov_p, mean_q, cov_q))
 
 
 def gaussian_hellinger(
@@ -197,7 +202,8 @@ def gaussian_hellinger(
         cov_q: Covariance of q, shaped (D, D).
 
     Returns:
-        The distance and its location and shape terms, each in [0, 1].
+        The distance and its location and shape terms, each in [0, 1], and
+        the log-determinant ratio ln(det Σ_q/det Σ_p).
 
     Raises:
         ValueError: If concrete inputs are not finite, or a covariance is not
@@ -207,7 +213,7 @@ def gaussian_hellinger(
         :cite:t:`hellinger1909neue`; :cite:t:`bhattacharyya1943measure`;
         :cite:t:`fukunaga1990introduction`.
     """
-    return _gaussian_hellinger(*_gaussian_inputs(mean_p, cov_p, mean_q, cov_q))
+    return moments.gaussian_hellinger(*_gaussian_inputs(mean_p, cov_p, mean_q, cov_q))
 
 
 def mahalanobis_shift(
@@ -585,6 +591,184 @@ def truncated_normal_kl(
     )
 
 
+def truncated_normal_ks(
+    mean_p: Float[ArrayLike, ""],
+    mean_q: Float[ArrayLike, ""],
+    std: Float[ArrayLike, ""],
+    lower: Float[ArrayLike, ""],
+    upper: Float[ArrayLike, ""],
+) -> Float[Array, ""]:
+    """Return the Kolmogorov-Smirnov distance between two normals truncated alike.
+
+    Both have the standard deviation σ before truncation and the same
+    interval, so their log densities differ by a linear function and cross
+    once inside it, at x* = (μ_p + μ_q)/2 + σ² ln(Z_p/Z_q)/(μ_p − μ_q), with Z
+    the mass that each keeps. The absolute gap between F_p and F_q is largest
+    there.
+
+    Args:
+        mean_p: Mean of p before truncation.
+        mean_q: Mean of q before truncation.
+        std: Standard deviation of both before truncation, positive.
+        lower: Lower bound, which may be −inf.
+        upper: Upper bound, above ``lower``, which may be inf.
+
+    Returns:
+        The distance, in [0, 1].
+
+    Raises:
+        ValueError: If a concrete mean is not finite, the width not positive
+            or the bounds not ordered.
+
+    References:
+        :cite:t:`smirnov1948table`; :cite:t:`barr1999mean`.
+    """
+    return _truncated_normal_ks(
+        *_truncated_pair_inputs(mean_p, mean_q, std, lower, upper)
+    )
+
+
+def truncated_normal_w1(
+    mean_p: Float[ArrayLike, ""],
+    mean_q: Float[ArrayLike, ""],
+    std: Float[ArrayLike, ""],
+    lower: Float[ArrayLike, ""],
+    upper: Float[ArrayLike, ""],
+) -> Float[Array, ""]:
+    """Return the W1 distance between two normals truncated alike.
+
+    The densities cross once, so F_p − F_q keeps one sign, and the integral of
+    its absolute value is the gap between the means after truncation
+    (Vallender 1974; Barr and Sherrill 1999).
+
+    Args:
+        mean_p: Mean of p before truncation.
+        mean_q: Mean of q before truncation.
+        std: Standard deviation of both before truncation, positive.
+        lower: Lower bound, which may be −inf.
+        upper: Upper bound, above ``lower``, which may be inf.
+
+    Returns:
+        The distance, in the units of the parameter.
+
+    Raises:
+        ValueError: If a concrete mean is not finite, the width not positive
+            or the bounds not ordered.
+
+    References:
+        :cite:t:`vallender1974calculation`; :cite:t:`barr1999mean`.
+    """
+    return _truncated_normal_w1(
+        *_truncated_pair_inputs(mean_p, mean_q, std, lower, upper)
+    )
+
+
+def truncated_normal_hellinger(
+    mean_p: Float[ArrayLike, ""],
+    mean_q: Float[ArrayLike, ""],
+    std: Float[ArrayLike, ""],
+    lower: Float[ArrayLike, ""],
+    upper: Float[ArrayLike, ""],
+) -> Float[Array, ""]:
+    """Return the Hellinger distance between two normals truncated alike.
+
+    √(f_p f_q) is a normal of mean (μ_p + μ_q)/2 times exp(−(μ_p − μ_q)²/(8σ²)),
+    so the Bhattacharyya coefficient is that factor times the mass Z of the
+    middle normal in the interval over √(Z_p Z_q), and H = √(1 − BC).
+
+    Args:
+        mean_p: Mean of p before truncation.
+        mean_q: Mean of q before truncation.
+        std: Standard deviation of both before truncation, positive.
+        lower: Lower bound, which may be −inf.
+        upper: Upper bound, above ``lower``, which may be inf.
+
+    Returns:
+        The distance, in [0, 1].
+
+    Raises:
+        ValueError: If a concrete mean is not finite, the width not positive
+            or the bounds not ordered.
+
+    References:
+        :cite:t:`hellinger1909neue`; :cite:t:`bhattacharyya1943measure`.
+    """
+    return _truncated_normal_hellinger(
+        *_truncated_pair_inputs(mean_p, mean_q, std, lower, upper)
+    )
+
+
+def truncated_normal_js(
+    mean_p: Float[ArrayLike, ""],
+    mean_q: Float[ArrayLike, ""],
+    std: Float[ArrayLike, ""],
+    lower: Float[ArrayLike, ""],
+    upper: Float[ArrayLike, ""],
+) -> Float[Array, ""]:
+    """Return the JS divergence between two normals truncated alike, in nats.
+
+    The divergence is integrated by quadrature over the interval, with
+    panels around both means and an edge at each finite bound.
+
+    Args:
+        mean_p: Mean of p before truncation.
+        mean_q: Mean of q before truncation.
+        std: Standard deviation of both before truncation, positive.
+        lower: Lower bound, which may be −inf.
+        upper: Upper bound, above ``lower``, which may be inf.
+
+    Returns:
+        The divergence in nats, in [0, ln 2].
+
+    Raises:
+        ValueError: If a concrete mean is not finite, the width not positive
+            or the bounds not ordered.
+
+    References:
+        :cite:t:`lin1991divergence`; :cite:t:`davis1984methods`.
+    """
+    return _truncated_normal_js(
+        *_truncated_pair_inputs(mean_p, mean_q, std, lower, upper)
+    )
+
+
+def truncated_normal_anderson_darling(
+    mean_p: Float[ArrayLike, ""],
+    mean_q: Float[ArrayLike, ""],
+    std: Float[ArrayLike, ""],
+    lower: Float[ArrayLike, ""],
+    upper: Float[ArrayLike, ""],
+) -> Float[Array, ""]:
+    """Return the Anderson-Darling distance between two normals truncated alike.
+
+    The distance ∫ (F − G)²/(H(1 − H)) dH, with H = (F + G)/2, is integrated by
+    quadrature over the interval; each distribution function and its
+    complement come from the log-mass of the interval, so tails keep their
+    precision.
+
+    Args:
+        mean_p: Mean of p before truncation.
+        mean_q: Mean of q before truncation.
+        std: Standard deviation of both before truncation, positive.
+        lower: Lower bound, which may be −inf.
+        upper: Upper bound, above ``lower``, which may be inf.
+
+    Returns:
+        The distance, non-negative.
+
+    Raises:
+        ValueError: If a concrete mean is not finite, the width not positive
+            or the bounds not ordered.
+
+    References:
+        :cite:t:`pettitt1976two`; :cite:t:`scholz1987k`;
+        :cite:t:`davis1984methods`.
+    """
+    return _truncated_normal_anderson_darling(
+        *_truncated_pair_inputs(mean_p, mean_q, std, lower, upper)
+    )
+
+
 @_jit
 def log_normal_mass(
     lower: Float[ArrayLike, " *leading"], upper: Float[ArrayLike, " *leading"]
@@ -667,6 +851,175 @@ def wrapped_normal_resultant_length(
         "period must be finite and positive",
     )
     return jnp.exp(-0.5 * (2 * math.pi * std_array / period_array) ** 2)
+
+
+def wrapped_normal_kuiper(
+    mean_p: Float[ArrayLike, ""],
+    mean_q: Float[ArrayLike, ""],
+    std: Float[ArrayLike, ""],
+    period: Float[ArrayLike, ""],
+) -> Float[Array, ""]:
+    """Return Kuiper's V between two wrapped normals of equal width.
+
+    Two wrapped normals of width σ whose means lie an arc a apart cross at
+    the midpoint of that arc and opposite it, where F − G has its extremes.
+    Reflection about the midpoint swaps the two, so
+    V = max(F − G) − min(F − G) is the absolute value of 2M − 1, with M the
+    mass that the second puts on the half circle that starts at the midpoint
+    and contains its mean. On a line the same pair gives the KS distance
+    2Φ(a/(2σ)) − 1.
+
+    Args:
+        mean_p: Mean direction of p, in the units of the circle.
+        mean_q: Mean direction of q.
+        std: Width σ of both before wrapping, positive.
+        period: Period P of the circle, positive.
+
+    Returns:
+        The statistic, in [0, 1].
+
+    Raises:
+        ValueError: If a concrete mean is not finite, or the width or the
+            period is not finite and positive.
+
+    References:
+        :cite:t:`kuiper1960tests`; :cite:t:`mardia2000directional`.
+    """
+    arrays, windings = _wrapped_pair_inputs(mean_p, mean_q, std, period)
+    return _wrapped_normal_kuiper(*arrays, windings)
+
+
+def wrapped_normal_w1(
+    mean_p: Float[ArrayLike, ""],
+    mean_q: Float[ArrayLike, ""],
+    std: Float[ArrayLike, ""],
+    period: Float[ArrayLike, ""],
+) -> Float[Array, ""]:
+    """Return the W1 distance along the circle between equal-width wrapped normals.
+
+    With the arc length as cost, W1 is the smallest integral, over one period,
+    of the absolute value of F − G − c for a constant c (Rabin, Delon and
+    Gousseau 2011). For means an arc b apart, F − G is, up to a constant, the
+    mass m(x) of the first on the arc of length b that ends at x, symmetric
+    and unimodal about the midpoint of the means. Its median then splits the
+    circle into the half around that midpoint and the opposite half, so
+    W1 = ∫ m over the first half minus ∫ m over the second, each a sum of
+    integrals of Φ: ∫ Φ(t) dt = tΦ(t) + φ(t).
+
+    Args:
+        mean_p: Mean direction of p, in the units of the circle.
+        mean_q: Mean direction of q.
+        std: Width σ of both before wrapping, positive.
+        period: Period P of the circle, positive.
+
+    Returns:
+        The distance, in the units of the circle.
+
+    Raises:
+        ValueError: If a concrete mean is not finite, or the width or the
+            period is not finite and positive.
+
+    References:
+        :cite:t:`rabin2011transportation`; :cite:t:`mardia2000directional`.
+    """
+    arrays, windings = _wrapped_pair_inputs(mean_p, mean_q, std, period)
+    return _wrapped_normal_w1(*arrays, windings)
+
+
+def wrapped_normal_anderson_darling(
+    mean_p: Float[ArrayLike, ""],
+    mean_q: Float[ArrayLike, ""],
+    std: Float[ArrayLike, ""],
+    period: Float[ArrayLike, ""],
+) -> Float[Array, ""]:
+    """Return the Anderson-Darling distance between two wrapped normals of equal width.
+
+    The circle is cut opposite the midpoint of the shorter arc between the
+    means, the circular mean of the two pooled with equal weight, and
+    ∫ (F − G)²/(H(1 − H)) dH, with H = (F + G)/2, is integrated by quadrature
+    over the period that the cut leaves.
+
+    Args:
+        mean_p: Mean direction of p, in the units of the circle.
+        mean_q: Mean direction of q.
+        std: Width σ of both before wrapping, positive.
+        period: Period P of the circle, positive.
+
+    Returns:
+        The distance, non-negative.
+
+    Raises:
+        ValueError: If a concrete mean is not finite, or the width or the
+            period is not finite and positive.
+
+    References:
+        :cite:t:`pettitt1976two`; :cite:t:`scholz1987k`;
+        :cite:t:`mardia2000directional`; :cite:t:`davis1984methods`.
+    """
+    arrays, windings = _wrapped_pair_inputs(mean_p, mean_q, std, period)
+    return _wrapped_normal_anderson_darling(*arrays, windings)
+
+
+def wrapped_normal_js(
+    mean_p: Float[ArrayLike, ""],
+    mean_q: Float[ArrayLike, ""],
+    std: Float[ArrayLike, ""],
+    period: Float[ArrayLike, ""],
+) -> Float[Array, ""]:
+    """Return the Jensen-Shannon divergence between two wrapped normals of equal width.
+
+    The divergence, in nats, is integrated by quadrature over one period of
+    the wrapped densities.
+
+    Args:
+        mean_p: Mean direction of p, in the units of the circle.
+        mean_q: Mean direction of q.
+        std: Width σ of both before wrapping, positive.
+        period: Period P of the circle, positive.
+
+    Returns:
+        The divergence in nats, in [0, ln 2].
+
+    Raises:
+        ValueError: If a concrete mean is not finite, or the width or the
+            period is not finite and positive.
+
+    References:
+        :cite:t:`lin1991divergence`; :cite:t:`mardia2000directional`.
+    """
+    arrays, windings = _wrapped_pair_inputs(mean_p, mean_q, std, period)
+    return _wrapped_normal_js(*arrays, windings)
+
+
+def wrapped_normal_hellinger(
+    mean_p: Float[ArrayLike, ""],
+    mean_q: Float[ArrayLike, ""],
+    std: Float[ArrayLike, ""],
+    period: Float[ArrayLike, ""],
+) -> Float[Array, ""]:
+    """Return the Hellinger distance between two wrapped normals of equal width.
+
+    H² = ½ ∫ (√f_p − √f_q)² is integrated by quadrature over one period of
+    the wrapped densities.
+
+    Args:
+        mean_p: Mean direction of p, in the units of the circle.
+        mean_q: Mean direction of q.
+        std: Width σ of both before wrapping, positive.
+        period: Period P of the circle, positive.
+
+    Returns:
+        The distance, in [0, 1].
+
+    Raises:
+        ValueError: If a concrete mean is not finite, or the width or the
+            period is not finite and positive.
+
+    References:
+        :cite:t:`hellinger1909neue`; :cite:t:`mardia2000directional`.
+    """
+    arrays, windings = _wrapped_pair_inputs(mean_p, mean_q, std, period)
+    return _wrapped_normal_hellinger(*arrays, windings)
 
 
 def von_mises_fisher_resultant_length(
@@ -876,6 +1229,45 @@ def _truncated_inputs(
     return mean_array, std_array, lower_array, upper_array
 
 
+def _truncated_pair_inputs(
+    mean_p: ArrayLike,
+    mean_q: ArrayLike,
+    std: ArrayLike,
+    lower: ArrayLike,
+    upper: ArrayLike,
+) -> tuple[Array, Array, Array, Array, Array]:
+    mean_p_array, std_array, lower_array, upper_array = _truncated_inputs(
+        mean_p, std, lower, upper
+    )
+    mean_q_array = jnp.asarray(mean_q, dtype=jnp.float64)
+    require(jnp.isfinite(mean_q_array), "mean_q must be finite")
+    return mean_p_array, mean_q_array, std_array, lower_array, upper_array
+
+
+def _wrapped_pair_inputs(
+    mean_p: ArrayLike, mean_q: ArrayLike, std: ArrayLike, period: ArrayLike
+) -> tuple[tuple[Array, Array, Array, Array], int]:
+    """Check two wrapped normals and size their winding sums from concrete widths."""
+    mean_p_array, mean_q_array, std_array, period_array = (
+        jnp.asarray(value, dtype=jnp.float64) for value in (mean_p, mean_q, std, period)
+    )
+    require(jnp.isfinite(mean_p_array), "mean_p must be finite")
+    require(jnp.isfinite(mean_q_array), "mean_q must be finite")
+    for name, value in (("std", std_array), ("period", period_array)):
+        require(
+            (value > 0) & jnp.isfinite(value), f"{name} must be finite and positive"
+        )
+    if isinstance(std_array, jax.core.Tracer) or isinstance(
+        period_array, jax.core.Tracer
+    ):
+        windings = TRACED_WINDINGS
+    else:
+        windings = (
+            math.ceil(QUADRATURE_REACH * float(std_array) / float(period_array)) + 1
+        )
+    return (mean_p_array, mean_q_array, std_array, period_array), windings
+
+
 def _concentration_input(concentration: ArrayLike) -> Array:
     array = jnp.asarray(concentration, dtype=jnp.float64)
     require(
@@ -906,51 +1298,6 @@ def _von_mises_fisher_inputs(
 
 
 # * Jitted kernels.
-
-
-@_jit
-def _gaussian_kl(mean_p: Array, cov_p: Array, mean_q: Array, cov_q: Array) -> Terms:
-    cholesky_p, cholesky_q = jnp.linalg.cholesky(cov_p), jnp.linalg.cholesky(cov_q)
-    whitened_shift = solve_triangular(cholesky_q, mean_q - mean_p, lower=True)
-    location = 0.5 * whitened_shift @ whitened_shift
-    whitened_root = solve_triangular(cholesky_q, cholesky_p, lower=True)
-    log_det_ratio = _log_det(cholesky_q) - _log_det(cholesky_p)
-    shape = 0.5 * (jnp.sum(whitened_root**2) - mean_p.shape[0] + log_det_ratio)
-    # * Equal covariances give an exact zero, not a rounding residue.
-    shape = jnp.where(jnp.all(cov_p == cov_q), 0.0, shape)
-    return Terms(location + shape, location, shape)
-
-
-@_jit
-def _gaussian_w2(mean_p: Array, cov_p: Array, mean_q: Array, cov_q: Array) -> Terms:
-    location = jnp.linalg.norm(mean_q - mean_p)
-    eigenvalues, eigenvectors = jnp.linalg.eigh(cov_p)
-    root_p = (eigenvectors * jnp.sqrt(jnp.clip(eigenvalues, 0.0))) @ eigenvectors.T
-    middle = root_p @ cov_q @ root_p
-    middle_eigenvalues = jnp.linalg.eigvalsh(0.5 * (middle + middle.T))
-    cross_trace = jnp.sum(jnp.sqrt(jnp.clip(middle_eigenvalues, 0.0)))
-    traces = jnp.trace(cov_p) + jnp.trace(cov_q)
-    bures_squared = jnp.maximum(traces - 2 * cross_trace, 0.0)
-    shape = jnp.where(jnp.all(cov_p == cov_q), 0.0, jnp.sqrt(bures_squared))
-    return Terms(jnp.hypot(location, shape), location, shape)
-
-
-@_jit
-def _gaussian_hellinger(
-    mean_p: Array, cov_p: Array, mean_q: Array, cov_q: Array
-) -> Terms:
-    cholesky_middle = jnp.linalg.cholesky(0.5 * (cov_p + cov_q))
-    whitened_shift = solve_triangular(cholesky_middle, mean_q - mean_p, lower=True)
-    location_distance = 0.125 * whitened_shift @ whitened_shift
-    mean_log_det = 0.5 * (
-        _log_det(jnp.linalg.cholesky(cov_p)) + _log_det(jnp.linalg.cholesky(cov_q))
-    )
-    shape_distance = jnp.maximum(0.5 * (_log_det(cholesky_middle) - mean_log_det), 0.0)
-    return Terms(
-        _hellinger_from_bhattacharyya(location_distance + shape_distance),
-        _hellinger_from_bhattacharyya(location_distance),
-        _hellinger_from_bhattacharyya(shape_distance),
-    )
 
 
 @_jit
@@ -1117,6 +1464,169 @@ def _von_mises_fisher_hellinger(
     return jnp.sqrt(jnp.maximum(-jnp.expm1(jnp.minimum(log_coefficient, 0.0)), 0.0))
 
 
+@_jit
+def _truncated_normal_ks(
+    mean_p: Array, mean_q: Array, std: Array, lower: Array, upper: Array
+) -> Array:
+    log_mass_p = log_normal_mass((lower - mean_p) / std, (upper - mean_p) / std)
+    log_mass_q = log_normal_mass((lower - mean_q) / std, (upper - mean_q) / std)
+    difference = mean_p - mean_q
+    safe = jnp.where(difference == 0, 1.0, difference)
+    crossing = jnp.clip(
+        0.5 * (mean_p + mean_q) + std**2 * (log_mass_p - log_mass_q) / safe,
+        lower,
+        upper,
+    )
+    cdf_p, survival_p = _truncated_cdfs(crossing, mean_p, std, lower, upper, log_mass_p)
+    cdf_q, survival_q = _truncated_cdfs(crossing, mean_q, std, lower, upper, log_mass_q)
+    gap = jnp.where(cdf_p + cdf_q <= 1, cdf_p - cdf_q, survival_q - survival_p)
+    return jnp.where(difference == 0, 0.0, jnp.abs(gap))
+
+
+@_jit
+def _truncated_normal_w1(
+    mean_p: Array, mean_q: Array, std: Array, lower: Array, upper: Array
+) -> Array:
+    mean_after_p, _ = _truncated_normal_moments(mean_p, std, lower, upper)
+    mean_after_q, _ = _truncated_normal_moments(mean_q, std, lower, upper)
+    return jnp.where(mean_p == mean_q, 0.0, jnp.abs(mean_after_q - mean_after_p))
+
+
+@_jit
+def _truncated_normal_hellinger(
+    mean_p: Array, mean_q: Array, std: Array, lower: Array, upper: Array
+) -> Array:
+    middle = 0.5 * (mean_p + mean_q)
+    log_coefficient = (
+        -((mean_p - mean_q) ** 2) / (8 * std**2)
+        + log_normal_mass((lower - middle) / std, (upper - middle) / std)
+        - 0.5 * log_normal_mass((lower - mean_p) / std, (upper - mean_p) / std)
+        - 0.5 * log_normal_mass((lower - mean_q) / std, (upper - mean_q) / std)
+    )
+    return jnp.sqrt(jnp.maximum(-jnp.expm1(jnp.minimum(log_coefficient, 0.0)), 0.0))
+
+
+@_jit
+def _truncated_normal_js(
+    mean_p: Array, mean_q: Array, std: Array, lower: Array, upper: Array
+) -> Array:
+    log_mass_p = log_normal_mass((lower - mean_p) / std, (upper - mean_p) / std)
+    log_mass_q = log_normal_mass((lower - mean_q) / std, (upper - mean_q) / std)
+    value = _window_quadrature(
+        functools.partial(
+            _truncated_js_integrand,
+            means=(mean_p, mean_q),
+            std=std,
+            log_masses=(log_mass_p, log_mass_q),
+        ),
+        jnp.stack([mean_p, mean_q]),
+        jnp.stack([std, std]),
+        lower,
+        upper,
+    )
+    return jnp.where(mean_p == mean_q, 0.0, jnp.clip(value, 0.0, math.log(2)))
+
+
+@_jit
+def _truncated_normal_anderson_darling(
+    mean_p: Array, mean_q: Array, std: Array, lower: Array, upper: Array
+) -> Array:
+    log_mass_p = log_normal_mass((lower - mean_p) / std, (upper - mean_p) / std)
+    log_mass_q = log_normal_mass((lower - mean_q) / std, (upper - mean_q) / std)
+    value = _window_quadrature(
+        functools.partial(
+            _truncated_anderson_darling_integrand,
+            means=(mean_p, mean_q),
+            std=std,
+            bounds=(lower, upper),
+            log_masses=(log_mass_p, log_mass_q),
+        ),
+        jnp.stack([mean_p, mean_q]),
+        jnp.stack([std, std]),
+        lower,
+        upper,
+    )
+    return jnp.where(mean_p == mean_q, 0.0, jnp.maximum(value, 0.0))
+
+
+def _wrapped_normal_kuiper_kernel(
+    mean_p: Array, mean_q: Array, std: Array, period: Array, windings: int
+) -> Array:
+    half = 0.5 * jnp.abs(_shortest_arc(mean_p, mean_q, period))
+    # * In the frame of q, the half circle from the midpoint spans −a/2 to P/2 − a/2.
+    mass = _wrapped_arc_mass(-half, 0.5 * period - half, 0.0, std, period, windings)
+    value = jnp.where(half == 0, 0.0, jnp.abs(2 * mass - 1))
+    return _within_windings(value, std, period, windings)
+
+
+def _wrapped_normal_w1_kernel(
+    mean_p: Array, mean_q: Array, std: Array, period: Array, windings: int
+) -> Array:
+    gap = jnp.abs(_shortest_arc(mean_p, mean_q, period))
+    centre, quarter = 0.5 * gap, 0.25 * period
+    inner = _arc_mass_integral(
+        centre - quarter, centre + quarter, gap, std, period, windings
+    )
+    outer = _arc_mass_integral(
+        centre + quarter, centre + 3 * quarter, gap, std, period, windings
+    )
+    value = jnp.where(gap == 0, 0.0, jnp.maximum(inner - outer, 0.0))
+    return _within_windings(value, std, period, windings)
+
+
+def _wrapped_normal_anderson_darling_kernel(
+    mean_p: Array, mean_q: Array, std: Array, period: Array, windings: int
+) -> Array:
+    half = 0.5 * _shortest_arc(mean_p, mean_q, period)
+    integrand = functools.partial(
+        _wrapped_anderson_darling_integrand,
+        half=half,
+        std=std,
+        period=period,
+        windings=windings,
+    )
+    value = _wrapped_quadrature(integrand, half, std, period, windings)
+    value = jnp.where(half == 0, 0.0, jnp.maximum(value, 0.0))
+    return _within_windings(value, std, period, windings)
+
+
+def _wrapped_normal_js_kernel(
+    mean_p: Array, mean_q: Array, std: Array, period: Array, windings: int
+) -> Array:
+    half = 0.5 * _shortest_arc(mean_p, mean_q, period)
+    integrand = functools.partial(
+        _wrapped_js_integrand, half=half, std=std, period=period, windings=windings
+    )
+    value = _wrapped_quadrature(integrand, half, std, period, windings)
+    value = jnp.where(half == 0, 0.0, jnp.clip(value, 0.0, math.log(2)))
+    return _within_windings(value, std, period, windings)
+
+
+def _wrapped_normal_hellinger_kernel(
+    mean_p: Array, mean_q: Array, std: Array, period: Array, windings: int
+) -> Array:
+    half = 0.5 * _shortest_arc(mean_p, mean_q, period)
+    integrand = functools.partial(
+        _wrapped_hellinger_integrand,
+        half=half,
+        std=std,
+        period=period,
+        windings=windings,
+    )
+    squared = _wrapped_quadrature(integrand, half, std, period, windings)
+    value = jnp.where(half == 0, 0.0, jnp.sqrt(jnp.clip(squared, 0.0, 1.0)))
+    return _within_windings(value, std, period, windings)
+
+
+_wrapped_normal_kuiper = _jit(_wrapped_normal_kuiper_kernel, "windings")
+_wrapped_normal_w1 = _jit(_wrapped_normal_w1_kernel, "windings")
+_wrapped_normal_anderson_darling = _jit(
+    _wrapped_normal_anderson_darling_kernel, "windings"
+)
+_wrapped_normal_js = _jit(_wrapped_normal_js_kernel, "windings")
+_wrapped_normal_hellinger = _jit(_wrapped_normal_hellinger_kernel, "windings")
+
+
 # * Quadrature and its integrands.
 
 
@@ -1268,9 +1778,202 @@ def _bound_terms(bound: Array, log_mass: Array) -> tuple[Array, Array]:
     return ratio, safe * ratio
 
 
-def _log_det(cholesky_factor: Array) -> Array:
-    return 2.0 * jnp.sum(jnp.log(jnp.diag(cholesky_factor)))
+# * Marginals of truncated and wrapped normals.
 
 
-def _hellinger_from_bhattacharyya(distance: Array) -> Array:
-    return jnp.sqrt(-jnp.expm1(-distance))
+def _window_quadrature(
+    integrand: Callable[[Array], Array],
+    centres: Float[Array, " component"],
+    widths: Float[Array, " component"],
+    lower: Float[ArrayLike, ""],
+    upper: Float[ArrayLike, ""],
+) -> Float[Array, ""]:
+    """Integrate over [lower, upper] on panels refined around every component."""
+    component_edges = (centres[:, None] + widths[:, None] * _PANEL_OFFSETS).ravel()
+    bounds = jnp.stack([jnp.asarray(lower), jnp.asarray(upper)])
+    # * An infinite end adds no edge of its own: it moves onto the outermost edge.
+    outermost = jnp.stack([jnp.min(component_edges), jnp.max(component_edges)])
+    bounds = jnp.where(jnp.isfinite(bounds), bounds, outermost)
+    edges = jnp.sort(jnp.clip(jnp.concatenate([component_edges, bounds]), lower, upper))
+    half_widths = 0.5 * jnp.diff(edges)
+    midpoints = 0.5 * (edges[:-1] + edges[1:])
+    points = midpoints[:, None] + half_widths[:, None] * _LEGENDRE_NODES
+    return jnp.sum(half_widths[:, None] * _LEGENDRE_WEIGHTS * integrand(points))
+
+
+def _truncated_cdfs(
+    points: Array, mean: Array, std: Array, lower: Array, upper: Array, log_mass: Array
+) -> tuple[Array, Array]:
+    """Return F and 1 − F of a truncated normal, each from its own log-mass."""
+    standard = (points - mean) / std
+    low, high = (
+        jnp.broadcast_to((bound - mean) / std, standard.shape)
+        for bound in (lower, upper)
+    )
+    cdf = jnp.exp(log_normal_mass(low, standard) - log_mass)
+    survival = jnp.exp(log_normal_mass(standard, high) - log_mass)
+    return cdf, survival
+
+
+def _truncated_js_integrand(
+    points: Array,
+    means: tuple[Array, Array],
+    std: Array,
+    log_masses: tuple[Array, Array],
+) -> Array:
+    """Return the Jensen-Shannon integrand of two truncated normals in the interval."""
+    log_p = _log_normal(points, means[0], std) - log_masses[0]
+    log_q = _log_normal(points, means[1], std) - log_masses[1]
+    return _js_terms(log_p, log_q)
+
+
+def _truncated_anderson_darling_integrand(
+    points: Array,
+    means: tuple[Array, Array],
+    std: Array,
+    bounds: tuple[Array, Array],
+    log_masses: tuple[Array, Array],
+) -> Array:
+    """Return (F − G)²/(H(1 − H)) times dH/dx for two truncated normals."""
+    cdf_p, survival_p = _truncated_cdfs(points, means[0], std, *bounds, log_masses[0])
+    cdf_q, survival_q = _truncated_cdfs(points, means[1], std, *bounds, log_masses[1])
+    density = 0.5 * (
+        jnp.exp(_log_normal(points, means[0], std) - log_masses[0])
+        + jnp.exp(_log_normal(points, means[1], std) - log_masses[1])
+    )
+    return _anderson_darling_terms(cdf_p, survival_p, cdf_q, survival_q, density)
+
+
+def _shortest_arc(origin: Array, target: Array, period: Array) -> Array:
+    """Return the shortest signed arc from origin to target, in [−P/2, P/2)."""
+    return jnp.mod(target - origin + 0.5 * period, period) - 0.5 * period
+
+
+def _winding_shifts(period: Array, windings: int) -> Array:
+    return jnp.arange(-windings, windings + 1) * period
+
+
+def _wrapped_arc_mass(
+    start: ArrayLike,
+    end: ArrayLike,
+    mean: ArrayLike,
+    std: Array,
+    period: Array,
+    windings: int,
+) -> Array:
+    """Return the mass of a wrapped normal on the arc [start, end], at most a period."""
+    shifts = _winding_shifts(period, windings)
+    low, high = jnp.broadcast_arrays(
+        (jnp.asarray(start)[..., None] - mean + shifts) / std,
+        (jnp.asarray(end)[..., None] - mean + shifts) / std,
+    )
+    return jnp.sum(jnp.exp(log_normal_mass(low, high)), axis=-1)
+
+
+def _wrapped_log_density(
+    points: Array, mean: ArrayLike, std: Array, period: Array, windings: int
+) -> Array:
+    shifts = _winding_shifts(period, windings)
+    return logsumexp(_log_normal(points[..., None] + shifts, mean, std), axis=-1)
+
+
+def _arc_mass_integral(
+    start: Array, end: Array, gap: Array, std: Array, period: Array, windings: int
+) -> Array:
+    """Return ∫ m dx on [start, end], m the wrapped N(0, σ²) mass on (x − gap, x]."""
+    shifts = _winding_shifts(period, windings)
+    return std * (
+        _phi_antiderivative(end, shifts, std)
+        - _phi_antiderivative(start, shifts, std)
+        - _phi_antiderivative(end - gap, shifts, std)
+        + _phi_antiderivative(start - gap, shifts, std)
+    )
+
+
+def _phi_antiderivative(offset: Array, shifts: Array, std: Array) -> Array:
+    """Return Σ J((offset + kP)/σ) over windings, with J(t) = tΦ(t) + φ(t) = ∫ Φ."""
+    standard = (offset + shifts) / std
+    return jnp.sum(standard * ndtr(standard) + jnp.exp(_log_normal(standard, 0.0, 1.0)))
+
+
+def _wrapped_quadrature(
+    integrand: Callable[[Array], Array],
+    half: Array,
+    std: Array,
+    period: Array,
+    windings: int,
+) -> Array:
+    """Integrate over the period centred on the midpoint of the two means."""
+    shifts = _winding_shifts(period, windings)
+    centres = jnp.concatenate([-half + shifts, half + shifts])
+    return _window_quadrature(
+        integrand, centres, jnp.full_like(centres, std), -0.5 * period, 0.5 * period
+    )
+
+
+def _wrapped_pair_densities(
+    points: Array, half: Array, std: Array, period: Array, windings: int
+) -> tuple[Array, Array]:
+    """Return the log densities of the pair, centred at ∓half around the midpoint."""
+    return (
+        _wrapped_log_density(points, -half, std, period, windings),
+        _wrapped_log_density(points, half, std, period, windings),
+    )
+
+
+def _wrapped_js_integrand(
+    points: Array, half: Array, std: Array, period: Array, windings: int
+) -> Array:
+    return _js_terms(*_wrapped_pair_densities(points, half, std, period, windings))
+
+
+def _wrapped_hellinger_integrand(
+    points: Array, half: Array, std: Array, period: Array, windings: int
+) -> Array:
+    log_p, log_q = _wrapped_pair_densities(points, half, std, period, windings)
+    return 0.5 * (jnp.exp(0.5 * log_p) - jnp.exp(0.5 * log_q)) ** 2
+
+
+def _wrapped_anderson_darling_integrand(
+    points: Array, half: Array, std: Array, period: Array, windings: int
+) -> Array:
+    """Return (F − G)²/(H(1 − H)) times dH/dx on the period from the cut."""
+    start, end = -0.5 * period, 0.5 * period
+    cdf_p = _wrapped_arc_mass(start, points, -half, std, period, windings)
+    survival_p = _wrapped_arc_mass(points, end, -half, std, period, windings)
+    cdf_q = _wrapped_arc_mass(start, points, half, std, period, windings)
+    survival_q = _wrapped_arc_mass(points, end, half, std, period, windings)
+    log_p, log_q = _wrapped_pair_densities(points, half, std, period, windings)
+    density = 0.5 * (jnp.exp(log_p) + jnp.exp(log_q))
+    return _anderson_darling_terms(cdf_p, survival_p, cdf_q, survival_q, density)
+
+
+def _within_windings(value: Array, std: Array, period: Array, windings: int) -> Array:
+    """Return the value, or NaN where the windings miss 12 widths beyond the circle."""
+    return jnp.where(QUADRATURE_REACH * std <= (windings - 1) * period, value, jnp.nan)
+
+
+def _js_terms(log_p: Array, log_q: Array) -> Array:
+    """Return ½ p ln(2p/(p + q)) + ½ q ln(2q/(p + q)), zero where a density is."""
+    log_sum = jnp.logaddexp(log_p, log_q)
+    terms = jnp.zeros_like(log_sum)
+    for log_density in (log_p, log_q):
+        positive = log_density > -jnp.inf
+        safe = jnp.where(positive, log_density, 0.0)
+        terms = terms + jnp.where(
+            positive, 0.5 * jnp.exp(safe) * (math.log(2) + safe - log_sum), 0.0
+        )
+    return terms
+
+
+def _anderson_darling_terms(
+    cdf_p: Array, survival_p: Array, cdf_q: Array, survival_q: Array, density: Array
+) -> Array:
+    """Return (F − G)²/(H(1 − H)) times the pooled density, zero where H(1 − H) is."""
+    pooled = 0.5 * (cdf_p + cdf_q)
+    pooled_survival = 0.5 * (survival_p + survival_q)
+    # * Each difference in the tail where both terms are small loses no digits.
+    gap = jnp.where(pooled <= 0.5, cdf_p - cdf_q, survival_q - survival_p)
+    denominator = pooled * pooled_survival
+    safe = jnp.where(denominator > 0, denominator, 1.0)
+    return jnp.where(denominator > 0, gap**2 / safe * density, 0.0)

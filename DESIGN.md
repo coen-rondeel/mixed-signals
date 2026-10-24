@@ -49,7 +49,7 @@ In v1:
 
 ## Decisions so far
 
-The developers have agreed 172 decisions: 88 from rounds 1–8, the repository setup and the design close-out, 7 from roadmap session 1 (Foundations), 7 from roadmap session 2 (Sample containers) and 14 from roadmap session 3 (Validation zoo), all on 2026-10-13, and 14 from roadmap session 4 (Transforms and whitening), 12 from roadmap session 5 (MCMC tools) and 16 from roadmap session 6 (Estimators), all three on 2026-10-14, and 14 from roadmap session 7 (eryn adapters and priors), taken on 2026-10-14 and 2026-10-24.
+The developers have agreed 186 decisions: 88 from rounds 1–8, the repository setup and the design close-out, 7 from roadmap session 1 (Foundations), 7 from roadmap session 2 (Sample containers) and 14 from roadmap session 3 (Validation zoo), all on 2026-10-13, and 14 from roadmap session 4 (Transforms and whitening), 12 from roadmap session 5 (MCMC tools) and 16 from roadmap session 6 (Estimators), all three on 2026-10-14, 14 from roadmap session 7 (eryn adapters and priors), taken on 2026-10-14 and 2026-10-24, and 14 from roadmap session 8 (Metrics I: moments and marginals), on 2026-10-24.
 
 | Topic | Decision |
 | --- | --- |
@@ -225,6 +225,20 @@ The developers have agreed 172 decisions: 88 from rounds 1–8, the repository s
 | Prior protocol | `PriorDistribution` in `priors/protocol.py`: `logpdf` maps (N, D) to (N,), and `rvs(size, *, key)` draws size + (D,) from an explicit JAX key |
 | eryn prior adapter | `ErynPrior` makes a container meet the protocol in the sampling coordinates, passing the key on to eryn's `rng_key` on its JAX copy; densities of the physical parameters wait for reweighting |
 | eryn entry points | Classmethods on the core objects, `Chains.from_eryn` and `ParamSpace.from_eryn_priors`, which import the eryn modules lazily |
+| Metric deliverables | Pure-JAX kernels named as the zoo's metrics, and the closed-form σ_eff and r_eff maps of the moment and marginal metrics in `sigma/maps.py`; session 12 adds the AD and JS curves, σ_sig and the calibration, and session 14 builds the rows |
+| Metric coordinates | Kernels compute in the coordinates they receive: engines z-score both inputs with their shared whitening (`decorrelate=False`) for per-parameter rows, so mean shifts and W1 are in units of σ_ref in mode A or of the pooled RMS σ in mode B, and run joint rows in the decorrelated whitening |
+| Gaussian kernels | The Gaussian KL, W2 and Hellinger with location and shape terms move from the zoo to `metrics/moments.py` and return ln(det Σ_q/det Σ_p) for the r_eff direction; the zoo's checked wrappers call them, and on circles the mean difference is the shortest signed arc |
+| Moment estimators | Mean shift and width ratio read `empirical`: weighted means and unbiased widths, and on circles the circular mean and circular standard deviation; the Gaussian divergences read `gaussian` |
+| Weighted AD | H = (F + G)/2 with each posterior's weights summing to one, summed at the ends of runs of ties as SciPy's right-continuous form, so it estimates the zoo's AD distance for any n and m |
+| Circle marginals | Forms that no rotation changes: Kuiper's V in rows named `kuiper_ks`, and W1 along the circle in rows named `w1` |
+| AD on circles | Cut opposite the circular mean of the two marginals pooled with equal weight, with a Rayleigh warning, because no verified two-sample AD is invariant under rotations |
+| Sphere axes in marginal rows | Their own topologies: the azimuth a circle, the polar axis an interval |
+| Marginal JS and Hellinger | Gauss-Legendre quadrature of the two bounded KDEs over each estimate's reach, on panels of at most two bandwidths; inside jit a wider panel gives NaN |
+| Marginal KDE bandwidth | One factor per pair: Silverman's one-dimensional factor at the smaller Kish n_eff, fixed once per comparison and reused by every null draw; each kernel is that factor times its own width, so smoothing keeps width ratios |
+| Subsampling cap | `SAMPLE_CAP` = 10 000 samples per posterior, from a CPU timing of the energy distance; a keyword overrides it |
+| Capped draws | Uniform without replacement, keeping the log weights and putting zero-weight samples last, with a `SubsamplingWarning`; the number of samples, which sets the cost, meets the cap |
+| Split-chain test on circles | Chain-health rows take Kuiper's V with its limiting distribution on circle parameters, in session 11 |
+| Zoo marginal truths | `wrapped_gaussians` gains `kuiper_ks`, `w1`, `ad`, `js` and `hellinger` for its circle and `railed_gaussians` `ks`, `w1`, `ad`, `js` and `hellinger` for its railed axis, by closed forms or quadrature checked against SciPy; shared axes carry exact zeros |
 
 ## Design principles
 
@@ -283,6 +297,8 @@ Comparisons run on flat samples shaped (B, K, N, D); diagnostics also read chain
 
 **eryn adapters (session 7).** eryn samples each parameter in a sampling coordinate u, which the transform of its prior maps to the physical parameter x, and stores chains, bounds and log priors in u (Karnesis et al. 2023). `Chains.from_eryn` reads one branch with all its temperatures from a sampler, a backend or an HDF5 file. eryn counts the accepted in-model proposals at stored steps only, `num_repeats_in_model` per step, so the proposals behind the counts are the stored steps times that number (Foreman-Mackey et al. 2013); a tempered run with `thin_by` = 2 and three repeats gave a stored rate of 0.683 against 0.692 over all its proposals. Each stored step proposes one swap per walker between neighbouring temperatures (Vousden, Farr and Mandel 2016). `ParamSpace.from_eryn_priors` describes u: container keys or `x0`, `x1`, ... as names, eryn's labels and units, circles from periodic priors or from the sampler's `periodic` dict, which is what eryn itself wraps, and intervals or real lines otherwise. Spaces and chains leave `DeltaFunction` parameters out, because a fixed axis makes every covariance singular. `ErynPhysical` maps u to x with eryn's own transforms on the JAX copy of the container, so a density moves with ln|det ∂x/∂u| (Papamakarios et al. 2021) and a Fisher matrix with exact Jacobians (Jeffreys 1946); through `jax.pure_callback`, eryn's NumPy transforms had taken 30 ms against 11 ms natively for 10⁶ × 5 points, and `jax.jacfwd` failed on them. `ErynPrior` makes a container meet `PriorDistribution`, the minimal prior interface, in u.
 
+**Metrics I (session 8).** Every metric computes in the coordinates it receives. Engines z-score the per-parameter rows of a pair with its shared whitening, so a mean shift is Glass's Δ in mode A and, with the root mean square of the two widths, Cohen's d in mode B (Glass, McGaw and Smith 1981; Cohen 1988); the width ratio compares variability as Nakagawa et al. (2015) do, and on circles both take circular statistics (Mardia and Jupp 2000). The zoo's Gaussian KL, W2 and Hellinger kernels now live in `metrics/moments.py` and return ln(det Σ_q/det Σ_p), whose sign sets the direction of the r_eff of a shape term. The weighted KS, Kuiper, AD and W1 statistics compare the weighted distribution functions at the ends of runs of ties, and for equal weights equal SciPy's `ks_2samp`, `anderson_ksamp` (right-continuous form, n = m) and `wasserstein_distance` (Virtanen et al. 2020). The AD distance pools each posterior with half the mass, so it estimates the zoo's AD distance for any n and m; Linden (2026) pools raw weights instead, the same pooling when each posterior's weights sum to one. On circles, Kuiper's V (Kuiper 1960; Maag and Stephens 1968) and W1 along the circle (Rabin, Delon and Gousseau 2011), which matched an exact linear program to 1e-9, replace KS and the line W1, and AD cuts the circle opposite the pooled circular mean. JS and Hellinger come from two one-dimensional bounded KDEs with one shared factor, integrated on Gauss-Legendre panels of at most two bandwidths, on which eight nodes integrate a sum of Gaussian kernels to 1e-13; they matched QUADPACK to 1e-9 on a line, an interval and a circle. A kernel of width fσ widens a normal or a wrapped normal to σ√(1 + f²), so a shift reads 1/√(1 + f²) smaller, 1.4% at N = 10⁴, while width ratios stay; on the zoo, estimates lay within five standard errors of these smoothed values, and railed pairs within the size of that smoothing of the truth, the O(h²) bias of the corrected estimate (Jones and Foster 1996). pesummary evaluates its KDE JS at 100 points between the pooled extremes (Hoy and Raymond 2021). O(N²) metrics subsample above `SAMPLE_CAP` = 10 000 samples per posterior, uniformly without replacement (Politis, Romano and Wolf 1999): one energy distance in 16 parameters took 0.06 s, 0.48 s and 2.0 s at N = 5 000, 10 000 and 20 000 on an Apple M4 Pro CPU, about 1.6 min per row with 200 null draws at the cap. The closed-form σ_eff and r_eff maps live in `sigma/maps.py` and give NaN outside the range of their metric.
+
 **Structure layering (Decided)**
 
 - equinox modules for anything crossing jit: samples, weights, transforms, estimator state.
@@ -303,10 +319,11 @@ Four engines share the data model and declare what they need. The menus below ar
 
 **Method details**
 
-- Mean shifts are in units of the reference σ in mode A and of the pooled σ in mode B, as in Glass's Δ and Cohen's d; the pooled σ is the root mean square of the two widths, the scale of the pooled z-score. Width ratios are σ/σ_ref per parameter.
+- Mean shifts are in units of the reference σ in mode A and of the pooled σ in mode B, as in Glass's Δ and Cohen's d; the pooled σ is the root mean square of the two widths, the scale of the pooled z-score. Width ratios are σ/σ_ref per parameter. Both come from z-scored coordinates; on circles they take the shortest arc between the circular means and the circular standard deviation.
+- Marginal rows on circles take Kuiper's V (`kuiper_ks`) instead of KS, and W1 along the circle, both unchanged by any rotation (Kuiper 1960; Rabin, Delon and Gousseau 2011); AD cuts the circle opposite the pooled circular mean. Sphere axes follow their own topologies.
 - KL rows come in both directions, in both modes. In mode A, KL(reference ‖ approximation) grows when the approximation is overconfident, the main failure of amortised SBI posteriors (Hermans et al. 2022); KL(approximation ‖ reference) grows when it puts mass where the reference has none.
 - JS values are in nats, the unit of the bilby validation study (Romero-Shaw et al. 2020). The joint kNN JS combines Kozachenko–Leonenko entropy estimates, JS = H(m) − ½H(p) − ½H(q), with the pooled samples standing for the mixture m.
-- The Hellinger distance comes in three forms. The Gaussian form follows from the Bhattacharyya distance D_B between the moment-matched Gaussians, H² = 1 − exp(−D_B), whose location and shape terms add (Bhattacharyya 1943; Fukunaga 1990). The marginal form uses the bounded KDE. The joint form uses the kNN Rényi-α estimator at α = ½ (Póczos and Schneider 2011), since H² = 1 − exp(−D_½/2) for the Rényi divergence D_½ (Rényi 1961). Hellinger is symmetric, so it gives one row per pair in both modes.
+- The Hellinger distance comes in three forms. The Gaussian form follows from the Bhattacharyya distance D_B between the moment-matched Gaussians, H² = 1 − exp(−D_B), whose location and shape terms add (Bhattacharyya 1943; Fukunaga 1990). The marginal form integrates two bounded KDEs with one shared bandwidth factor. The joint form uses the kNN Rényi-α estimator at α = ½ (Póczos and Schneider 2011), since H² = 1 − exp(−D_½/2) for the Rényi divergence D_½ (Rényi 1961). Hellinger is symmetric, so it gives one row per pair in both modes.
 - MMD uses a Gaussian kernel whose bandwidth is the median pairwise distance of the pooled whitened samples (Gretton et al. 2012). It is fixed once per comparison, so the observed value and the null draws share it, and it is recorded in the recipe.
 - Sliced W2 runs on the Euclidean block only, because slicing ignores circles and spheres.
 - C2ST and the normalizing-flow estimator are placeholders: their functions exist with final signatures and raise `NotImplementedError` until the classifier and its training setup are chosen.
@@ -346,8 +363,9 @@ Every result row carries a value, its uncertainty, its null, σ_sig and an effec
 | Mean shift, per parameter | The value itself | Exact |
 | Gaussian KL, total and location term; kNN KL (each direction) | √(2·KL) | Exact |
 | Gaussian W2, total and location term | The value itself | Exact |
-| 1D W1 | The value itself | Exact |
+| 1D W1, along the circle on circles | The value itself | Exact |
 | KS | 2Φ⁻¹((1 + D_KS)/2) | Exact |
+| Kuiper's V, circle marginals | 2Φ⁻¹((1 + V)/2), as V = D for a shift | Exact |
 | k-sample AD, divided by nm/(n + m) | Tabulated curve, the same for every N | Numerical |
 | JS, bounded KDE or kNN (nats) | Tabulated curve, the same for every D | Numerical |
 | Hellinger, all forms; Gaussian total and location term | √(−8 ln(1 − H²)) | Exact |
@@ -357,6 +375,8 @@ Every result row carries a value, its uncertainty, its null, σ_sig and an effec
 | Sinkhorn divergence, squared-Euclidean cost | √S_ε | Exact |
 | C2ST accuracy (placeholder) | 2Φ⁻¹(acc); a lower bound, since real classifiers are sub-optimal | Exact for the Bayes classifier |
 | Data-space energy distance | The energy-distance curve with D parameters, in noise σ | Linear order |
+
+`sigma/maps.py` holds the closed-form maps; a value outside the range of its metric maps to NaN.
 
 At linear order, a posterior whose covariance is the inverse Fisher matrix maps to a unit Gaussian on the D-dimensional tangent space of the noise-whitened data space, so the data-space energy distance follows the same curve and noise σ equals posterior σ.
 
@@ -391,14 +411,14 @@ Distributions with known answers serve as the test suite, as the source of the �
 | `rotated_gaussians` | `reference` and `rotated`, at ∓α/2 in one plane | As for `gaussians`; every marginal and per-parameter value is exactly zero |
 | `banana` | Twisted Gaussian B(b, v) and its moment-matched `gaussian` | Moments; KL(B ‖ N) = ½ ln(1 + 2b²v²) and KL(N ‖ B) = 2b²v² − ½ ln(1 + 2b²v²) |
 | `gaussian_mixture` | Two-component `mixture`, its moment-matched `gaussian`, one `component` and the `reweighted` modes | Moments; KL of every pair, by quadrature along the separation axis |
-| `railed_gaussians` | Unit normals truncated at zero, one per offset z | Railing score exp(−z²/2), or 1 for z ≤ 0; truncated moments; KL of every pair |
-| `wrapped_gaussians` | A wrapped normal centred on the circle boundary, and a copy shifted by δσ | Circular mean and mean resultant length; the generating shift |
+| `railed_gaussians` | Unit normals truncated at zero, one per offset z | Railing score exp(−z²/2), or 1 for z ≤ 0; truncated moments; KL of every pair; marginal KS, W1, Hellinger, JS and AD on the railed axis |
+| `wrapped_gaussians` | A wrapped normal centred on the circle boundary, and a copy shifted by δσ | Circular mean and mean resultant length; the generating shift; Kuiper's V, W1 along the circle, AD after the pooled cut, JS and Hellinger |
 | `von_mises_fisher` | A von Mises-Fisher distribution near the north pole, and a copy rotated over it | Mean resultant length; KL and Hellinger; the angular shift |
 | `ar1_chains` | AR(1) `Chains` with one coefficient φ per parameter | τ = (1 + φ)/(1 − φ); stationary mean and width |
 
 - **Cases (Decided).** A `ZooCase` holds K named posteriors, their `ParamSpace` and their reference table. `sample(key, N, batch_size=B)` draws a `SampleSet` shaped (B, K, N, D) with equal weights, and `log_prob` evaluates every posterior with respect to the Lebesgue measure of the coordinates. Posterior k draws from `derive_key(key, name)` and problem b folds in its index, so draws depend neither on the other posteriors nor on B, and posteriors of the same name share their random numbers across cases.
 - **Reference tables (Decided).** One polars table per case, with the result columns `pair`, `metric` and `parameters`, plus `value` and `basis`, so results join their truth. KL rows come in both directions; symmetric metrics have one row per pair. The effect-size truths are the rows `mean_shift`, `width_ratio`, `mahalanobis_shift` and `angular_shift`, in units of the first posterior of the pair.
-- **Reference values (Decided).** Closed forms where they exist, and one-dimensional quadrature for the marginal JS and AD of Gaussian pairs and for mixture KL. All of it runs in JAX float64, so reference values compute under `jit`, map with `vmap` and differentiate with `grad`; NumPy only reads user input. The quadrature uses composite 8-point Gauss-Legendre rules (Davis and Rabinowitz 1984) on panels refined around every normal component and every crossing of two weighted components, so components of very different widths keep their share of an integral. Adaptive QUADPACK (Piessens et al. 1983), as SciPy (Virtanen et al. 2020) runs it, steps over a narrow component without a warning: it gave ½ ln 2 instead of ln 2 for the JS divergence of N(0, 1) and N(4, 0.001²), and 0.92 instead of 8 ln 2 − 4 for the AD distance of fully separated normals. The tests compare every quadrature with QUADPACK given break points at every component. Concrete invalid inputs raise ValueError; inside jit they give NaN. The banana KL values follow from the unit Jacobian of the twist and the maximum entropy of the Gaussian (Cover and Thomas 2006), and the `banana` defaults are the moderately twisted target B(0.03, 100) of Sejdinovic et al. (2014), who also use b = 0.1 and 8 dimensions.
+- **Reference values (Decided).** Closed forms where they exist, and one-dimensional quadrature for the marginal JS and AD of Gaussian, railed and wrapped pairs, the Hellinger distance of wrapped pairs and mixture KL. All of it runs in JAX float64, so reference values compute under `jit`, map with `vmap` and differentiate with `grad`; NumPy only reads user input. The quadrature uses composite 8-point Gauss-Legendre rules (Davis and Rabinowitz 1984) on panels refined around every normal component and every crossing of two weighted components, so components of very different widths keep their share of an integral. Adaptive QUADPACK (Piessens et al. 1983), as SciPy (Virtanen et al. 2020) runs it, steps over a narrow component without a warning: it gave ½ ln 2 instead of ln 2 for the JS divergence of N(0, 1) and N(4, 0.001²), and 0.92 instead of 8 ln 2 − 4 for the AD distance of fully separated normals. The tests compare every quadrature with QUADPACK given break points at every component. Concrete invalid inputs raise ValueError; inside jit they give NaN. The banana KL values follow from the unit Jacobian of the twist and the maximum entropy of the Gaussian (Cover and Thomas 2006), and the `banana` defaults are the moderately twisted target B(0.03, 100) of Sejdinovic et al. (2014), who also use b = 0.1 and 8 dimensions.
 - **Families (Decided).** Periodic cases use wrapped normals, whose circular standard deviation equals σ (Mardia and Jupp 2000); they draw exactly, and wrapping one coordinate of a correlated normal correlates a circle with real axes. Sphere cases use von Mises-Fisher distributions (Fisher 1953), drawn by inversion on the 2-sphere (Fisher, Lewis and Embleton 1987). Rotated Gaussians turn by ±α/2, so their marginals stay identical. The mixture's partners cover moment matching, mode dropping and mode reweighting; with equal weights it is bimodal when its separation exceeds 2 (Schilling, Watkins and Watkins 2002). Railed cases share one bound, with truncated moments from Barr and Sherrill (1999). The shift and scale builders take an optional mean and covariance, and the rotation builder a mean and per-parameter scales, so whitening and float64 can be tested at GW scales.
 - **AR(1) chains (Decided).** Chains with known τ (Thompson 2010), summed over all lags as in emcee, with an optional start far from zero whose transient decays as φ^t.
 - **Checks.** The tests reproduce every reference value from draws within five standard errors, and every closed form against an independent SciPy computation; an error of 10 per cent in any reference value fails them.
@@ -540,6 +560,7 @@ mixed-signals/
 │   ├── generators/         # benched: protocols, capability checks
 │   ├── nulls/              # permutation, split-half, Gaussian surrogates, N_eff matching
 │   ├── sigma/              # σ_sig, σ_eff and r_eff maps, calibration tables
+│   │   └── maps.py         # closed-form σ_eff and r_eff maps
 │   ├── engines/            # diagnose, compare, reweight, dataspace
 │   ├── zoo/                # cases with known answers: distributions, closed forms
 │   ├── pipeline/           # YAML config models, runner, dry-run cost
@@ -608,9 +629,11 @@ Every method and assumption above cites the sources below. Each module cites the
 | Gaussian KL | Kullback and Leibler (1951); Rasmussen and Williams (2006), Appendix A |
 | Gaussian W2 | Dowson and Landau (1982); Givens and Shortt (1984) |
 | KS, two sample | Smirnov (1948); SciPy `ks_2samp` (Virtanen et al. 2020) |
-| k-sample Anderson–Darling | Scholz and Stephens (1987); SciPy `anderson_ksamp` |
-| 1D W1 | Vallender (1974); SciPy `wasserstein_distance` |
-| JS | Lin (1991); GW usage in nats: Romero-Shaw et al. (2020) |
+| Kuiper's V on circles | Kuiper (1960); two-sample form: Maag and Stephens (1968) |
+| k-sample Anderson–Darling | Scholz and Stephens (1987); SciPy `anderson_ksamp`; weighted form: Linden (2026) |
+| 1D W1 | Vallender (1974); SciPy `wasserstein_distance`; along a circle: Rabin, Delon and Gousseau (2011) |
+| JS | Lin (1991); GW usage in nats: Romero-Shaw et al. (2020); KDE evaluation in pesummary: Hoy and Raymond (2021) |
+| Subsampling cap | Politis, Romano and Wolf (1999); the cap from a CPU timing, recorded with `SAMPLE_CAP` |
 | Bounded KDE | Reflection: Schuster (1985); boundary correction: Jones (1993), Jones and Foster (1996), evmix (Hu and Scarrott 2018); bandwidth and dimension limit: Silverman (1986); estimator: SciPy (Virtanen et al. 2020) through JAX (JAX authors 2022) |
 | kNN density and its digamma correction | Loftsgaarden and Quesenberry (1965); Kozachenko and Leonenko (1987); Kraskov, Stögbauer and Grassberger (2004) |
 | Equal weights for kNN; resampling | Wang, Kulkarni and Verdú (2009); Smith and Gelfand (1992) |
@@ -705,6 +728,7 @@ Every method and assumption above cites the sources below. Each module cites the
 - Harris, C. R. et al. (2020). Array programming with NumPy. *Nature* 585, 357–362.
 - Hellinger, E. (1909). Neue Begründung der Theorie quadratischer Formen von unendlichvielen Veränderlichen. *Journal für die reine und angewandte Mathematik* 136, 210.
 - Hermans, J., Delaunoy, A., Rozet, F., Wehenkel, A., Begy, V. and Louppe, G. (2022). A trust crisis in simulation-based inference? Your posterior approximations can be unfaithful. *Transactions on Machine Learning Research*.
+- Hoy, C. and Raymond, V. (2021). PESummary: the code agnostic Parameter Estimation Summary page builder. *SoftwareX* 15, 100765.
 - Hu, Y. and Scarrott, C. (2018). evmix: An R package for extreme value mixture modeling, threshold estimation and boundary corrected kernel density estimation. *Journal of Statistical Software* 84(5).
 - IEEE (2019). IEEE Standard for Floating-Point Arithmetic. IEEE Std 754-2019.
 - Janati, H., Muzellec, B., Peyré, G. and Cuturi, M. (2020). Entropic optimal transport between unbalanced Gaussian measures has a closed form. *Advances in Neural Information Processing Systems* 33.
@@ -723,14 +747,17 @@ Every method and assumption above cites the sources below. Each module cites the
 - Knijnenburg, T. A., Wessels, L. F. A., Reinders, M. J. T. and Shmulevich, I. (2009). Fewer permutations, more accurate P-values. *Bioinformatics* 25(12), i161–i168.
 - Kozachenko, L. F. and Leonenko, N. N. (1987). Sample estimate of the entropy of a random vector. *Problems of Information Transmission* 23(2), 95–101.
 - Kraskov, A., Stögbauer, H. and Grassberger, P. (2004). Estimating mutual information. *Physical Review E* 69(6), 066138.
+- Kuiper, N. H. (1960). Tests concerning random points on a circle. *Indagationes Mathematicae (Proceedings)* 63, 38–47.
 - Kullback, S. and Leibler, R. A. (1951). On information and sufficiency. *Annals of Mathematical Statistics* 22(1), 79–86.
 - Leone, F. C., Nelson, L. S. and Nottingham, R. B. (1961). The folded normal distribution. *Technometrics* 3(4), 543–550.
 - Lin, J. (1991). Divergence measures based on the Shannon entropy. *IEEE Transactions on Information Theory* 37(1), 145–151.
 - Lindblom, L., Owen, B. J. and Brown, D. A. (2008). Model waveform accuracy standards for gravitational wave data analysis. *Physical Review D* 78(12), 124020.
+- Linden, A. (2026). Weighted extensions of the Kolmogorov-Smirnov, Cramer-von Mises, and Anderson-Darling tests for assessing covariate balance. arXiv:2607.21782.
 - Loftsgaarden, D. O. and Quesenberry, C. P. (1965). A nonparametric estimate of a multivariate density function. *Annals of Mathematical Statistics* 36(3), 1049–1051.
 - Lopez-Paz, D. and Oquab, M. (2017). Revisiting classifier two-sample tests. *International Conference on Learning Representations*.
 - Lueckmann, J.-M., Boelts, J., Greenberg, D., Gonçalves, P. and Macke, J. (2021). Benchmarking simulation-based inference. *Proceedings of AISTATS*, PMLR 130, 343–351.
 - Lyons, R. (2013). Distance covariance in metric spaces. *Annals of Probability* 41(5), 3284–3305.
+- Maag, U. R. and Stephens, M. A. (1968). The V_NM two-sample test. *Annals of Mathematical Statistics* 39(3), 923–935.
 - Madras, N. and Sokal, A. D. (1988). The pivot algorithm: a highly efficient Monte Carlo method for the self-avoiding walk. *Journal of Statistical Physics* 50(1–2), 109–186.
 - Mahalanobis, P. C. (1936). On the generalised distance in statistics. *Proceedings of the National Institute of Sciences of India* 2(1), 49–55.
 - Mardia, K. V. and Jupp, P. E. (2000). *Directional Statistics*. Wiley.
@@ -748,6 +775,7 @@ Every method and assumption above cites the sources below. Each module cites the
 - Piessens, R., de Doncker-Kapenga, E., Überhuber, C. W. and Kahaner, D. K. (1983). *QUADPACK: A Subroutine Package for Automatic Integration*. Springer Series in Computational Mathematics 1. Springer.
 - Póczos, B. and Schneider, J. (2011). On the estimation of α-divergences. *Proceedings of AISTATS*, PMLR 15, 609–617.
 - Politis, D. N., Romano, J. P. and Wolf, M. (1999). *Subsampling*. Springer.
+- Rabin, J., Delon, J. and Gousseau, Y. (2011). Transportation distances on the circle. *Journal of Mathematical Imaging and Vision* 41(1–2), 147–167.
 - Rabin, J., Peyré, G., Delon, J. and Bernot, M. (2012). Wasserstein barycenter and its application to texture mixing. *Scale Space and Variational Methods in Computer Vision*, Lecture Notes in Computer Science 6667, 435–446.
 - Rasmussen, C. E. and Williams, C. K. I. (2006). *Gaussian Processes for Machine Learning*. MIT Press.
 - Raveri, M. and Doux, C. (2021). Non-Gaussian estimates of tensions in cosmological parameters. *Physical Review D* 104(4), 043504.

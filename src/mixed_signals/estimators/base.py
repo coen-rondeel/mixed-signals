@@ -284,8 +284,14 @@ def _warn_about_unresolved_circles(
     samples: Float[Array, "sample param"],
     log_weights: Float[Array, " sample"],
     space: ParamSpace,
+    *,
+    consequence: str = "the cut opposite the circular mean may split a mode",
 ) -> None:
-    """Warn about circles whose mean direction the Rayleigh test does not resolve."""
+    """Warn about circles whose mean direction the Rayleigh test does not resolve.
+
+    ``consequence`` completes the message with what an unresolved mean
+    direction means for the caller.
+    """
     positions = _circle_positions(space)
     if not positions:
         return
@@ -305,7 +311,7 @@ def _warn_about_unresolved_circles(
             f"the mean direction is not resolved for {', '.join(unresolved)}: the"
             f" Rayleigh statistic 2 N_eff R^2 lies below {RAYLEIGH_THRESHOLD:.3g},"
             " the 95% point of chi-squared with 2 degrees of freedom for a uniform"
-            " circle, so the cut opposite the circular mean may split a mode"
+            f" circle, so {consequence}"
         )
 
 

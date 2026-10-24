@@ -100,10 +100,24 @@
    :show-inheritance:
 ```
 
-## Marginal metrics
+## Metrics
 
 ```{eval-rst}
+.. automodule:: mixed_signals.metrics
+
+.. automodule:: mixed_signals.metrics.moments
+   :members:
+
 .. automodule:: mixed_signals.metrics.marginal
+   :members:
+```
+
+## Effect sizes
+
+```{eval-rst}
+.. automodule:: mixed_signals.sigma
+
+.. automodule:: mixed_signals.sigma.maps
    :members:
 ```
 

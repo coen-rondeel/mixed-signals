@@ -15,11 +15,11 @@ The implementation is split into twenty focused sessions, numbered 0 to 19. They
 | 5 | MCMC tools | B | 2 | Done (2026-10-14) |
 | 6 | Estimators | B | 2 | Done (2026-10-14) |
 | 7 | eryn adapters and priors | C | 2, 4 | Done (2026-10-24) |
-| 8 | Metrics I: moments and marginals | C | 3, 6 | Next |
+| 8 | Metrics I: moments and marginals | C | 3, 6 | Done (2026-10-24) |
 | 9 | Metrics II: divergences, kernels and classifiers | C | 3, 6 | Open |
 | 10 | Optimal transport | C | 3, 4 | Open |
 | 11 | Diagnostics | C | 5, 6 | Open |
-| 12 | Nulls and σ | D | 8 | Open |
+| 12 | Nulls and σ | D | 8 | Next |
 | 13 | Reweighting | D | 7 | Open |
 | 14 | Engines | E | 8 to 12 | Open |
 | 15 | Data space | E | 4, 9 | Open |
@@ -157,13 +157,15 @@ Scope: `metrics/_cap.py`, `metrics/moments.py`, `metrics/marginal.py`.
 - Name the result metrics as the zoo's reference tables do (`kl`, `kl_location`, `w2`, `ks`, `js`, `ad` and so on), or rename the zoo's in the same change, so results join their truth.
 - Done when the zoo's closed-form values are recovered.
 
+Outcome (2026-10-24): the developers decided fourteen items, now in `DESIGN.md`. Kernels compute in the coordinates they receive, so engines z-score the per-parameter rows of a pair with its shared whitening and run joint rows in the decorrelated one. `metrics/moments.py` has `mean_shift` and `width_ratio` (estimator `empirical`, circular statistics on circles) and the Gaussian `gaussian_kl`, `gaussian_w2` and `gaussian_hellinger`, moved from the zoo, which return the total, the location and shape terms and ln(det Σ_q/det Σ_p) for the direction of r_eff, and take the shortest arc on circles. `metrics/marginal.py` has the weighted `kuiper_statistic`, `anderson_darling_distance` (each posterior pooled with half the mass, summed at the ends of runs of ties), `wasserstein_distance` and `circle_wasserstein_distance`. `marginal_distances` applies them per parameter: KS, AD and W1 on lines and intervals, and on circles Kuiper's V in rows named `kuiper_ks` (see `ks_metric_names`), W1 along the circle and AD cut opposite the pooled circular mean; sphere axes follow their own topologies. `kde_divergences` integrates the JS divergence and the Hellinger distance of two one-dimensional `KernelDensity` estimates on Gauss-Legendre panels of at most two bandwidths, and `marginal_kde_divergences` fits them per parameter with `shared_bandwidth_factor`, Silverman's factor at the smaller Kish n_eff. `metrics/_cap.py` gives the O(N²) metrics `cap_samples`, a uniform subsample without replacement above `SAMPLE_CAP` = 10 000 samples per posterior, set from a CPU timing. `sigma/maps.py` has the closed-form `sigma_eff` and `r_eff` maps. The zoo gained marginal truths for `wrapped_gaussians` and `railed_gaussians`, checked against SciPy; every kernel matched SciPy, an exact transport linear program or QUADPACK, and recovered the zoo within five standard errors, the KDE values against the zoo pair smoothed by the kernels. Later sessions call `cap_samples` before every O(N²) metric, fit marginal KDEs with one shared factor per comparison, and take σ_eff and r_eff from `sigma.maps`.
+
 ### 9. Metrics II: divergences, kernels and classifiers
 
 Scope: `metrics/divergence.py`, `metrics/kernel.py`, `metrics/classifier.py`.
 
 - kNN estimates of the KL divergence in both directions, of the Jensen-Shannon divergence from Kozachenko-Leonenko entropy estimates of the pooled samples and of each input, and of the Hellinger distance from the Rényi-α estimator at α = ½.
 - Build them on `estimators.NearestNeighbours`: its k-th neighbour distances (`neighbour_distance`, `leave_one_out_distance`) and digamma-corrected log densities. Each metric sets its default k (`neighbours`). Unequal positive weights give NaN there, so weighted sets are resampled first.
-- Maximum mean discrepancy with a Gaussian kernel, whose median-heuristic bandwidth is fixed once per comparison, and energy distance, both under the cap from session 8.
+- Maximum mean discrepancy with a Gaussian kernel, whose median-heuristic bandwidth is fixed once per comparison, and energy distance, both under the cap from session 8: `metrics._cap.cap_samples` with `SAMPLE_CAP`, on a key derived with `prng.derive_key` from the row's path ending in `"subsample"`.
 - The classifier two-sample test (C2ST) as a placeholder: its final signature and docstring, raising `NotImplementedError`.
 - Done when each metric vanishes on identical distributions, within its null, and orders the zoo's shifts correctly.
 
@@ -189,6 +191,7 @@ Scope: `diagnostics/`.
 - Multimodality through GMM-BIC with `estimators.MixtureDensity`: form BIC from its `mean_log_likelihood` and `parameter_count`, and settle with the developers the n of the penalty for weighted or correlated samples. Under scikit-learn's stopping rule the winning log-likelihood can lie a few nats below the optimum (the session 6 zoo check), which the comparison of component counts must allow for.
 - Prior railing: the marginal posterior density at a finite bound over its peak density, from the one-dimensional `estimators.KernelDensity`, whose Jones-Foster correction recovered the zoo's railing scores within a few per cent, with a flag threshold calibrated on the zoo's railed cases.
 - Chain health from session 5 (τ, effective sample size, split-chain tests, informational R̂, and acceptance and swap rates for eryn backends, from the counts and proposals in `Chains`) as diagnostic rows. The `mcmc` kernels take the cold chain shaped (step, walker, param); the split-chain test brings its own asymptotic p-value, and R̂ raises a `CoupledChainsWarning` that the rows capture.
+- On circle parameters the split-chain test takes Kuiper's V (`metrics.marginal.kuiper_statistic`) with its limiting distribution (Kuiper 1960) instead of KS, whose value depends on where the circle is cut. The `mcmc` kernels take arrays without a space, so this session passes the topology.
 - `Chains.from_eryn` gives acceptance counts only with `num_repeats_in_model`, so without it the chain-health rows show swap rates alone.
 - Done when the zoo's bananas, mixtures and railed cases are flagged and its Gaussians are not.
 
@@ -199,7 +202,9 @@ Scope: `nulls/`, `sigma/`, and a calibration script in `scripts/`.
 - Nulls: permutation of τ-thinned pooled samples in both modes by default, splitting the reference into halves at the approximation's N_eff as a mode A alternative, Gaussian surrogates for posterior-shape diagnostics (`estimators.GaussianDensity.sample`), and N_eff matching. 200 draws by default, configurable.
 - σ_sig: the null's empirical p-value as a one-sided σ, with a fitted tail beyond the resampling resolution, flagged as extrapolated.
 - σ_eff maps per metric, r_eff maps for shape-only rows, and per-metric threshold defaults on σ_eff and |ln r_eff| that the YAML config can override.
-- A script that rebuilds the σ_eff and r_eff calibration tables and the validation page from the zoo. The zoo's `batch_size` draws independent problems for the null-uniformity checks, and its `mahalanobis_shift` and `width_ratio` rows are the true σ_eff and r_eff. The page also reruns the session 6 zoo checks: the GMM starts behind `DEFAULT_STARTS` and the railing scores of the reflected and corrected KDEs.
+- A script that rebuilds the σ_eff and r_eff calibration tables and the validation page from the zoo. The zoo's `batch_size` draws independent problems for the null-uniformity checks, and its `mahalanobis_shift` and `width_ratio` rows are the true σ_eff and r_eff. The page also reruns the session 6 zoo checks, the GMM starts behind `DEFAULT_STARTS` and the railing scores of the reflected and corrected KDEs, and the session 8 timing behind `SAMPLE_CAP`.
+- `sigma/maps.py` holds the closed-form maps of session 8; add the tabulated AD and JS curves next to them. The marginal JS and Hellinger come from KDEs, whose kernels shrink a shift by 1/√(1 + f²), 1.4% at N = 10⁴, so calibrate their curves with the KDE included.
+- Settle with the developers how null-subtracted values below zero enter the maps, which give NaN outside the range of their metric.
 - Done when nulls on identical distributions give uniform p-values, σ_eff recovers the zoo's known shifts, and r_eff its known width ratios.
 
 ### 13. Reweighting
@@ -222,6 +227,7 @@ Scope: `engines/` (`compare` and `diagnose`) and the public API in `__init__.py`
 - `diagnose` on raw chains and on flat samples.
 - Re-exports in `__init__.py` go below the float64 switch.
 - One whitening per problem through `jax.vmap` of `Whitening.from_samples` (the reference posterior in mode A, the two posteriors of each pair in mode B) or `from_fisher`, with its `description` in the space column. Traced whitenings do not warn, so rebuild a NaN one concretely to capture its `ValidityWarning` in the rows of its problem.
+- Per-parameter rows run on both inputs z-scored by their shared whitening (`decorrelate=False`), joint rows in the decorrelated whitening: the session 8 kernels compute in the coordinates they receive. Fit the marginal KDEs with one `shared_bandwidth_factor` per comparison, reuse it in every null draw, and write `KernelDensitySettings(bandwidth=factor).to_json()` into the rows; the factor is a static setting, so the null draws of one comparison map with `jax.vmap`, while problems with different factors run one by one. `ks_metric_names` names each KS or Kuiper row.
 - Done when a zoo comparison produces the full result table end to end.
 
 ### 15. Data space

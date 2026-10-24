@@ -15,7 +15,7 @@ import jax.numpy as jnp
 import numpy as np
 import polars as pl
 import pytest
-from scipy import stats
+from scipy import special, stats
 
 from mixed_signals.core.chains import Chains
 from mixed_signals.core.samples import SampleSet
@@ -43,7 +43,7 @@ from mixed_signals.zoo import (
     von_mises_fisher,
     wrapped_gaussians,
 )
-from mixed_signals.zoo.distributions import Gaussian
+from mixed_signals.zoo.distributions import Gaussian, TruncatedGaussian, WrappedGaussian
 
 STANDARD_ERRORS = 5.0
 SAMPLE_COUNT = 40_000
@@ -123,6 +123,60 @@ def anderson_darling_distance(first: np.ndarray, second: np.ndarray) -> float:
         / (position * (total_count - position))
     ) / (first_count * second_count)
     return float(statistic * total_count / (first_count * second_count))
+
+
+def distribution_gaps(first: np.ndarray, second: np.ndarray) -> np.ndarray:
+    """Return F − G after each pooled value of two equally weighted samples."""
+    values = np.concatenate([first, second])
+    steps = np.concatenate(
+        [np.full(len(first), 1 / len(first)), np.full(len(second), -1 / len(second))]
+    )
+    return np.cumsum(steps[np.argsort(values, kind="stable")])
+
+
+def kuiper_statistic(first: np.ndarray, second: np.ndarray) -> float:
+    """Return Kuiper's two-sample V = max(F − G) − min(F − G), with F − G = 0 first."""
+    gaps = distribution_gaps(first, second)
+    return float(max(gaps.max(), 0.0) - min(gaps.min(), 0.0))
+
+
+def circle_w1(first: np.ndarray, second: np.ndarray, period: float) -> float:
+    """Return W1 along a circle: ∫ |F − G − c| at the length-weighted median c."""
+    values = np.sort(np.concatenate([first, second]))
+    lengths = np.append(np.diff(values), values[0] + period - values[-1])
+    levels = np.append(distribution_gaps(first, second)[:-1], 0.0)
+    order = np.argsort(levels)
+    covered = np.cumsum(lengths[order])
+    median = levels[order][np.searchsorted(covered, 0.5 * covered[-1])]
+    return float(np.sum(lengths * np.abs(levels - median)))
+
+
+def marginal_log_density(
+    case: ZooCase, posterior: int, column: int
+) -> Callable[[np.ndarray], np.ndarray]:
+    """Return the log density of one marginal of a posterior, wrapped on a circle."""
+    distribution = case.posteriors[posterior]
+    if isinstance(distribution, TruncatedGaussian):
+        mean = float(distribution.mean[column])
+        std = float(distribution.std[column])
+        lower = float(distribution.lower[column])
+        upper = float(distribution.upper[column])
+        truncated = stats.truncnorm(
+            (lower - mean) / std, (upper - mean) / std, loc=mean, scale=std
+        )
+        return lambda values: np.asarray(truncated.logpdf(values))
+    if isinstance(distribution, WrappedGaussian) and column == distribution.circle:
+        mean = float(distribution.base.mean[column])
+        std = math.sqrt(float(distribution.base.covariance[column, column]))
+        windings = np.arange(-20, 21) * float(distribution.period)
+        return lambda values: np.asarray(
+            special.logsumexp(
+                stats.norm.logpdf(np.asarray(values)[:, None] + windings, mean, std),
+                axis=1,
+            )
+        )
+    normal = reference_marginal(case, case.names[posterior], case.space.names[column])
+    return lambda values: np.asarray(normal.logpdf(values))
 
 
 def gaussian_moments(draws: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
@@ -247,12 +301,15 @@ def estimate_row(
             0.0,
         )
     if metric in ("hellinger", "js") and len(columns) == 1:
-        marginal_first = reference_marginal(case, pair[0], parameters[0])
-        marginal_second = reference_marginal(case, pair[1], parameters[0])
+        marginal_first = marginal_log_density(case, first, columns[0])
+        marginal_second = marginal_log_density(case, second, columns[0])
         if metric == "hellinger":
-            values = np.sqrt(
-                marginal_second.pdf(first_draws[:, 0])
-                / marginal_first.pdf(first_draws[:, 0])
+            values = np.exp(
+                0.5
+                * (
+                    marginal_second(first_draws[:, 0])
+                    - marginal_first(first_draws[:, 0])
+                )
             )
             squared, error = mean_estimate(1 - values)
             return (
@@ -262,7 +319,7 @@ def estimate_row(
             )
 
         def half(draws_one: np.ndarray, own: Any, other: Any) -> np.ndarray:
-            log_own, log_other = own.logpdf(draws_one), other.logpdf(draws_one)
+            log_own, log_other = own(draws_one), other(draws_one)
             mixture = np.logaddexp(log_own, log_other)
             return np.asarray(0.5 * (math.log(2) + log_own - mixture))
 
@@ -276,6 +333,10 @@ def estimate_row(
             first_half[0] + second_half[0],
             math.hypot(first_half[1], second_half[1]),
             0.0,
+        )
+    if periods[0] is not None and metric in ("kuiper_ks", "w1", "ad"):
+        return circle_marginal_estimate(
+            case, sample_set, metric, first, second, columns
         )
     if metric == "ks":
         estimate = batch_estimate(
@@ -323,6 +384,44 @@ def estimate_row(
     if metric == "railing_score":
         return railing_score_from_density(case, first, columns[0]), 0.0, 1e-7
     pytest.fail(f"no estimator for the metric {metric!r}")
+
+
+def circle_marginal_estimate(
+    case: ZooCase,
+    sample_set: SampleSet,
+    metric: str,
+    first: int,
+    second: int,
+    columns: list[int],
+) -> Estimate:
+    """Estimate Kuiper's V, the circle W1 or AD after the pooled cut, from draws."""
+    period = case.space.parameters[columns[0]].period
+    assert period is not None
+    first_angles = np.asarray(sample_set.samples[0, first, :, columns[0]])
+    second_angles = np.asarray(sample_set.samples[0, second, :, columns[0]])
+    if metric == "kuiper_ks":
+        estimate = batch_estimate(
+            lambda part: kuiper_statistic(first_angles[part], second_angles[part])
+        )
+        return (*estimate, 4 * math.sqrt(2 / SAMPLE_COUNT))
+    if metric == "w1":
+        estimate = batch_estimate(
+            lambda part: circle_w1(first_angles[part], second_angles[part], period)
+        )
+        widths = sum(
+            float(np.std(signed_arc(circular_mean(angles, period), angles, period)))
+            for angles in (first_angles, second_angles)
+        )
+        return (*estimate, 2 * widths / math.sqrt(SAMPLE_COUNT))
+    centre = circular_mean(np.concatenate([first_angles, second_angles]), period)
+
+    def cut(part: slice) -> float:
+        return anderson_darling_distance(
+            signed_arc(centre, first_angles[part], period),
+            signed_arc(centre, second_angles[part], period),
+        )
+
+    return (*batch_estimate(cut), 4 / SAMPLE_COUNT)
 
 
 def sphere_vectors(case: ZooCase, sample_set: SampleSet, posterior: int) -> jax.Array:
