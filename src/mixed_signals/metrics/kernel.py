@@ -34,8 +34,9 @@ Energy distance
     (Sejdinovic et al. 2013), and its root is a metric.
 Circles and spheres
     Each circle of period P becomes a circle of circumference P in a plane,
-    and each sphere the unit sphere in three dimensions; distances are
-    Euclidean in that embedding and equal the arc length locally. Euclidean
+    and each sphere a sphere of its radius in three dimensions, the unit
+    sphere unless a whitening scaled it; distances are Euclidean in that
+    embedding and equal the arc length locally. Euclidean
     spaces, and so the embedding, have strong negative type, which makes the
     energy distance zero only for equal distributions (Lyons 2013), and the
     Gaussian kernel is characteristic on them (Gretton et al. 2012). Arc
@@ -50,8 +51,9 @@ Circles and spheres
     energy distance within its null and an MMD² far below it, while the
     embedding resolved both. Chords are shorter than arcs, so the σ_eff of a
     2σ shift on a whitened circle read 2 to 9% low. Whitening divides each
-    circle by its circular standard deviation and leaves spheres in radians,
-    which sets their weight against the Euclidean block.
+    circle by its circular standard deviation and gives each sphere the
+    radius 1/s for its angular width s, which sets their weight against the
+    Euclidean block.
 Cost
     Three sums over all pairs of samples, evaluated in chunks of rows so
     that memory stays bounded.
@@ -65,7 +67,6 @@ References:
 """
 
 import functools
-import math
 from collections.abc import Callable
 from typing import Final
 
@@ -77,14 +78,14 @@ from jaxtyping import Array, Float, PRNGKeyArray
 from mixed_signals._config import SAMPLE_CAP
 from mixed_signals.core.samples import _is_concrete
 from mixed_signals.core.space import ParamSpace
-from mixed_signals.core.topology import unit_vectors
 from mixed_signals.estimators.base import (
     CHUNK_ENTRIES,
     _jit,
     _map_in_chunks,
     _read_samples,
 )
-from mixed_signals.metrics._cap import _draw, cap_pair
+from mixed_signals.metrics._cap import _draw, read_and_cap_pair
+from mixed_signals.metrics._embedding import embed
 from mixed_signals.prng import derive_key
 
 BANDWIDTH_SAMPLE_SIZE: Final = 1_000
@@ -209,7 +210,7 @@ def maximum_mean_discrepancy(
     width = jnp.asarray(bandwidth, dtype=jnp.float64)
     if _is_concrete(width) and not (bool(jnp.isfinite(width)) and float(width) > 0):
         raise ValueError(f"bandwidth must be positive and finite, got {float(width)}")
-    arrays = _read_and_cap(
+    arrays = read_and_cap_pair(
         first,
         first_log_weights,
         second,
@@ -263,7 +264,7 @@ def energy_distance(
     References:
         :cite:t:`baringhaus2004new`; :cite:t:`szekely2013energy`.
     """
-    arrays = _read_and_cap(
+    arrays = read_and_cap_pair(
         first,
         first_log_weights,
         second,
@@ -274,57 +275,6 @@ def energy_distance(
         cap=cap,
     )
     return _energy_distance(*arrays, space)
-
-
-def _read_and_cap(
-    first: ArrayLike,
-    first_log_weights: ArrayLike | None,
-    second: ArrayLike,
-    second_log_weights: ArrayLike | None,
-    space: ParamSpace,
-    *,
-    key: PRNGKeyArray,
-    metric: str,
-    cap: int,
-) -> tuple[Array, Array, Array, Array]:
-    """Return both posteriors as float64, each capped at ``cap`` samples."""
-    first_array, first_weights = _read_samples(first, first_log_weights, space)
-    second_array, second_weights = _read_samples(second, second_log_weights, space)
-    return cap_pair(
-        first_array,
-        first_weights,
-        second_array,
-        second_weights,
-        key=key,
-        metric=metric,
-        cap=cap,
-    )
-
-
-def _embed(
-    samples: Float[Array, "sample param"], space: ParamSpace
-) -> Float[Array, "sample _"]:
-    """Return points whose Euclidean distances are chordal on circles and spheres.
-
-    The Euclidean block stays, each circle of period P becomes a circle of
-    radius P/(2π) in a plane, and each sphere the unit sphere.
-    """
-    blocks = space.axis_blocks
-    columns = []
-    if blocks.euclidean:
-        columns.append(samples[:, list(blocks.euclidean)])
-    for position in blocks.circles:
-        lower, upper = space.parameters[position].bounds
-        period = upper - lower
-        angle = 2 * math.pi * (samples[:, position] - lower) / period
-        radius = period / (2 * math.pi)
-        columns.append(radius * jnp.stack([jnp.cos(angle), jnp.sin(angle)], axis=1))
-    for (azimuth, polar), sphere in zip(blocks.spheres, space.spheres, strict=True):
-        vectors, _, _ = unit_vectors(
-            samples[:, azimuth], samples[:, polar], sphere.polar_form
-        )
-        columns.append(vectors)
-    return jnp.concatenate(columns, axis=1)
 
 
 def _gaussian(squared: Array, bandwidth: Array) -> Array:
@@ -375,7 +325,7 @@ def _maximum_mean_discrepancy_kernel(
     bandwidth: Float[Array, ""],
 ) -> Float[Array, ""]:
     """Return the weighted V-statistic MMD² in the chordal embedding."""
-    first_points, second_points = _embed(first, space), _embed(second, space)
+    first_points, second_points = embed(first, space), embed(second, space)
     first_weights = jax.nn.softmax(first_log_weights)
     second_weights = jax.nn.softmax(second_log_weights)
     kernel = functools.partial(_gaussian, bandwidth=bandwidth)
@@ -397,7 +347,7 @@ def _energy_distance_kernel(
     space: ParamSpace,
 ) -> Float[Array, ""]:
     """Return the weighted V-statistic energy distance in the chordal embedding."""
-    first_points, second_points = _embed(first, space), _embed(second, space)
+    first_points, second_points = embed(first, space), embed(second, space)
     first_weights = jax.nn.softmax(first_log_weights)
     second_weights = jax.nn.softmax(second_log_weights)
     return (
@@ -420,7 +370,7 @@ def _median_bandwidth_kernel(
     space: ParamSpace,
 ) -> Float[Array, ""]:
     """Return the weighted median of the distances over all pooled pairs."""
-    points = _embed(jnp.concatenate([first, second]), space)
+    points = embed(jnp.concatenate([first, second]), space)
     weights = 0.5 * jnp.concatenate(
         [jax.nn.softmax(first_log_weights), jax.nn.softmax(second_log_weights)]
     )
@@ -431,16 +381,24 @@ def _median_bandwidth_kernel(
         batch_size=max(1, CHUNK_ENTRIES // (count * size)),
     )
     rows, columns = jnp.triu_indices(count, 1)
-    distances = matrix[rows, columns]
-    pair_weights = weights[rows] * weights[columns]
-    order = jnp.argsort(distances)
-    # * Scaled by the largest, equal weights become exact ones, so the sums count pairs.
-    cumulative = jnp.cumsum(pair_weights[order] / jnp.max(pair_weights))
+    return _weighted_median(matrix[rows, columns], weights[rows] * weights[columns])
+
+
+def _weighted_median(
+    values: Float[Array, " selected"], weights: Float[Array, " selected"]
+) -> Float[Array, ""]:
+    """Return the weighted median, the mean of the two central values for a tie.
+
+    For equal weights it is the plain median, which takes the mean of the two
+    central values for an even count.
+    """
+    order = jnp.argsort(values)
+    # * Scaled by the largest, equal weights become exact ones, so sums count values.
+    cumulative = jnp.cumsum(weights[order] / jnp.max(weights))
     half = 0.5 * cumulative[-1]
-    sorted_distances = distances[order]
-    # * The mean of the two central values, as the plain median takes for an even count.
-    lower = sorted_distances[jnp.argmax(cumulative >= half)]
-    upper = sorted_distances[jnp.argmax(cumulative > half)]
+    sorted_values = values[order]
+    lower = sorted_values[jnp.argmax(cumulative >= half)]
+    upper = sorted_values[jnp.argmax(cumulative > half)]
     return 0.5 * (lower + upper)
 
 

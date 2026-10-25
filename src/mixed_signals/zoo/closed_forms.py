@@ -20,6 +20,14 @@ Gaussian divergences
     those of :mod:`mixed_signals.metrics.moments`, which the metrics share;
     the functions here check concrete inputs first. Each result is a
     :class:`~mixed_signals.metrics.moments.Terms`.
+Entropic transport between Gaussians
+    The Sinkhorn divergence of the squared distance between two Gaussians
+    has a closed form (Janati et al. 2020; Mallasto, Gerolin and Minh 2022):
+    a location term, the squared distance between the means at every ε, and
+    a shape term that tends to the squared Bures distance as ε → 0. Sliced
+    W2 and the sliced Sinkhorn divergence between a unit Gaussian and a
+    shifted copy with some axes scaled average one-dimensional closed forms
+    over a Beta-distributed share of the scaled axes in each direction.
 One-dimensional normals
     The Kolmogorov-Smirnov distance, the largest absolute gap between the two
     distribution functions, is reached where the two densities cross
@@ -53,7 +61,9 @@ References:
     :cite:t:`vallender1974calculation`; :cite:t:`leone1961folded`;
     :cite:t:`lin1991divergence`; :cite:t:`pettitt1976two`;
     :cite:t:`scholz1987k`; :cite:t:`davis1984methods`;
-    :cite:t:`piessens1983quadpack`; :cite:t:`virtanen2020scipy`.
+    :cite:t:`piessens1983quadpack`; :cite:t:`virtanen2020scipy`;
+    :cite:t:`janati2020entropic`; :cite:t:`mallasto2022entropy`;
+    :cite:t:`rabin2012wasserstein`; :cite:t:`nadjahi2020statistical`.
 """
 
 import functools
@@ -84,6 +94,12 @@ GAUSS_LEGENDRE_ORDER: Final = 8
 
 SMALL_CONCENTRATION: Final = 1e-2
 """Concentration below which the mean resultant length uses its Taylor series."""
+
+SLICED_PANELS: Final = 32
+"""Panels of the 8-point Gauss-Legendre rule over the direction angle of sliced truths.
+
+The integrands are smooth in the angle, so 256 nodes reach float64 resolution.
+"""
 
 CROSSING_RESOLUTION: Final = 1e-3
 """Narrowest crossing width, as a fraction of the narrower of its two components."""
@@ -214,6 +230,157 @@ def gaussian_hellinger(
         :cite:t:`fukunaga1990introduction`.
     """
     return moments.gaussian_hellinger(*_gaussian_inputs(mean_p, cov_p, mean_q, cov_q))
+
+
+def gaussian_sinkhorn(
+    mean_p: Float[ArrayLike, " param"],
+    cov_p: Float[ArrayLike, "param param"],
+    mean_q: Float[ArrayLike, " param"],
+    cov_q: Float[ArrayLike, "param param"],
+    epsilon: Float[ArrayLike, ""],
+) -> Terms:
+    """Return the Sinkhorn divergence S_ε between two Gaussians, squared-Euclidean cost.
+
+    The entropic transport cost OT_ε(p, q), the smallest ∫‖x − y‖² dπ +
+    ε KL(π ‖ p ⊗ q) over the couplings π of p and q, has a closed form between
+    Gaussians: with σ² = ε/2, OT_ε = ‖Δμ‖² + B²_σ(Σ_p, Σ_q), where
+    B²_σ(A, B) = tr A + tr B − tr D_σ + Dσ²(1 − ln 2σ²) +
+    σ² ln det(D_σ + σ²I) and D_σ = (4A^½BA^½ + σ⁴I)^½ (Janati et al. 2020,
+    Theorem 1; Mallasto, Gerolin and Minh 2022). The Sinkhorn divergence
+    S_ε = OT_ε(p, q) − ½OT_ε(p, p) − ½OT_ε(q, q) (Genevay, Peyré and Cuturi
+    2018; Feydy et al. 2019) splits into the location term ‖Δμ‖², whatever
+    ε, and the shape term B²_σ(Σ_p, Σ_q) − ½B²_σ(Σ_p, Σ_p) − ½B²_σ(Σ_q, Σ_q),
+    in which the traces and the constants cancel. The shape term tends to
+    the squared Bures distance of :func:`gaussian_w2` as ε → 0 and falls as
+    ‖Σ_p − Σ_q‖²/ε for large ε. Each eigenvalue λ of A^½BA^½ enters through
+    √(4λ + σ⁴) − σ², written as 4λ/(√(4λ + σ⁴) + σ²) so that large ε keep
+    their digits.
+
+    Args:
+        mean_p: Mean of p, shaped (D,).
+        cov_p: Covariance of p, shaped (D, D).
+        mean_q: Mean of q, shaped (D,).
+        cov_q: Covariance of q, shaped (D, D).
+        epsilon: Entropic regularisation ε, positive.
+
+    Returns:
+        The divergence S_ε, its location and shape terms and the
+        log-determinant ratio ln(det Σ_q/det Σ_p).
+
+    Raises:
+        ValueError: If concrete inputs are not finite, a covariance is not
+            symmetric positive definite, or ε is not positive.
+
+    References:
+        :cite:t:`janati2020entropic`; :cite:t:`mallasto2022entropy`;
+        :cite:t:`genevay2018learning`; :cite:t:`feydy2019interpolating`.
+    """
+    arrays = _gaussian_inputs(mean_p, cov_p, mean_q, cov_q)
+    epsilon_array = jnp.asarray(epsilon, dtype=jnp.float64)
+    require(
+        jnp.isfinite(epsilon_array) & (epsilon_array > 0),
+        "epsilon must be positive and finite",
+    )
+    return _gaussian_sinkhorn(*arrays, epsilon_array)
+
+
+def gaussian_sliced_w2(
+    shift: Float[ArrayLike, ""],
+    ratio: Float[ArrayLike, ""],
+    scaled_count: int,
+    param_count: int,
+) -> Float[Array, ""]:
+    """Return SW2² between a unit Gaussian and a shifted copy with some axes scaled.
+
+    The first Gaussian is N(0, I) and the second N(Δ, S²) in D dimensions,
+    with ‖Δ‖ = ``shift`` and S scaling k = ``scaled_count`` axes by
+    r = ``ratio``. A direction θ projects them to the normals N(0, 1) and
+    N(⟨θ, Δ⟩, 1 + (r² − 1)t), with t the squared length of θ on the scaled
+    axes, whose W2² is ⟨θ, Δ⟩² + (1 − √(1 + (r² − 1)t))² (Dowson and Landau
+    1982). For θ uniform on the sphere, ⟨θ, Δ⟩² averages to ‖Δ‖²/D and t
+    follows Beta(k/2, (D − k)/2) (Johnson, Kotz and Balakrishnan 1995), so
+
+        SW2² = ‖Δ‖²/D + E_t[(1 − √(1 + (r² − 1)t))²],
+
+    the mean squared W2 over directions of sliced W2 (Rabin et al. 2012).
+    The mean over t is a Gauss-Legendre quadrature in φ with t = sin²φ,
+    which removes the singular ends of the Beta density.
+
+    Args:
+        shift: Length ‖Δ‖ of the shift, finite.
+        ratio: Width ratio r on the scaled axes, positive.
+        scaled_count: Number k of scaled axes, from 0 to D.
+        param_count: Dimension D, at least one.
+
+    Returns:
+        SW2², non-negative.
+
+    Raises:
+        ValueError: If an input is out of range.
+
+    References:
+        :cite:t:`rabin2012wasserstein`; :cite:t:`dowson1982frechet`;
+        :cite:t:`johnson1995continuous`.
+    """
+    shift_array, ratio_array = _sliced_inputs(shift, ratio, scaled_count, param_count)
+    variances, weights = _scaled_projection_variances(
+        ratio_array, scaled_count, param_count
+    )
+    shape = jnp.sum(weights * (1 - jnp.sqrt(variances)) ** 2)
+    return shift_array**2 / param_count + shape
+
+
+def gaussian_sliced_sinkhorn(
+    shift: Float[ArrayLike, ""],
+    ratio: Float[ArrayLike, ""],
+    scaled_count: int,
+    param_count: int,
+    epsilon: Float[ArrayLike, ""],
+) -> Float[Array, ""]:
+    """Return the sliced Sinkhorn divergence of the pair of :func:`gaussian_sliced_w2`.
+
+    Each direction projects the two Gaussians to normals, whose Sinkhorn
+    divergence S_ε of the squared distance is the closed form of
+    :func:`gaussian_sinkhorn` in one dimension: the squared shift
+    ⟨θ, Δ⟩² plus a shape term between the variances 1 and 1 + (r² − 1)t.
+    Averaged over uniform directions (Nadjahi et al. 2020), the shift term
+    gives ‖Δ‖²/D at every ε, and the shape term is a quadrature over t, as in
+    :func:`gaussian_sliced_w2`.
+
+    Args:
+        shift: Length ‖Δ‖ of the shift, finite.
+        ratio: Width ratio r on the scaled axes, positive.
+        scaled_count: Number k of scaled axes, from 0 to D.
+        param_count: Dimension D, at least one.
+        epsilon: Entropic regularisation ε of every projection, positive.
+
+    Returns:
+        The sliced Sinkhorn divergence, non-negative.
+
+    Raises:
+        ValueError: If an input is out of range.
+
+    References:
+        :cite:t:`nadjahi2020statistical`; :cite:t:`janati2020entropic`;
+        :cite:t:`johnson1995continuous`.
+    """
+    shift_array, ratio_array = _sliced_inputs(shift, ratio, scaled_count, param_count)
+    epsilon_array = jnp.asarray(epsilon, dtype=jnp.float64)
+    require(
+        jnp.isfinite(epsilon_array) & (epsilon_array > 0),
+        "epsilon must be positive and finite",
+    )
+    variances, weights = _scaled_projection_variances(
+        ratio_array, scaled_count, param_count
+    )
+    half_epsilon = 0.5 * epsilon_array
+    # * In one dimension A^½BA^½ = ab, so each term has the single eigenvalue ab.
+    shape = (
+        _entropic_bures_term(variances, half_epsilon)
+        - 0.5 * _entropic_bures_term(jnp.ones_like(variances), half_epsilon)
+        - 0.5 * _entropic_bures_term(variances**2, half_epsilon)
+    )
+    return shift_array**2 / param_count + jnp.sum(weights * shape)
 
 
 def mahalanobis_shift(
@@ -1301,6 +1468,95 @@ def _von_mises_fisher_inputs(
 
 
 @_jit
+def _entropic_bures_term(eigenvalues: Array, half_epsilon: Array) -> Array:
+    """Return −q + σ² ln(1 + q/(2σ²)), q = √(4λ + σ⁴) − σ², for each eigenvalue λ."""
+    clipped = jnp.clip(eigenvalues, 0.0)
+    excess = 4 * clipped / (jnp.sqrt(4 * clipped + half_epsilon**2) + half_epsilon)
+    return -excess + half_epsilon * jnp.log1p(excess / (2 * half_epsilon))
+
+
+def _entropic_bures_part(eigenvalues: Array, half_epsilon: Array) -> Array:
+    """Return the sum of :func:`_entropic_bures_term` over the eigenvalues."""
+    return jnp.sum(_entropic_bures_term(eigenvalues, half_epsilon))
+
+
+def _sliced_inputs(
+    shift: ArrayLike, ratio: ArrayLike, scaled_count: int, param_count: int
+) -> tuple[Array, Array]:
+    shift_array = jnp.asarray(shift, dtype=jnp.float64)
+    ratio_array = jnp.asarray(ratio, dtype=jnp.float64)
+    require(jnp.isfinite(shift_array), "the shift must be finite")
+    require(
+        jnp.isfinite(ratio_array) & (ratio_array > 0),
+        "the ratio must be positive and finite",
+    )
+    if param_count < 1:
+        raise ValueError(f"param_count must be at least 1, got {param_count}")
+    if not 0 <= scaled_count <= param_count:
+        raise ValueError(
+            f"scaled_count must lie between 0 and {param_count}, got {scaled_count}"
+        )
+    return shift_array, ratio_array
+
+
+def _scaled_projection_variances(
+    ratio: Array, scaled_count: int, param_count: int
+) -> tuple[Array, Array]:
+    """Return the projected variances 1 + (r² − 1)t at the nodes, with their weights.
+
+    t = sin²φ follows Beta(k/2, (D − k)/2) when φ has the density
+    2 sin^(k−1)φ cos^(D−k−1)φ / B(k/2, (D − k)/2) on [0, π/2]; at k = 0 and
+    k = D the projection takes t = 0 or t = 1.
+    """
+    if scaled_count in (0, param_count):
+        fraction = jnp.full(1, float(scaled_count == param_count))
+        return 1 + (ratio**2 - 1) * fraction, jnp.ones(1)
+    edges = np.linspace(0.0, math.pi / 2, SLICED_PANELS + 1)
+    half_widths = 0.5 * np.diff(edges)
+    nodes = (
+        0.5 * (edges[:-1] + edges[1:])[:, None] + half_widths[:, None] * _LEGENDRE_NODES
+    ).ravel()
+    log_beta = (
+        math.lgamma(0.5 * scaled_count)
+        + math.lgamma(0.5 * (param_count - scaled_count))
+        - math.lgamma(0.5 * param_count)
+    )
+    density = (
+        2
+        * np.sin(nodes) ** (scaled_count - 1)
+        * np.cos(nodes) ** (param_count - scaled_count - 1)
+        * math.exp(-log_beta)
+    )
+    weights = (half_widths[:, None] * _LEGENDRE_WEIGHTS).ravel() * density
+    fraction = jnp.asarray(np.sin(nodes) ** 2)
+    return 1 + (ratio**2 - 1) * fraction, jnp.asarray(weights)
+
+
+def _gaussian_sinkhorn_kernel(
+    mean_p: Array, cov_p: Array, mean_q: Array, cov_q: Array, epsilon: Array
+) -> Terms:
+    half_epsilon = 0.5 * epsilon
+    eigenvalues_p, eigenvectors_p = jnp.linalg.eigh(cov_p)
+    root_p = (eigenvectors_p * jnp.sqrt(jnp.clip(eigenvalues_p, 0.0))) @ (
+        eigenvectors_p.T
+    )
+    middle = root_p @ cov_q @ root_p
+    cross = jnp.linalg.eigvalsh(0.5 * (middle + middle.T))
+    # * A^½AA^½ = A², whose eigenvalues are the squares of those of A.
+    shape = (
+        _entropic_bures_part(cross, half_epsilon)
+        - 0.5 * _entropic_bures_part(eigenvalues_p**2, half_epsilon)
+        - 0.5 * _entropic_bures_part(jnp.linalg.eigvalsh(cov_q) ** 2, half_epsilon)
+    )
+    shape = jnp.where(jnp.all(cov_p == cov_q), 0.0, shape)
+    location = jnp.sum((mean_q - mean_p) ** 2)
+    log_det_ratio = jnp.linalg.slogdet(cov_q)[1] - jnp.linalg.slogdet(cov_p)[1]
+    return Terms(location + shape, location, shape, log_det_ratio)
+
+
+_gaussian_sinkhorn = _jit(_gaussian_sinkhorn_kernel)
+
+
 def _mahalanobis_shift(mean_p: Array, cov_p: Array, mean_q: Array) -> Array:
     whitened_shift = solve_triangular(
         jnp.linalg.cholesky(cov_p), mean_q - mean_p, lower=True

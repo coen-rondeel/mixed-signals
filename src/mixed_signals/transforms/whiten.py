@@ -11,25 +11,35 @@ Blocks
     Euclidean block, the real and interval parameters outside spheres, is
     centred and whitened as a whole. A circle is only divided by its circular
     standard deviation s (Mardia and Jupp 2000), so it is never mixed with
-    another axis and stays a circle, of period P/s. Sphere pairs pass
-    unchanged, because great-circle distances need radians and an azimuth of
-    period 2π.
+    another axis and stays a circle, of period P/s. Sphere pairs keep their
+    angles, because an azimuth has the period 2π, and each sphere gets the
+    radius 1/s for its angular width s
+    (:func:`~mixed_signals.core.samples.spherical_width`), so that its
+    distances, like those of a whitened circle, come in units of its width.
+    On the zoo's sky posteriors of widths 0.02 and 0.1 rad next to four
+    whitened axes, sky shifts of one and two widths gave √(S_ε − null mean)
+    of 1.00 and 1.98 to 1.99 for the Sinkhorn divergence, 91 to 356 null
+    widths above the null; in radians they gave 0.05 to 0.19, within 5 null
+    widths.
 Sources
     ``reference``: the covariance of one posterior, as in mode A.
     ``pooled``: the mean of the covariances of the posteriors given, each
     weighted equally, which is the pooled within-group covariance of the
     Mahalanobis distance between groups (Mahalanobis 1936; Johnson and
     Wichern 2007, Section 6.3); circles take the root mean square of their
-    circular standard deviations. The covariance of all samples together would
+    circular standard deviations and spheres that of their angular widths.
+    The covariance of all samples together would
     add the spread between the means, which shrinks a Mahalanobis shift d
     between two equal Gaussians to d/√(1 + d²/4), below 2 for every d. Engines
     pool the two posteriors of each pair, so a row does not depend on the
     other posteriors of a run.
     ``fisher``: the inverse Γ⁻¹ of a Fisher matrix, the posterior covariance at
     high signal-to-noise ratio (Vallisneri 2008). The Euclidean block takes its
-    marginal covariance, the Euclidean block of Γ⁻¹, and each circle the square
-    root of its diagonal entry, so a Fisher whitening matches the covariance
-    whitening of such a posterior.
+    marginal covariance, the Euclidean block of Γ⁻¹, each circle the square
+    root of its diagonal entry, and each sphere the root of half the trace of
+    its covariance in the tangent plane at the centre, which is the angular
+    width of a concentrated posterior, so a Fisher whitening matches the
+    covariance whitening of such a posterior.
 Rotation
     Whitening matrices are unique up to a rotation. The Euclidean block uses
     ZCA-cor whitening, W = P^(−1/2) V^(−1/2), with P the correlation matrix and
@@ -75,8 +85,13 @@ import numpy as np
 from jax.typing import ArrayLike
 from jaxtyping import Array, Float
 
-from mixed_signals.core.samples import circular_standard_deviation, weighted_covariance
+from mixed_signals.core.samples import (
+    circular_standard_deviation,
+    spherical_width,
+    weighted_covariance,
+)
 from mixed_signals.core.space import AxisBlocks, Parameter, ParamSpace
+from mixed_signals.core.topology import PolarForm
 from mixed_signals.errors import PrecisionWarning, ValidityWarning
 from mixed_signals.transforms.base import Transform
 
@@ -123,9 +138,11 @@ class _Parts(NamedTuple):
     matrix: Array
     inverse_matrix: Array
     circle_scales: Array
+    sphere_scales: Array
     log_abs_det: Array
     variances: Array
     circle_widths: Array
+    sphere_widths: Array
     eigenvalues: Array
     eigenvectors: Array
 
@@ -143,8 +160,9 @@ class Whitening(Transform):
     """Whitening of one problem: the Euclidean block whitened, circles scaled.
 
     The Euclidean block is centred and whitened, y_E = W (x_E − c); each circle
-    is divided by its scale, y = x/s; sphere pairs stay as they are. Build a
-    whitening with :meth:`from_samples` or :meth:`from_fisher`.
+    is divided by its scale, y = x/s; sphere pairs keep their coordinates, and
+    :meth:`map_space` gives each sphere the radius 1/s for its scale s. Build
+    a whitening with :meth:`from_samples` or :meth:`from_fisher`.
 
     Attributes:
         centre: Centre c of the Euclidean block, shaped (E,).
@@ -152,7 +170,10 @@ class Whitening(Transform):
         inverse_matrix: Its inverse W⁻¹, shaped (E, E).
         circle_scales: Scale s of each circle, its circular standard deviation
             in the units of the circle, shaped (C,).
-        log_abs_det: ln|det ∂f/∂x|, the same at every point.
+        sphere_scales: Scale s of each sphere, its angular width in radians,
+            shaped (S,).
+        log_abs_det: ln|det ∂f/∂x|, the same at every point; spheres keep
+            their coordinates, so they add nothing.
         blocks: Positions of the Euclidean block, the circles and the spheres.
         source: Where the widths come from.
         decorrelate: Whether the Euclidean block is decorrelated (ZCA-cor) or
@@ -166,6 +187,7 @@ class Whitening(Transform):
     matrix: Float[Array, "euclidean euclidean"]
     inverse_matrix: Float[Array, "euclidean euclidean"]
     circle_scales: Float[Array, " circle"]
+    sphere_scales: Float[Array, " sphere"]
     log_abs_det: Float[Array, ""]
     blocks: AxisBlocks = eqx.field(static=True)
     source: WhiteningSource = eqx.field(static=True)
@@ -210,7 +232,8 @@ class Whitening(Transform):
 
         Warns:
             ValidityWarning: If concrete samples give a singular or
-                ill-conditioned covariance, or a circle without spread.
+                ill-conditioned covariance, or a circle or sphere without
+                spread.
             PrecisionWarning: If an input is narrower than float64.
 
         References:
@@ -250,6 +273,7 @@ class Whitening(Transform):
             weights_array,
             blocks=blocks,
             periods=periods,
+            polar_forms=tuple(sphere.polar_form for sphere in space.spheres),
             decorrelate=decorrelate,
         )
         if _is_concrete(parts.log_abs_det):
@@ -322,7 +346,11 @@ class Whitening(Transform):
             _check_fisher(fisher_array, centre_array, space)
         blocks = space.axis_blocks
         parts = _fisher_parts(
-            fisher_array, centre_array, blocks=blocks, decorrelate=decorrelate
+            fisher_array,
+            centre_array,
+            blocks=blocks,
+            polar_forms=tuple(sphere.polar_form for sphere in space.spheres),
+            decorrelate=decorrelate,
         )
         return cls._from_parts(parts, blocks, WhiteningSource.FISHER, decorrelate)
 
@@ -339,6 +367,7 @@ class Whitening(Transform):
             matrix=parts.matrix,
             inverse_matrix=parts.inverse_matrix,
             circle_scales=parts.circle_scales,
+            sphere_scales=parts.sphere_scales,
             log_abs_det=parts.log_abs_det,
             blocks=blocks,
             source=source,
@@ -385,8 +414,9 @@ class Whitening(Transform):
         planes; methods that need bounds run in the original space. A z-scored
         axis keeps its topology, with its bounds mapped. A circle keeps its
         topology, with its bounds, and so its period, divided by its scale.
-        Sphere axes stay as they are. The method reads concrete values, so it
-        runs outside ``jax.jit``.
+        Sphere axes stay as they are, and each sphere takes the radius 1/s
+        for its scale s. The method reads concrete values, so it runs outside
+        ``jax.jit``.
 
         Args:
             space: Space of the original coordinates, with the axis blocks of
@@ -431,7 +461,13 @@ class Whitening(Transform):
                     ),
                 }
             )
-        return ParamSpace(parameters=tuple(parameters), spheres=space.spheres)
+        spheres = tuple(
+            sphere.model_copy(update={"radius": 1 / float(scale)})
+            for sphere, scale in zip(
+                space.spheres, np.asarray(self.sphere_scales).tolist(), strict=True
+            )
+        )
+        return ParamSpace(parameters=tuple(parameters), spheres=spheres)
 
 
 def _jit[**Parameters, Result](
@@ -477,6 +513,7 @@ def _whitening_parts(
     centre: Float[Array, " euclidean"],
     covariance: Float[Array, "euclidean euclidean"],
     circle_scales: Float[Array, " circle"],
+    sphere_scales: Float[Array, " sphere"],
     decorrelate: bool,
 ) -> _Parts:
     """Return the arrays of a whitening, NaN when its widths are singular."""
@@ -502,6 +539,8 @@ def _whitening_parts(
         & jnp.all(variances > 0)
         & jnp.all(jnp.isfinite(circle_scales))
         & jnp.all(circle_scales > 0)
+        & jnp.all(jnp.isfinite(sphere_scales))
+        & jnp.all(sphere_scales > 0)
     )
     if decorrelate:
         size = variances.shape[0]
@@ -514,9 +553,11 @@ def _whitening_parts(
         matrix=jnp.where(valid, matrix, jnp.nan),
         inverse_matrix=jnp.where(valid, inverse_matrix, jnp.nan),
         circle_scales=jnp.where(valid, circle_scales, jnp.nan),
+        sphere_scales=jnp.where(valid, sphere_scales, jnp.nan),
         log_abs_det=jnp.where(valid, log_abs_det, jnp.nan),
         variances=variances,
         circle_widths=circle_scales,
+        sphere_widths=sphere_scales,
         eigenvalues=eigenvalues,
         eigenvectors=eigenvectors,
     )
@@ -527,6 +568,7 @@ def _sample_parts_kernel(
     log_weights: Float[Array, "posterior sample"],
     blocks: AxisBlocks,
     periods: tuple[float, ...],
+    polar_forms: tuple[PolarForm, ...],
     decorrelate: bool,
 ) -> _Parts:
     """Return the arrays of a whitening from the samples of K posteriors."""
@@ -547,10 +589,25 @@ def _sample_parts_kernel(
         ],
         dtype=jnp.float64,
     )
+    sphere_scales = jnp.asarray(
+        [
+            jnp.sqrt(
+                jnp.mean(
+                    spherical_width(
+                        samples[..., azimuth], samples[..., polar], log_weights, form
+                    )
+                    ** 2
+                )
+            )
+            for (azimuth, polar), form in zip(blocks.spheres, polar_forms, strict=True)
+        ],
+        dtype=jnp.float64,
+    )
     return _whitening_parts(
         jnp.mean(means, axis=0),
         jnp.mean(covariances, axis=0),
         circle_scales,
+        sphere_scales,
         decorrelate,
     )
 
@@ -566,10 +623,33 @@ def _fisher_spectrum_kernel(fisher: Float[Array, "param param"]) -> _Spectrum:
     )
 
 
+def _tangent_width(
+    covariance: Float[Array, "param param"],
+    centre: Float[Array, " param"],
+    positions: tuple[int, int],
+    polar_form: PolarForm,
+) -> Float[Array, ""]:
+    """Return √(tr/2) of a sphere's covariance in the tangent plane at the centre."""
+    azimuth, polar = positions
+    value = centre[polar]
+    if polar_form is PolarForm.LATITUDE:
+        horizontal, northward = jnp.cos(value), jnp.ones(())
+    elif polar_form is PolarForm.COLATITUDE:
+        horizontal, northward = jnp.sin(value), jnp.ones(())
+    else:
+        horizontal = jnp.sqrt(1 - value**2)
+        # * The height z = sin β moves by cos β dβ, so dβ = dz/√(1 − z²).
+        northward = 1 / horizontal
+    east = horizontal**2 * covariance[azimuth, azimuth]
+    north = northward**2 * covariance[polar, polar]
+    return jnp.sqrt(0.5 * (east + north))
+
+
 def _fisher_parts_kernel(
     fisher: Float[Array, "param param"],
     centre: Float[Array, " param"],
     blocks: AxisBlocks,
+    polar_forms: tuple[PolarForm, ...],
     decorrelate: bool,
 ) -> _Parts:
     """Return the arrays of a whitening from a Fisher matrix and its centre."""
@@ -588,16 +668,26 @@ def _fisher_parts_kernel(
     covariance = jnp.where(regular, covariance, jnp.nan)
     euclidean = _positions(blocks.euclidean)
     circles = _positions(blocks.circles)
+    sphere_scales = jnp.asarray(
+        [
+            _tangent_width(covariance, centre, positions, form)
+            for positions, form in zip(blocks.spheres, polar_forms, strict=True)
+        ],
+        dtype=jnp.float64,
+    )
     return _whitening_parts(
         centre[euclidean],
         covariance[np.ix_(euclidean, euclidean)],
         jnp.sqrt(jnp.diagonal(covariance)[circles]),
+        sphere_scales,
         decorrelate,
     )
 
 
-_sample_parts = _jit(_sample_parts_kernel, "blocks", "periods", "decorrelate")
-_fisher_parts = _jit(_fisher_parts_kernel, "blocks", "decorrelate")
+_sample_parts = _jit(
+    _sample_parts_kernel, "blocks", "periods", "polar_forms", "decorrelate"
+)
+_fisher_parts = _jit(_fisher_parts_kernel, "blocks", "polar_forms", "decorrelate")
 _fisher_spectrum = _jit(_fisher_spectrum_kernel)
 
 
@@ -688,6 +778,18 @@ def _degeneracy(parts: _Parts, space: ParamSpace) -> str:
         return (
             f"the circular standard deviation of {_names_text(circles)} is zero or"
             " infinite: the values coincide, or spread evenly around the circle"
+        )
+    spheres = [
+        f"({space.names[azimuth]!r}, {space.names[polar]!r})"
+        for (azimuth, polar), width in zip(
+            blocks.spheres, np.asarray(parts.sphere_widths).tolist(), strict=True
+        )
+        if not 0 < width < math.inf
+    ]
+    if spheres:
+        return (
+            f"the angular width of the sphere {', '.join(spheres)} is zero: its"
+            " points coincide"
         )
     return (
         "the Euclidean block is singular, with the correlation eigenvalue"

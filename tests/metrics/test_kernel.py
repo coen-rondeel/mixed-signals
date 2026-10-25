@@ -217,6 +217,36 @@ def test_spheres_are_the_unit_sphere(metric: Metric) -> None:
 
 
 @pytest.mark.parametrize("metric", METRICS)
+def test_spheres_scale_with_their_radius(metric: Metric) -> None:
+    """A sphere of radius R acts as R times its unit vectors."""
+    case = zoo.von_mises_fisher(1.0, width=0.3, euclidean_count=1)
+    draws = np.asarray(case.sample(jax.random.key(5), 300).samples[0])
+    sphere = case.space.spheres[0].model_copy(update={"radius": 4.0})
+    scaled_space = case.space.model_copy(update={"spheres": (sphere,)})
+    on_sphere = metric(draws[0], None, draws[1], None, scaled_space, key=KEY)
+
+    def embedded(points: np.ndarray) -> np.ndarray:
+        azimuth, latitude = points[:, 0], points[:, 1]
+        vectors = np.stack(
+            [
+                np.cos(latitude) * np.cos(azimuth),
+                np.cos(latitude) * np.sin(azimuth),
+                np.sin(latitude),
+            ],
+            axis=1,
+        )
+        return np.concatenate([points[:, 2:], 4.0 * vectors], axis=1)
+
+    quadruple = ParamSpace.model_validate(
+        {"parameters": [{"name": f"x{index}"} for index in range(4)]}
+    )
+    in_space = metric(
+        embedded(draws[0]), None, embedded(draws[1]), None, quadruple, key=KEY
+    )
+    assert float(on_sphere) == pytest.approx(float(in_space), rel=1e-10)
+
+
+@pytest.mark.parametrize("metric", METRICS)
 def test_even_harmonics_are_resolved(metric: Metric) -> None:
     """Modes at 0 and π against ±π/2 differ only in even harmonics; chords see them."""
     rng = np.random.default_rng(5)

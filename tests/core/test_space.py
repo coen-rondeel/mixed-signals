@@ -68,6 +68,18 @@ def test_yaml_output_matches_the_input_layout(space: ParamSpace) -> None:
     assert ParamSpace.from_yaml_text(SPACE_YAML).to_yaml_text() == text
 
 
+def test_yaml_writes_a_sphere_radius_only_when_it_is_not_one(
+    space: ParamSpace,
+) -> None:
+    """A whitened sphere keeps its radius through YAML; radians need no key."""
+    assert "radius" not in space.to_yaml_text()
+    scaled = space.model_copy(
+        update={"spheres": (space.spheres[0].model_copy(update={"radius": 49.5}),)}
+    )
+    assert "radius: 49.5" in scaled.to_yaml_text()
+    assert ParamSpace.from_yaml_text(scaled.to_yaml_text()) == scaled
+
+
 def test_yaml_output_leaves_out_labels_equal_to_the_name() -> None:
     """A label that repeats the name is a default and is not written."""
     space = ParamSpace(parameters=(Parameter(name="chirp_mass"),))

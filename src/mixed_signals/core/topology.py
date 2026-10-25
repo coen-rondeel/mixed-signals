@@ -19,7 +19,11 @@ Circle
 Sphere
     An azimuth parameter, which is a circle of period 2π, and a polar
     parameter, which is an interval inside the range of its
-    :class:`PolarForm`. Angles are in radians.
+    :class:`PolarForm`. Angles are in radians. The radius of the sphere sets
+    the scale of its distances: a chord or a great-circle arc between two
+    points is the radius times that on the unit sphere. Whitening sets it
+    to 1/s for an angular width s of the posteriors, as it divides a circle
+    by its circular standard deviation.
 
 :func:`wrap` reduces values onto a circle, and :func:`unit_vectors` and
 :func:`sphere_coordinates` convert between the coordinates of a sphere and
@@ -39,7 +43,7 @@ from typing import Final
 import jax.numpy as jnp
 from jax.typing import ArrayLike
 from jaxtyping import Array, Float
-from pydantic import BaseModel, ConfigDict, model_validator
+from pydantic import BaseModel, ConfigDict, field_validator, model_validator
 
 AZIMUTH_PERIOD: Final = 2 * math.pi
 """Period of the azimuth axis of every sphere, in radians."""
@@ -98,11 +102,15 @@ class Sphere(BaseModel):
 
     The space that holds the sphere checks that the azimuth is a circle of
     period 2π and that the polar bounds lie inside the range of the polar form.
+    The radius scales every distance on the sphere and leaves its coordinates,
+    which stay angles, unchanged.
 
     Attributes:
         azimuth: Name of the azimuth parameter.
         polar: Name of the polar parameter.
         polar_form: Coordinate of the polar axis.
+        radius: Radius of the sphere, positive and finite: 1 for distances in
+            radians, 1/s after a whitening with angular width s.
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
@@ -110,6 +118,16 @@ class Sphere(BaseModel):
     azimuth: str
     polar: str
     polar_form: PolarForm
+    radius: float = 1.0
+
+    @field_validator("radius")
+    @classmethod
+    def _check_radius(cls, radius: float) -> float:
+        if not (math.isfinite(radius) and radius > 0):
+            raise ValueError(
+                f"a sphere radius must be positive and finite, got {radius!r}"
+            )
+        return radius
 
     @model_validator(mode="after")
     def _check_distinct_axes(self) -> "Sphere":

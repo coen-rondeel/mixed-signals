@@ -10,9 +10,13 @@ import numpy as np
 import pytest
 
 from mixed_signals import zoo
-from mixed_signals.core.samples import SampleSet, circular_standard_deviation
+from mixed_signals.core.samples import (
+    SampleSet,
+    circular_standard_deviation,
+    spherical_width,
+)
 from mixed_signals.core.space import ParamSpace
-from mixed_signals.core.topology import Topology
+from mixed_signals.core.topology import PolarForm, Topology
 from mixed_signals.errors import PrecisionWarning, ValidityWarning
 from mixed_signals.transforms import (
     CONDITION_NUMBER_LIMIT,
@@ -247,8 +251,8 @@ def test_z_score_space_maps_interval_bounds() -> None:
     assert decorrelated.map_space(case.space)["x0"].topology is Topology.REAL
 
 
-def test_spheres_pass_unchanged() -> None:
-    """Sky positions keep their coordinates, topology and units."""
+def test_spheres_keep_their_angles_and_take_a_radius() -> None:
+    """Sky positions keep their coordinates and take the radius 1/s of the pooled s."""
     case = zoo.von_mises_fisher(
         3.0, width=0.05, colatitude=0.1, polar_form="colatitude", euclidean_count=1
     )
@@ -257,9 +261,63 @@ def test_spheres_pass_unchanged() -> None:
     assert whitening.blocks.spheres == ((0, 1),)
     whitened = whitening.forward(sample_set.samples[0])
     np.testing.assert_array_equal(whitened[..., :2], sample_set.samples[0][..., :2])
+    widths = [
+        float(
+            spherical_width(
+                sample_set.samples[0, index, :, 0],
+                sample_set.samples[0, index, :, 1],
+                sample_set.log_weights[0, index],
+                case.space.spheres[0].polar_form,
+            )
+        )
+        for index in range(2)
+    ]
+    expected = math.sqrt(0.5 * (widths[0] ** 2 + widths[1] ** 2))
+    assert float(whitening.sphere_scales[0]) == pytest.approx(expected, rel=1e-12)
+    assert expected == pytest.approx(0.05, rel=0.05)
     mapped = whitening.map_space(case.space)
-    assert mapped.spheres == case.space.spheres
+    assert mapped.spheres[0].radius == pytest.approx(1 / expected, rel=1e-12)
+    assert mapped.spheres[0].model_copy(update={"radius": 1.0}) == case.space.spheres[0]
     assert mapped.parameters[:2] == case.space.parameters[:2]
+    log_det = whitening.log_abs_det_jacobian(sample_set.samples[0])
+    np.testing.assert_allclose(log_det, math.log(float(whitening.matrix[0, 0])))
+
+
+@pytest.mark.parametrize(
+    "polar_form", ["latitude", "colatitude", "sin_latitude", "cos_colatitude"]
+)
+def test_fisher_sphere_scale_is_the_tangent_width(polar_form: str) -> None:
+    """Half the trace of the sky covariance in the tangent plane, in any polar form."""
+    form = PolarForm(polar_form)
+    latitude, east, north = 0.6, 0.02, 0.05
+    angular = form in (PolarForm.LATITUDE, PolarForm.COLATITUDE)
+    polar = {
+        PolarForm.LATITUDE: latitude,
+        PolarForm.COLATITUDE: math.pi / 2 - latitude,
+        PolarForm.SIN_LATITUDE: math.sin(latitude),
+        PolarForm.COS_COLATITUDE: math.sin(latitude),
+    }[form]
+    # * The polar width is dβ for the angles and cos β dβ for the heights.
+    polar_width = north if angular else north * math.cos(latitude)
+    covariance = np.diag([(east / math.cos(latitude)) ** 2, polar_width**2, 1.0])
+    space = ParamSpace.model_validate(
+        {
+            "parameters": [
+                {"name": "ra", "topology": "circle", "bounds": [0.0, 2 * math.pi]},
+                {"name": "dec", "topology": "interval", "bounds": form.bounds},
+                {"name": "x2"},
+            ],
+            "spheres": [{"azimuth": "ra", "polar": "dec", "polar_form": form}],
+        }
+    )
+    whitening = Whitening.from_fisher(
+        np.linalg.inv(covariance), np.array([1.0, polar, 0.0]), space
+    )
+    expected = math.sqrt(0.5 * (east**2 + north**2))
+    assert float(whitening.sphere_scales[0]) == pytest.approx(expected, rel=1e-10)
+    assert whitening.map_space(space).spheres[0].radius == pytest.approx(
+        1 / expected, rel=1e-10
+    )
 
 
 def test_whitening_without_a_euclidean_block() -> None:
@@ -428,6 +486,10 @@ def degenerate_samples(kind: str) -> tuple[np.ndarray, np.ndarray | None, ParamS
     elif kind == "one weight":
         log_weights = np.full((1, 200), -np.inf)
         log_weights[0, 3] = 0.0
+    elif kind == "sphere":
+        space = zoo.von_mises_fisher(1.0, euclidean_count=1).space
+        values[..., 0] = 2.0
+        values[..., 1] = 0.3
     else:
         space = circle_space()
         values[..., 0] = 1.5
@@ -445,6 +507,7 @@ def degenerate_samples(kind: str) -> tuple[np.ndarray, np.ndarray | None, ParamS
         ),
         ("one weight", "fewer than two samples with positive weight"),
         ("circle", r"circular standard deviation of 'x0' is zero or infinite"),
+        ("sphere", r"angular width of the sphere \('azimuth', 'polar'\) is zero"),
     ],
 )
 def test_singular_widths_give_nan_and_a_warning(kind: str, message: str) -> None:

@@ -682,6 +682,7 @@ def _physical_sphere(
         azimuth=names.get(sphere.azimuth, sphere.azimuth),
         polar=names.get(sphere.polar, sphere.polar),
         polar_form=polar_form,
+        radius=sphere.radius,
     )
 
 

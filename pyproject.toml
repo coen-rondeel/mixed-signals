@@ -114,6 +114,9 @@ conflicts = [
 # ! Development only: eryn's JAX priors live on feat-jaxpriors until their release.
 # ! The branch is not pushed yet, so uv.lock still records l2d-dev; see DESIGN.md.
 eryn = { git = "https://github.com/lisa-analysis-tools/Eryn", branch = "feat-jaxpriors" }
+# ! Development only: the memory-bounded online mode of ott-jax 0.6.0 fails on JAX 0.9 and
+# ! later; main fixed it in June 2026 (ott-jax pull request 701), unreleased so far.
+ott-jax = { git = "https://github.com/ott-jax/ott", rev = "36338c94707002772f2392ffa0a3acf11ab23857" }
 # * Development installs CPU-only torch; macOS wheels on PyPI are CPU-only already.
 torch = [
     { index = "pytorch-cpu", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
@@ -202,7 +205,11 @@ addopts = [
 markers = [
     "gpu: needs a CUDA GPU; skipped by default, run by hand with `pytest -m gpu`",
 ]
-filterwarnings = ["error"]
+filterwarnings = [
+    "error",
+    # ? ott-jax imports jaxopt, which warns on import that it is no longer maintained.
+    "ignore:JAXopt is no longer maintained:DeprecationWarning",
+]
 xfail_strict = true
 
 [tool.coverage.run]

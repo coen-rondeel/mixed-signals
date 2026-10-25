@@ -11,6 +11,7 @@ import numpy as np
 import pytest
 from scipy import stats
 
+from mixed_signals import zoo
 from mixed_signals.core.samples import (
     N_EFF_RELATIVE_TOLERANCE,
     SampleSet,
@@ -19,9 +20,11 @@ from mixed_signals.core.samples import (
     circular_standard_deviation,
     kish_effective_sample_size,
     mean_resultant_length,
+    spherical_width,
     unwrap_about,
     weighted_covariance,
 )
+from mixed_signals.core.topology import PolarForm, sphere_coordinates
 from mixed_signals.errors import PrecisionWarning
 
 SAMPLE_COUNT = 40
@@ -344,6 +347,88 @@ def test_unwrap_about_gives_representatives_within_half_a_period() -> None:
     np.testing.assert_allclose(
         np.sin(np.asarray(unwrapped)), np.sin(np.asarray(values)), atol=1e-12
     )
+
+
+@pytest.mark.parametrize("polar_form", list(PolarForm))
+def test_spherical_width_matches_scipy_directional_stats(
+    rng: np.random.Generator, polar_form: PolarForm
+) -> None:
+    """Equal weights give √(1 − R̄) with SciPy's mean resultant length, in any form."""
+    direction = np.array([0.3, -0.2, 0.9]) / np.linalg.norm([0.3, -0.2, 0.9])
+    vectors = stats.vonmises_fisher(direction, 12.0).rvs(500, random_state=rng)
+    resultant = stats.directional_stats(vectors).mean_resultant_length
+    azimuth, polar = sphere_coordinates(jnp.asarray(vectors), polar_form)
+    width = spherical_width(azimuth, polar, jnp.zeros(500), polar_form)
+    assert float(width) == pytest.approx(math.sqrt(1 - resultant), rel=1e-10)
+
+
+def test_spherical_width_honours_weights(rng: np.random.Generator) -> None:
+    """Integer weights act like repeated points, and zero weights remove them."""
+    azimuth = rng.uniform(0.0, 1.0, size=12)
+    latitude = rng.uniform(-0.5, 0.5, size=12)
+    repeats = rng.integers(0, 4, size=12)
+    with np.errstate(divide="ignore"):
+        log_weights = np.log(repeats.astype(float))
+    weighted = spherical_width(
+        jnp.asarray(azimuth),
+        jnp.asarray(latitude),
+        jnp.asarray(log_weights),
+        PolarForm.LATITUDE,
+    )
+    repeated = spherical_width(
+        jnp.asarray(np.repeat(azimuth, repeats)),
+        jnp.asarray(np.repeat(latitude, repeats)),
+        jnp.zeros(int(repeats.sum())),
+        PolarForm.LATITUDE,
+    )
+    assert float(weighted) == pytest.approx(float(repeated), rel=1e-12)
+
+
+def test_spherical_width_of_von_mises_fisher_is_its_width() -> None:
+    """A concentrated von Mises-Fisher distribution has the width 1/√κ."""
+    for width in (0.02, 0.1, 0.5):
+        case = zoo.von_mises_fisher(1.0, width=width)
+        draws = case.sample(jax.random.key(4), 50_000).samples[0, 0]
+        computed = spherical_width(
+            draws[:, 0],
+            draws[:, 1],
+            jnp.zeros(50_000),
+            case.space.spheres[0].polar_form,
+        )
+        # * The relative standard error of the width is 1/√(2N), 0.3% here.
+        assert float(computed) == pytest.approx(width, rel=0.015)
+
+
+def test_coinciding_points_have_exactly_zero_width() -> None:
+    """Points that coincide have no spread, and an even spread has width one."""
+    same = spherical_width(
+        jnp.full(30, 2.0), jnp.full(30, -0.4), jnp.zeros(30), PolarForm.LATITUDE
+    )
+    assert float(same) == 0.0
+    opposite = spherical_width(
+        jnp.array([0.0, math.pi]),
+        jnp.array([0.0, 0.0]),
+        jnp.zeros(2),
+        PolarForm.LATITUDE,
+    )
+    assert float(opposite) == pytest.approx(1.0, abs=1e-15)
+
+
+def test_narrow_spheres_keep_their_width(rng: np.random.Generator) -> None:
+    """A sky position known to 1e-7 rad keeps its width to a few parts in 1e6."""
+    latitude = 0.3 + 1e-7 * rng.normal(size=2_000)
+    azimuth = 1.0 + 1e-7 * rng.normal(size=2_000) / math.cos(0.3)
+    computed = spherical_width(
+        jnp.asarray(azimuth),
+        jnp.asarray(latitude),
+        jnp.zeros(2_000),
+        PolarForm.LATITUDE,
+    )
+    east = (azimuth - azimuth.mean()) * math.cos(0.3)
+    north = latitude - latitude.mean()
+    # * For small spreads 1 − R̄ is half the mean squared tangent offset.
+    expected = math.sqrt(0.5 * np.mean(east**2 + north**2))
+    assert float(computed) == pytest.approx(expected, rel=1e-5)
 
 
 def test_gw_scale_means_stay_within_one_float64_step(

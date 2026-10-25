@@ -71,11 +71,21 @@ The metrics of the reference table:
     ``w1`` is measured along the circle, whose ``ad`` cuts the circle
     opposite the midpoint of the two means, and whose ``js`` and
     ``hellinger`` integrate over one period.
+``sinkhorn``, ``sliced_w2``, ``sliced_sinkhorn``
+    For Gaussian pairs of equal covariance, the Sinkhorn divergence ‖Δμ‖²
+    and the sliced values ‖Δμ‖²/D, which hold at every ε because a shift
+    adds its squared length to the entropic transport cost (Janati et al.
+    2020). ``sliced_w2`` holds SW2², also for scaled Gaussians with the
+    identity as base covariance. The Sinkhorn values of other pairs depend
+    on ε and come from
+    :func:`~mixed_signals.zoo.closed_forms.gaussian_sinkhorn` and
+    :func:`~mixed_signals.zoo.closed_forms.gaussian_sliced_sinkhorn`.
 
 References:
     :cite:t:`haario1999adaptive`; :cite:t:`sejdinovic2014kernel`;
     :cite:t:`mardia2000directional`; :cite:t:`fisher1953dispersion`;
-    :cite:t:`barr1999mean`; :cite:t:`thompson2010comparison`.
+    :cite:t:`barr1999mean`; :cite:t:`thompson2010comparison`;
+    :cite:t:`janati2020entropic`.
 """
 
 import dataclasses
@@ -496,7 +506,8 @@ def scaled_gaussians(
     on the given axes and one elsewhere, so its width ratio is ``ratio`` on
     those axes and one on the others, and its correlations are unchanged.
     With one scaled axis and a diagonal Σ, ``ratio`` is the true r_eff of
-    every shape term.
+    every shape term. With the identity as Σ, the table also holds SW2²,
+    from :func:`~mixed_signals.zoo.closed_forms.gaussian_sliced_w2`.
 
     Args:
         ratio: Width ratio σ_scaled/σ_reference on the given axes, positive.
@@ -518,11 +529,18 @@ def scaled_gaussians(
     scaled_axes = jnp.asarray(_axis_indices("axes", axes, param_count))
     scaling = jnp.ones(param_count).at[scaled_axes].set(ratio)
     scaled_covariance = scaling[:, None] * base_covariance * scaling[None, :]
+    sliced_w2 = None
+    if covariance is None and ratio != 1:
+        # * Projections of N(0, I) and N(0, S²) depend on θ through one Beta variable.
+        sliced_w2 = closed_forms.gaussian_sliced_w2(
+            0.0, ratio, len(set(np.asarray(scaled_axes).tolist())), param_count
+        )
     return _gaussian_case(
         "scaled_gaussians",
         ("reference", "scaled"),
         [base_mean, base_mean],
         [base_covariance, scaled_covariance],
+        sliced_w2=sliced_w2,
     )
 
 
@@ -1218,8 +1236,13 @@ def _gaussian_case(
     names: tuple[str, ...],
     means: list[Array],
     covariances: list[Array],
+    sliced_w2: Array | None = None,
 ) -> ZooCase:
-    """Build a case of Gaussians with every closed-form reference value."""
+    """Build a case of Gaussians with every closed-form reference value.
+
+    ``sliced_w2`` is SW2² of the first pair when a case has it in closed form
+    for unequal covariances.
+    """
     posteriors = tuple(
         Gaussian(mean, covariance)
         for mean, covariance in zip(means, covariances, strict=True)
@@ -1238,6 +1261,8 @@ def _gaussian_case(
             (means[first], covariances[first]),
             (means[second], covariances[second]),
         )
+    if sliced_w2 is not None:
+        rows.add(names[:2], "sliced_w2", param_names, sliced_w2)
     return ZooCase(
         name=case_name,
         space=_real_space(param_names),
@@ -1308,6 +1333,13 @@ def _gaussian_pair_rows(
         rows.add(pair, metric, param_names, terms.total)
         rows.add(pair, f"{metric}_location", param_names, terms.location)
         rows.add(pair, f"{metric}_shape", param_names, terms.shape)
+    if bool(jnp.all(first[1] == second[1])):
+        # * A pure shift has the same transport costs at every ε, so they fit a table.
+        squared_shift = jnp.sum((second[0] - first[0]) ** 2)
+        sliced = squared_shift / len(param_names)
+        rows.add(pair, "sinkhorn", param_names, squared_shift)
+        rows.add(pair, "sliced_w2", param_names, sliced)
+        rows.add(pair, "sliced_sinkhorn", param_names, sliced)
     # * With one parameter the marginal Hellinger row would repeat the joint one.
     marginal_metrics = (
         _MARGINAL_METRICS[1:] if len(param_names) == 1 else _MARGINAL_METRICS

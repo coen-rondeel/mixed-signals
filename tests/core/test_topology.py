@@ -72,6 +72,17 @@ def test_sphere_needs_two_different_parameters() -> None:
         Sphere(azimuth="ra", polar="ra", polar_form=PolarForm.LATITUDE)
 
 
+def test_sphere_radius_defaults_to_one_and_must_be_positive() -> None:
+    """Distances are in radians unless a radius scales them."""
+    sphere = Sphere(azimuth="ra", polar="dec", polar_form=PolarForm.LATITUDE)
+    assert sphere.radius == 1.0
+    for radius in (0.0, -2.0, math.inf, math.nan):
+        with pytest.raises(ValidationError, match="radius must be positive and finite"):
+            Sphere(
+                azimuth="ra", polar="dec", polar_form=PolarForm.LATITUDE, radius=radius
+            )
+
+
 def test_sphere_rejects_unknown_polar_forms() -> None:
     """Only the four polar forms are accepted."""
     with pytest.raises(ValidationError, match="sin_latitude"):

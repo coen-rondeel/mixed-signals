@@ -29,7 +29,9 @@ from jax.typing import ArrayLike
 from jaxtyping import Array, Float, PRNGKeyArray
 
 from mixed_signals._config import SAMPLE_CAP
+from mixed_signals.core.space import ParamSpace
 from mixed_signals.errors import SubsamplingWarning
+from mixed_signals.estimators.base import _read_samples
 from mixed_signals.prng import derive_key
 
 _PACKAGE_DIRECTORY: Final = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -180,6 +182,36 @@ def cap_pair(
             )
         capped.extend([samples_array, weights_array])
     return capped[0], capped[1], capped[2], capped[3]
+
+
+def read_and_cap_pair(
+    first: ArrayLike,
+    first_log_weights: ArrayLike | None,
+    second: ArrayLike,
+    second_log_weights: ArrayLike | None,
+    space: ParamSpace,
+    *,
+    key: PRNGKeyArray,
+    metric: str,
+    cap: int,
+) -> tuple[Array, Array, Array, Array]:
+    """Return both posteriors of a pair as float64, each capped at ``cap`` samples.
+
+    The samples are read and checked against ``space``, with equal weights for
+    ``None``, and then capped with :func:`cap_pair`. Call this function outside
+    ``jax.jit``, where its warning is raised on every call.
+    """
+    first_array, first_weights = _read_samples(first, first_log_weights, space)
+    second_array, second_weights = _read_samples(second, second_log_weights, space)
+    return cap_pair(
+        first_array,
+        first_weights,
+        second_array,
+        second_weights,
+        key=key,
+        metric=metric,
+        cap=cap,
+    )
 
 
 def _draw_kernel(

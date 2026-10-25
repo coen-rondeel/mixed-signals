@@ -383,7 +383,60 @@ def estimate_row(
         )
     if metric == "railing_score":
         return railing_score_from_density(case, first, columns[0]), 0.0, 1e-7
+    if metric in ("sinkhorn", "sliced_w2", "sliced_sinkhorn"):
+        return transport_estimate(
+            case, metric, (first, second), first_draws, second_draws
+        )
     pytest.fail(f"no estimator for the metric {metric!r}")
+
+
+def transport_estimate(
+    case: ZooCase,
+    metric: str,
+    pair: tuple[int, int],
+    first_draws: np.ndarray,
+    second_draws: np.ndarray,
+) -> Estimate:
+    """Estimate a transport row: a squared mean gap, or SW2² over a grid of directions.
+
+    Gaussians of equal covariance differ by a shift, whose Sinkhorn divergence
+    is ‖Δμ‖² and whose sliced values are ‖Δμ‖²/D. Other pairs carry SW2² only
+    in two dimensions here, averaged over evenly spaced directions.
+    """
+    dimension = first_draws.shape[1]
+    first_posterior, second_posterior = (case.posteriors[index] for index in pair)
+    assert isinstance(first_posterior, Gaussian)
+    assert isinstance(second_posterior, Gaussian)
+    traces = float(
+        jnp.trace(first_posterior.covariance) + jnp.trace(second_posterior.covariance)
+    )
+    if bool(jnp.all(first_posterior.covariance == second_posterior.covariance)):
+        divisor = 1 if metric == "sinkhorn" else dimension
+        estimate = batch_estimate(
+            lambda part: (
+                float(
+                    np.sum(
+                        (second_draws[part].mean(0) - first_draws[part].mean(0)) ** 2
+                    )
+                )
+                / divisor
+            )
+        )
+        # * The squared gap of sample means exceeds ‖Δμ‖² by (tr Σ_p + tr Σ_q)/N.
+        return (*estimate, traces / (divisor * SAMPLE_COUNT))
+    assert metric == "sliced_w2"
+    assert dimension == 2
+    angles = np.linspace(0.0, math.pi, 360, endpoint=False)
+    directions = np.stack([np.cos(angles), np.sin(angles)], axis=1)
+
+    def sliced(part: slice) -> float:
+        first_projections = np.sort(first_draws[part] @ directions.T, axis=0)
+        second_projections = np.sort(second_draws[part] @ directions.T, axis=0)
+        return float(np.mean((first_projections - second_projections) ** 2))
+
+    # * Two samples of one distribution have W2² of order ln N / N in one dimension.
+    bias = traces * math.log(SAMPLE_COUNT) / SAMPLE_COUNT
+    return (*batch_estimate(sliced), bias)
 
 
 def circle_marginal_estimate(
@@ -556,6 +609,28 @@ def test_shifted_gaussians_carry_the_shift_as_sigma_eff() -> None:
     assert case.reference_value("kl", pair) == pytest.approx(0.5 * 1.25**2)
     assert case.reference_value("kl_shape", pair) == 0.0
     assert case.reference_value("w2_shape", pair) == 0.0
+
+
+def test_transport_rows_hold_only_values_free_of_epsilon() -> None:
+    """Shifts carry every transport row; width changes only SW2², from the identity."""
+    shifted = shifted_gaussians(1.5, param_count=3)
+    pair = ("reference", "shifted")
+    squared = shifted.reference_value("w2", pair) ** 2
+    assert shifted.reference_value("sinkhorn", pair) == pytest.approx(squared)
+    for metric in ("sliced_w2", "sliced_sinkhorn"):
+        assert shifted.reference_value(metric, pair) == pytest.approx(squared / 3)
+    scaled = scaled_gaussians(0.5, param_count=3, axes=(0, 2))
+    assert scaled.reference_value("sliced_w2", ("reference", "scaled")) == (
+        pytest.approx(float(closed_forms.gaussian_sliced_w2(0.0, 0.5, 2, 3)))
+    )
+    transport = ("sinkhorn", "sliced_w2", "sliced_sinkhorn")
+    for case in (
+        scaled_gaussians(0.5, covariance=np.diag([1.0, 2.0])),
+        rotated_gaussians(0.6),
+    ):
+        assert case.reference.filter(pl.col("metric").is_in(transport)).is_empty()
+    unscaled = scaled_gaussians(1.0, param_count=2)
+    assert unscaled.reference_value("sliced_w2", ("reference", "scaled")) == 0.0
 
 
 def test_scaled_gaussians_carry_the_ratio_as_r_eff() -> None:

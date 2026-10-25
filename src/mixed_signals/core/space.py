@@ -28,7 +28,8 @@ to YAML, with one entry per parameter and a list of spheres::
         polar_form: sin_latitude
 
 A parameter without ``topology`` lies on the real line, and one without
-``label`` takes its name as label. Write LaTeX labels plain or in single
+``label`` takes its name as label. A sphere without ``radius`` measures its
+distances in radians, on the unit sphere. Write LaTeX labels plain or in single
 quotes, because double-quoted YAML strings treat backslashes as escapes. An
 invalid space raises :class:`pydantic.ValidationError` with a message that
 names the parameter or sphere at fault.

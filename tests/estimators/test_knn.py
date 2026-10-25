@@ -137,6 +137,22 @@ def test_gaussian_entropy_is_recovered() -> None:
     assert abs(entropies.mean() - truth) < STANDARD_ERRORS * error
 
 
+def test_sphere_radius_scales_distances_and_keeps_the_density() -> None:
+    """Arcs scale with the radius; the density of the coordinates does not change."""
+    case = zoo.von_mises_fisher(0.0, width=0.3, colatitude=0.4)
+    samples = case.sample(jax.random.key(4), 500).samples[0, 0]
+    sphere = case.space.spheres[0].model_copy(update={"radius": 7.5})
+    scaled_space = case.space.model_copy(update={"spheres": (sphere,)})
+    unit = NearestNeighbours.fit(samples, None, case.space, settings(3))
+    scaled = NearestNeighbours.fit(samples, None, scaled_space, settings(3))
+    np.testing.assert_allclose(
+        scaled.leave_one_out_distance(), 7.5 * unit.leave_one_out_distance(), rtol=1e-12
+    )
+    np.testing.assert_allclose(
+        scaled.leave_one_out_log_density(), unit.leave_one_out_log_density(), atol=1e-11
+    )
+
+
 @pytest.mark.parametrize("polar_form", ["latitude", "sin_latitude"])
 def test_sphere_entropy_includes_the_area_element(polar_form: str) -> None:
     """In either polar form, the estimate refers to the coordinates."""

@@ -30,6 +30,7 @@ Weighted statistics
     :func:`mean_resultant_length` give the direction and concentration of
     values on a circle, and :func:`unwrap_about` their representatives
     within half a period of a centre, such as the circular mean.
+    :func:`spherical_width` is the angular width of points on a sphere.
 Precision
     Every field is stored in float64. Narrower float inputs are cast and raise
     a :class:`~mixed_signals.errors.PrecisionWarning`, because the cast cannot
@@ -49,7 +50,7 @@ Checks
 References:
     :cite:t:`kish1965survey`; :cite:t:`ieee2019ieee`;
     :cite:t:`harris2020array`; :cite:t:`chan1983algorithms`;
-    :cite:t:`mardia2000directional`.
+    :cite:t:`mardia2000directional`; :cite:t:`fisher1953dispersion`.
 """
 
 import dataclasses
@@ -66,7 +67,7 @@ from jax.scipy.special import logsumexp
 from jax.typing import ArrayLike
 from jaxtyping import Array, Bool, Float, Integer
 
-from mixed_signals.core.topology import wrap
+from mixed_signals.core.topology import PolarForm, unit_vectors, wrap
 from mixed_signals.errors import PrecisionWarning
 from mixed_signals.io.arrays import ArrayBackend, from_jax, to_jax
 
@@ -298,6 +299,56 @@ def unwrap_about(
         :cite:t:`mardia2000directional`.
     """
     return wrap(values, jnp.asarray(centre) - period / 2, period)
+
+
+def spherical_width(
+    azimuth: Float[Array, "*leading sample"],
+    polar: Float[Array, "*leading sample"],
+    log_weights: Float[Array, "*leading sample"],
+    polar_form: PolarForm,
+) -> Float[Array, " *leading"]:
+    """Return the weighted angular width √(1 − R̄) of points on a sphere, in radians.
+
+    R̄ is the length of the weighted mean of the unit vectors of the points,
+    for weights summing to one (Mardia and Jupp 2000). A von Mises-Fisher
+    distribution of concentration κ has R̄ = coth κ − 1/κ (Fisher 1953), so
+    1 − R̄ = 1/κ to within e^(−2κ), and the width is 1/√κ, the angular
+    standard deviation along each tangent direction of a concentrated
+    distribution. In general 1 − R̄ is half the mean squared chord between
+    the points and their mean direction. The width is zero when all points
+    coincide and one when the unit vectors average to zero.
+
+    The unit vectors are measured from the point of largest weight u₀, and
+    1 − R̄² = Σ wᵢ‖uᵢ − u₀‖² − ‖Σ wᵢ(uᵢ − u₀)‖², so a narrow posterior keeps
+    its width, as in :func:`circular_standard_deviation`.
+
+    Args:
+        azimuth: Azimuths of the points, shaped (..., N).
+        polar: Polar coordinates of the points in ``polar_form``, shaped
+            (..., N).
+        log_weights: Natural logarithms of unnormalised weights, shaped
+            (..., N); −∞ for zero.
+        polar_form: Coordinate of the polar axis.
+
+    Returns:
+        The width in radians, in [0, 1], shaped (...).
+
+    References:
+        :cite:t:`mardia2000directional`; :cite:t:`fisher1953dispersion`.
+    """
+    weights = jax.nn.softmax(log_weights, axis=-1)
+    units, _, _ = unit_vectors(azimuth, polar, polar_form)
+    anchor = jnp.take_along_axis(
+        units, jnp.argmax(log_weights, axis=-1)[..., None, None], axis=-2
+    )
+    offsets = units - anchor
+    mean_offset = jnp.sum(weights[..., None] * offsets, axis=-2)
+    deficit = jnp.sum(weights * jnp.sum(offsets**2, axis=-1), axis=-1) - jnp.sum(
+        mean_offset**2, axis=-1
+    )
+    deficit = jnp.clip(deficit, 0.0, 1.0)
+    # * 1 − R̄ = (1 − R̄²)/(1 + R̄) keeps the digits of a small deficit.
+    return jnp.sqrt(deficit / (1 + jnp.sqrt(1 - deficit)))
 
 
 def _resultant_deficit(

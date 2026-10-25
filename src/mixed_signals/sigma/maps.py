@@ -1,4 +1,4 @@
-"""Closed-form σ_eff and r_eff maps of the moment, marginal and kernel metrics.
+"""Closed-form σ_eff and r_eff maps of the moment, marginal, kernel and OT metrics.
 
 σ_eff
     The mean shift between two unit Gaussians that gives the same value of a
@@ -27,6 +27,16 @@ Kernel metrics
     λ²/2 exceeds 6 000. D is the dimension of the space, E + C + 2S for E
     Euclidean axes, C circles and S spheres, whose chordal distances equal
     the Euclidean ones locally.
+Optimal transport
+    With the squared cost, a shift Δ of any distribution gives the Sinkhorn
+    divergence S_ε = Δ² at every ε (Janati et al. 2020, Lemma 1; Peyré and
+    Cuturi 2019), so σ_eff = √S_ε for ``sinkhorn`` rows. Over uniform
+    directions in n dimensions, the mean squared projection of a shift is
+    Δ²/n, so the sliced rows ``sliced_w2``, which hold SW2², and
+    ``sliced_sinkhorn`` give σ_eff = √(n · value). n counts the coordinates
+    that the directions span, E + 2C + 3S in the chordal embedding. Circles
+    and spheres enter along chords, shorter than arcs, so their shifts read
+    low until the calibration on the zoo.
 r_eff
     The ratio of widths along one axis between two unit Gaussians that gives
     the same value, for rows that measure only a difference in width. The
@@ -53,7 +63,8 @@ References:
     :cite:t:`hellinger1909neue`; :cite:t:`bhattacharyya1943measure`;
     :cite:t:`fukunaga1990introduction`; :cite:t:`nakagawa2015meta`;
     :cite:t:`gretton2012kernel`; :cite:t:`szekely2013energy`;
-    :cite:t:`johnson1995continuous`.
+    :cite:t:`johnson1995continuous`; :cite:t:`janati2020entropic`;
+    :cite:t:`peyre2019computational`.
 """
 
 import functools
@@ -108,6 +119,10 @@ def _hellinger_sigma(value: Array) -> Array:
     return jnp.where(inside, jnp.sqrt(-8 * jnp.log1p(-(value**2))), jnp.nan)
 
 
+def _root(value: Array) -> Array:
+    return jnp.sqrt(jnp.where(value >= 0, value, jnp.nan))
+
+
 SIGMA_EFF_MAPS: Final[Mapping[str, Callable[[Array], Array]]] = MappingProxyType(
     {
         "mean_shift": _shift,
@@ -120,6 +135,7 @@ SIGMA_EFF_MAPS: Final[Mapping[str, Callable[[Array], Array]]] = MappingProxyType
         "kuiper_ks": _ks_sigma,
         "hellinger": _hellinger_sigma,
         "hellinger_location": _hellinger_sigma,
+        "sinkhorn": _root,
     }
 )
 """The closed-form σ_eff map of each metric that needs only its value, by name.
@@ -133,6 +149,9 @@ space, and ``mmd`` its bandwidth; :func:`sigma_eff` takes both.
 KERNEL_METRICS: Final = ("energy", "mmd")
 """Metrics whose σ_eff map also needs the dimension, and for ``mmd`` the bandwidth."""
 
+SLICED_METRICS: Final = ("sliced_sinkhorn", "sliced_w2")
+"""Metrics whose σ_eff map needs the number of coordinates the directions span."""
+
 
 def sigma_eff(
     metric: str,
@@ -145,28 +164,36 @@ def sigma_eff(
 
     Args:
         metric: Name of the metric: a key of :data:`SIGMA_EFF_MAPS`, or one
-            of :data:`KERNEL_METRICS`.
+            of :data:`KERNEL_METRICS` or :data:`SLICED_METRICS`.
         value: Values of the metric, in the units of the whitening; the
-            squared MMD for ``mmd``.
+            squared MMD for ``mmd`` and SW2² for ``sliced_w2``.
         bandwidth: Kernel width ℓ of ``mmd`` values.
-        dimension: Dimension D of the space, for ``mmd`` and ``energy``
-            values.
+        dimension: For ``mmd`` and ``energy``, the dimension D = E + C + 2S
+            of the space; for the sliced metrics, the number of coordinates
+            the directions span, E + 2C + 3S.
 
     Returns:
         σ_eff for each value; NaN outside the range of the metric.
 
     Raises:
         KeyError: If the metric has no closed-form map.
-        ValueError: If a kernel metric lacks its bandwidth or dimension, or
-            the dimension is not a positive integer.
+        ValueError: If a kernel or sliced metric lacks its bandwidth or
+            dimension, or the dimension is not a positive integer.
 
     References:
         :cite:t:`kullback1951information`; :cite:t:`smirnov1948table`;
         :cite:t:`kuiper1960tests`; :cite:t:`bhattacharyya1943measure`;
         :cite:t:`fukunaga1990introduction`; :cite:t:`gretton2012kernel`;
-        :cite:t:`szekely2013energy`; :cite:t:`johnson1995continuous`.
+        :cite:t:`szekely2013energy`; :cite:t:`johnson1995continuous`;
+        :cite:t:`janati2020entropic`.
     """
     values = jnp.asarray(value, dtype=jnp.float64)
+    if metric in SLICED_METRICS:
+        if dimension is None:
+            raise ValueError(f"the sigma_eff of {metric!r} needs its dimension")
+        if isinstance(dimension, bool) or dimension < 1:
+            raise ValueError(f"dimension must be a positive integer, got {dimension!r}")
+        return _root(dimension * values)
     if metric in KERNEL_METRICS:
         if dimension is None or (metric == "mmd" and bandwidth is None):
             needs = "bandwidth and dimension" if metric == "mmd" else "dimension"
@@ -181,7 +208,7 @@ def sigma_eff(
     try:
         mapping = SIGMA_EFF_MAPS[metric]
     except KeyError:
-        names = sorted([*SIGMA_EFF_MAPS, *KERNEL_METRICS])
+        names = sorted([*SIGMA_EFF_MAPS, *KERNEL_METRICS, *SLICED_METRICS])
         raise KeyError(
             f"no closed-form sigma_eff map for {metric!r}; the maps cover"
             f" {', '.join(names)}"

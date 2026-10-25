@@ -17,7 +17,7 @@ The implementation is split into twenty focused sessions, numbered 0 to 19. They
 | 7 | eryn adapters and priors | C | 2, 4 | Done (2026-10-24) |
 | 8 | Metrics I: moments and marginals | C | 3, 6 | Done (2026-10-24) |
 | 9 | Metrics II: divergences, kernels and classifiers | C | 3, 6 | Done (2026-10-25) |
-| 10 | Optimal transport | C | 3, 4 | Open |
+| 10 | Optimal transport | C | 3, 4 | Done (2026-10-25) |
 | 11 | Diagnostics | C | 5, 6 | Open |
 | 12 | Nulls and σ | D | 8 | Next |
 | 13 | Reweighting | D | 7 | Open |
@@ -33,11 +33,11 @@ The critical path runs through sessions 0, 1, 2, 3 or 6, 8, 12, 14, 16 and 19. S
 ## How every session runs
 
 1. Read `CLAUDE.md`, `DESIGN.md` and the session's brief below.
-2. Confirm with the developers any Proposed or Open item the session relies on. After session 7, only the eryn pin is open: `pyproject.toml` names eryn's `feat-jaxpriors` branch, which is not pushed yet.
+2. Confirm with the developers any Proposed or Open item the session relies on. After session 7, only the eryn pin is open: `pyproject.toml` names eryn's `feat-jaxpriors` branch, which is not pushed yet. Since session 10 it also pins ott-jax's main branch at a commit whose fix of the online mode is unreleased; both wait for the relock.
 3. Replace the stubs in scope with working code. Tests mirror `src/` and use the validation zoo once it exists.
 4. Cite every method and assumption: a `References` section in each docstring, with keys in `docs/references.bib`, taken from the References section of `DESIGN.md`. A new method needs a verifiable source before it lands, and a new empirical finding goes on the validation page.
 5. Where a brief names catpylisa code, port it: adapt it to this package's data model, docstrings and style rules instead of copying it.
-6. Run every check: `ruff check`, `ruff format --check`, the style script, `mypy`, `pytest` and the docs build; until the eryn branch is pushed, through `uv run --no-sync`, as `CLAUDE.md` describes.
+6. Run every check: `ruff check`, `ruff format --check`, the style script, `mypy`, `pytest` and the docs build; until the eryn branch is pushed, through `uv run --no-sync` on the eryn wheel and the pinned ott-jax commit in `.venv`, as `CLAUDE.md` describes.
 7. Update `DESIGN.md` when a decision changes, and the status table above.
 8. Commit once on `main` with the trailers from `CLAUDE.md`, then hand over to a developer for review.
 
@@ -184,6 +184,8 @@ Scope: `metrics/ot/`. The developers own the method choices, so the session open
 - MMD and the energy distance already measure circles and spheres along chords (session 9), in the coordinates they receive, so the weight that this session gives spheres against the whitened Euclidean block also sets their weight in those two metrics.
 - Done when the costs respect each topology and the divergences vanish on identical inputs.
 
+Outcome (2026-10-25): the developers decided fourteen items, now in `DESIGN.md`. `metrics/ot/sinkhorn.py` has `sinkhorn_divergence`, the debiased S_ε of ott-jax, and `metrics/ot/sliced.py` has `sliced_wasserstein_distance`, which returns SW2², `sliced_sinkhorn_divergence` (Nadjahi et al. 2020), `sliced_directions` and `sliced_sinkhorn_epsilon`; rows read `sinkhorn`, `sliced_w2` and `sliced_sinkhorn` with the estimator `empirical`. All three transport the squared distance of the chordal embedding of MMD and the energy distance, now in `metrics/_embedding.py`: a zoo check found squared arcs 77 to 210 null widths below zero for circle and sphere pairs that share their mean direction, while squared chords keep a positive definite Gibbs kernel at every ε. Whitening gives each sphere the radius 1/s, with s = √(1 − R̄) from `core.samples.spherical_width` pooled as a root mean square, or half the tangent trace of Γ⁻¹ for Fisher whitening; `Sphere` gained the field `radius`, which MMD, the energy distance, OT and kNN read. In radians, a sky shift of two widths of a 0.02 rad posterior stayed within the null next to four whitened axes. ε = 0.25 ℓ², with ℓ the median bandwidth, kept the most width sensitivity in a zoo check in 2 to 16 dimensions, and a vector of ε returns the curve S_ε(ε). ott-jax 0.6.0 cannot run its memory-bounded online mode on JAX 0.9 and later, so `pyproject.toml` pins ott-jax's main branch at commit 36338c9, which fixed it; the divergence runs online in chunks of about 2²² costs, 6.5 s and about 1 GB at the cap in 16 dimensions on one CPU, stops at an L1 marginal error of 1e-6 and gives NaN with a `ValidityWarning` when unconverged. Sliced W2 uses 500 directions drawn once per comparison; the sliced Sinkhorn divergence uses 20 and its own cap of 2 000 samples (6.4 s per call there). `sigma/maps.py` gained √S_ε for `sinkhorn` and √(n · value) for the sliced rows, with n = E + 2C + 3S. The zoo gained the closed forms `gaussian_sinkhorn` (Janati et al. 2020), `gaussian_sliced_w2` and `gaussian_sliced_sinkhorn`, and tables rows that hold at every ε. pytest ignores the DeprecationWarning that jaxopt raises when ott-jax imports it. Later sessions set ε = `SINKHORN_EPSILON_FACTOR` · ℓ² once per comparison, draw sliced directions once per comparison from a key ending in `"directions"`, and build every whitened space with `Whitening.map_space`, so spheres carry their radius.
+
 ### 11. Diagnostics
 
 Scope: `diagnostics/`.
@@ -211,6 +213,7 @@ Scope: `nulls/`, `sigma/`, and a calibration script in `scripts/`.
 - Replace the √(2·KL) σ_eff map of kNN KL rows by a zoo-calibrated one: the estimate reads low from D = 4 for every k, −9 to −17% at D = 4 and −29 to −32% at D = 16 with k = 3 (session 9), so the map depends on the estimator, D and N.
 - kNN Hellinger rows hold the signed root of 1 − B̂C and MMD rows hold MMD², whose additive biases cancel when the null mean is subtracted in the squared space; settle with the developers whether every Hellinger form is null-subtracted in H². The kernel maps take the dimension E + C + 2S, and the MMD map the bandwidth.
 - The validation page also reruns the session 9 zoo checks: the bias and resolution behind the kNN ranks, and chords against arc lengths for MMD and the energy distance on circles and spheres.
+- Optimal transport (session 10): add a null option that computes the null band at every ε of the curve S_ε(ε), which `sinkhorn_divergence` returns for a vector of ε, and benchmark ε = 0.25 ℓ² on the validation page with it; the developers asked for a plot of S_ε against ε, which session 17 draws. Benchmark how many directions sliced W2 (500 for now) and the sliced Sinkhorn divergence (20) need as the dimension grows. Calibrate the σ_eff maps of `sinkhorn`, `sliced_w2` and `sliced_sinkhorn` on circles and spheres, where chords read shifts low (S_ε about half that of arcs for a 2σ shift on a circle of width 1 rad), and check the sphere width √(1 − R̄) on wide spheres, where it falls below the von Mises-Fisher width.
 - Done when nulls on identical distributions give uniform p-values, σ_eff recovers the zoo's known shifts, and r_eff its known width ratios.
 
 ### 13. Reweighting
@@ -234,6 +237,8 @@ Scope: `engines/` (`compare` and `diagnose`) and the public API in `__init__.py`
 - Re-exports in `__init__.py` go below the float64 switch.
 - One whitening per problem through `jax.vmap` of `Whitening.from_samples` (the reference posterior in mode A, the two posteriors of each pair in mode B) or `from_fisher`, with its `description` in the space column. Traced whitenings do not warn, so rebuild a NaN one concretely to capture its `ValidityWarning` in the rows of its problem.
 - Per-parameter rows run on both inputs z-scored by their shared whitening (`decorrelate=False`), joint rows in the decorrelated whitening: the session 8 kernels compute in the coordinates they receive. Fit the marginal KDEs with one `shared_bandwidth_factor` per comparison, reuse it in every null draw, and write `KernelDensitySettings(bandwidth=factor).to_json()` into the rows; the factor is a static setting, so the null draws of one comparison map with `jax.vmap`, while problems with different factors run one by one. `ks_metric_names` names each KS or Kuiper row.
+- Build the space of each problem with `Whitening.map_space`: circles carry their period P/s and spheres their radius 1/s, which every distance-based metric reads.
+- OT rows (session 10): ε = `SINKHORN_EPSILON_FACTOR` · ℓ² from the comparison's median bandwidth, reused in every null draw and written into the `estimator_settings` of `sinkhorn` rows; sliced directions from `sliced_directions` once per comparison, from a key ending in `"directions"`, with the number of directions in the settings of the sliced rows; the ε of `sliced_sinkhorn` rows from `sliced_sinkhorn_epsilon` once per comparison, from a key ending in `"epsilon"`. `sinkhorn` and `sliced_sinkhorn` rows pass a key ending in `"subsample"`, and the sliced σ_eff maps take n = E + 2C + 3S. One evaluation in 16 dimensions on one CPU took 6.5 s for the Sinkhorn divergence at the cap, 6.4 s for the sliced Sinkhorn divergence at its cap of 2 000 and 0.5 s for sliced W2 at the cap.
 - kNN, MMD and energy rows pass the metric a key derived from the row's path ending in `"subsample"`. Compute `metrics.kernel.median_bandwidth` once per comparison, from a path ending in `"bandwidth"`, reuse it in every null draw, and write it into the `estimator_settings` of the MMD rows; kNN rows write `NearestNeighbourSettings(neighbours=k).to_json()`. kNN JS needs equal sample counts inside `jax.jit`, where it gives NaN otherwise.
 - Done when a zoo comparison produces the full result table end to end.
 
@@ -263,6 +268,7 @@ Scope: `report/`.
 
 - A generated marimo notebook that runs as a script and exports to HTML.
 - Contents: the σ_eff, r_eff and σ_sig summary table, cantuccio corner overlays with contours from the metric estimators, null histograms from the stored null draws, and diagnostics.
+- A plot of the Sinkhorn divergence against ε, from the curve that `sinkhorn_divergence` returns for a vector of ε, with the null band per ε of session 12.
 - Pass `KernelDensity.resolved_settings().bandwidth` to cantuccio as its `bandwidth`, which reproduces the estimate away from bounds (tested in session 6). cantuccio neither reflects nor corrects at bounds, so near an interval bound draw the contours from `KernelDensity.log_density` on a grid.
 - Done when the example pipeline produces a report that renders.
 
@@ -278,5 +284,5 @@ Scope: `gw/`, with a `gw` extra if it needs new dependencies.
 - A Sphinx user guide and API pages, the validation page, and marimo examples in `examples/`.
 - The GPU suite on the cluster with a single GPU, and a performance check.
 - Benchmark `SAMPLE_CAP` per metric. At the cap, one kNN JS evaluation took 9.5 s and one MMD² evaluation 0.3 s on one CPU (session 9); the developers kept one cap for now, because it is easy to tune.
-- Release blockers: reserve `mixed-signals` on PyPI, and wait for eryn to release its JAX-compatible prior setup, now on its `feat-jaxpriors` branch, because a published package cannot depend on a git branch.
+- Release blockers: reserve `mixed-signals` on PyPI, wait for eryn to release its JAX-compatible prior setup, now on its `feat-jaxpriors` branch, and wait for an ott-jax release with the fix of its online mode (ott-jax pull request 701), now pinned at a commit of its main branch, because a published package cannot depend on git sources.
 - Done when version 0.1.0 can be published.

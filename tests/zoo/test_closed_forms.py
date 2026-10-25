@@ -10,6 +10,7 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 from jax.typing import ArrayLike
+from ott.tools import sinkhorn_divergence as ott_divergence
 from scipy import integrate, linalg, optimize, stats
 
 from mixed_signals.zoo import closed_forms
@@ -162,6 +163,116 @@ def test_mahalanobis_shift_whitens_the_mean_difference() -> None:
     assert closed_forms.mahalanobis_shift(
         np.zeros(2), 4 * np.eye(2), np.array([3.0, 4.0])
     ) == pytest.approx(2.5)
+
+
+# * Entropic transport between Gaussians
+
+
+@pytest.mark.parametrize("epsilon", [0.1, 1.0, 10.0])
+def test_gaussian_sinkhorn_matches_a_grid_sinkhorn_in_one_dimension(
+    epsilon: float,
+) -> None:
+    """The closed form equals ott-jax's Sinkhorn divergence of two normal grids."""
+    grid = np.linspace(-12.0, 14.0, 2_000)
+    first = stats.norm.pdf(grid, 0.0, 1.0)
+    second = stats.norm.pdf(grid, 1.0, 1.5)
+    value, _ = ott_divergence.sinkdiv(
+        jnp.asarray(grid)[:, None],
+        jnp.asarray(grid)[:, None],
+        a=jnp.asarray(first / first.sum()),
+        b=jnp.asarray(second / second.sum()),
+        epsilon=epsilon,
+        solve_kwargs={"threshold": 1e-10, "max_iterations": 100_000},
+    )
+    closed = closed_forms.gaussian_sinkhorn(
+        np.zeros(1), np.eye(1), np.ones(1), np.array([[2.25]]), epsilon
+    )
+    assert float(closed.total) == pytest.approx(float(value), rel=1e-7)
+    assert float(closed.location) == 1.0
+
+
+def test_gaussian_sinkhorn_tends_to_its_limits() -> None:
+    """The shape term tends to the squared Bures distance, then to ‖ΔΣ‖²/ε."""
+    cov_p = np.array([[1.0, 0.3], [0.3, 0.8]])
+    cov_q = np.array([[1.4, -0.2], [-0.2, 0.6]])
+    bures = float(
+        closed_forms.gaussian_w2(np.zeros(2), cov_p, np.zeros(2), cov_q).shape
+    )
+    small = closed_forms.gaussian_sinkhorn(np.zeros(2), cov_p, np.zeros(2), cov_q, 1e-9)
+    assert float(small.shape) == pytest.approx(bures**2, rel=1e-6)
+    large = closed_forms.gaussian_sinkhorn(np.zeros(2), cov_p, np.zeros(2), cov_q, 1e6)
+    frobenius = float(np.sum((cov_p - cov_q) ** 2))
+    assert float(large.shape) * 1e6 == pytest.approx(frobenius, rel=1e-5)
+    equal = closed_forms.gaussian_sinkhorn(
+        np.zeros(2), cov_p, np.array([0.3, -0.4]), cov_p, 0.5
+    )
+    assert float(equal.shape) == 0.0
+    assert float(equal.total) == pytest.approx(0.25, rel=1e-14)
+
+
+@pytest.mark.parametrize(
+    ("shift", "ratio", "scaled_count", "param_count"),
+    [
+        (0.0, 1.3, 1, 2),
+        (0.7, 1.3, 1, 8),
+        (0.0, 0.6, 3, 16),
+        (0.5, 2.0, 2, 2),
+        (0.3, 1.5, 0, 4),
+        (0.0, 1.5, 4, 4),
+    ],
+)
+def test_sliced_closed_forms_match_scipy_beta_expectations(
+    shift: float, ratio: float, scaled_count: int, param_count: int
+) -> None:
+    """Means over the Beta share of the scaled axes agree with SciPy's expectation."""
+
+    def projected_variance(share: float) -> float:
+        return 1 + (ratio**2 - 1) * share
+
+    def expectation(function: Callable[[float], float]) -> float:
+        if 0 < scaled_count < param_count:
+            beta = stats.beta(0.5 * scaled_count, 0.5 * (param_count - scaled_count))
+            return float(beta.expect(function))
+        return function(float(scaled_count == param_count))
+
+    w2 = closed_forms.gaussian_sliced_w2(shift, ratio, scaled_count, param_count)
+    expected_w2 = shift**2 / param_count + expectation(
+        lambda share: (1 - math.sqrt(projected_variance(share))) ** 2
+    )
+    assert float(w2) == pytest.approx(expected_w2, rel=1e-9, abs=1e-15)
+
+    def shape(share: float) -> float:
+        return float(
+            closed_forms.gaussian_sinkhorn(
+                np.zeros(1),
+                np.eye(1),
+                np.zeros(1),
+                np.array([[projected_variance(share)]]),
+                0.4,
+            ).shape
+        )
+
+    sinkhorn = closed_forms.gaussian_sliced_sinkhorn(
+        shift, ratio, scaled_count, param_count, 0.4
+    )
+    expected = shift**2 / param_count + expectation(shape)
+    assert float(sinkhorn) == pytest.approx(expected, rel=1e-9, abs=1e-15)
+
+
+def test_transport_closed_forms_check_their_inputs() -> None:
+    """ε and the ratio are positive, and the scaled axes lie among the parameters."""
+    with pytest.raises(ValueError, match="epsilon must be positive and finite"):
+        closed_forms.gaussian_sinkhorn(
+            np.zeros(1), np.eye(1), np.zeros(1), np.eye(1), 0.0
+        )
+    with pytest.raises(ValueError, match="ratio must be positive and finite"):
+        closed_forms.gaussian_sliced_w2(0.0, -1.0, 1, 2)
+    with pytest.raises(ValueError, match="scaled_count must lie between 0 and 2"):
+        closed_forms.gaussian_sliced_w2(0.0, 1.5, 3, 2)
+    with pytest.raises(ValueError, match="param_count must be at least 1"):
+        closed_forms.gaussian_sliced_w2(0.0, 1.5, 0, 0)
+    with pytest.raises(ValueError, match="epsilon must be positive and finite"):
+        closed_forms.gaussian_sliced_sinkhorn(0.0, 1.5, 1, 2, -1.0)
 
 
 # * One-dimensional normals

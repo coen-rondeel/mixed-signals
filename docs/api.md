@@ -119,6 +119,14 @@
 
 .. automodule:: mixed_signals.metrics.classifier
    :members:
+
+.. automodule:: mixed_signals.metrics.ot
+
+.. automodule:: mixed_signals.metrics.ot.sinkhorn
+   :members:
+
+.. automodule:: mixed_signals.metrics.ot.sliced
+   :members:
 ```
 
 ## Effect sizes

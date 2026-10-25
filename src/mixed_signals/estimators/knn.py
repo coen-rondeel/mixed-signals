@@ -2,10 +2,10 @@
 
 :class:`NearestNeighbours` holds the samples of one posterior and measures
 distances in their space: Euclidean on the Euclidean block, the wrapped
-difference along the shorter arc on circles and the great-circle angle on
-spheres, combined as the root of the summed squares. The space is then
-locally Euclidean with d = E + C + 2S dimensions, for E Euclidean axes, C
-circles and S spheres.
+difference along the shorter arc on circles and the great-circle arc on
+spheres, the angle times the sphere's radius, combined as the root of the
+summed squares. The space is then locally Euclidean with d = E + C + 2S
+dimensions, for E Euclidean axes, C circles and S spheres.
 
 Log density
     log p̂(x) = ψ(k) − ψ(n + 1) − ln V_d − d ln r_k(x), with r_k(x) the
@@ -18,8 +18,9 @@ Log density
     entropy estimate of Kozachenko and Leonenko (1987), in the form of
     Kraskov, Stögbauer and Grassberger (2004). At a sample, the sample
     leaves its own search, so n is one fewer. On a sphere, the distances
-    measure area, so the log of the area element of the polar form is added
-    to refer the density to the coordinates (Mardia and Jupp 2000).
+    measure area, so the log of the area element of the polar form, R² times
+    that of the unit sphere for a radius R, is added to refer the density to
+    the coordinates (Mardia and Jupp 2000).
 Weights
     The nearest-neighbour estimators assume equally weighted, independent
     draws (Wang, Kulkarni and Verdú 2009). Samples with zero weight leave
@@ -301,7 +302,7 @@ def _squared_distances(
             jnp.cross(query_units[:, None, :], sample_units[None, :, :]), axis=-1
         )
         dot = jnp.sum(query_units[:, None, :] * sample_units[None, :, :], axis=-1)
-        total = total + jnp.arctan2(cross, dot) ** 2
+        total = total + (sphere.radius * jnp.arctan2(cross, dot)) ** 2
     return total
 
 
@@ -398,6 +399,7 @@ def _log_density_from_kernel(
         _, log_area, inside = unit_vectors(
             points[:, azimuth], points[:, polar], sphere.polar_form
         )
+        log_area = log_area + 2 * math.log(sphere.radius)
         log_values = jnp.where(inside, log_values + log_area, -jnp.inf)
     return jnp.where(distances > 0, log_values, jnp.nan)
 

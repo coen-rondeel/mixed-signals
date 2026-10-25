@@ -9,7 +9,13 @@ import pytest
 from scipy import special, stats
 
 from mixed_signals.metrics.moments import gaussian_hellinger, gaussian_kl, gaussian_w2
-from mixed_signals.sigma.maps import KERNEL_METRICS, SIGMA_EFF_MAPS, r_eff, sigma_eff
+from mixed_signals.sigma.maps import (
+    KERNEL_METRICS,
+    SIGMA_EFF_MAPS,
+    SLICED_METRICS,
+    r_eff,
+    sigma_eff,
+)
 from mixed_signals.zoo import closed_forms
 
 SHIFTS = [0.0, 1e-6, 0.3, 1.0, 3.0]
@@ -34,6 +40,11 @@ def shifted_values(shift: float) -> dict[str, float]:
         "kuiper_ks": float(closed_forms.normal_ks(0.0, 1.0, shift, 1.0)),
         "hellinger": float(hellinger.total),
         "hellinger_location": float(hellinger.location),
+        "sinkhorn": float(
+            closed_forms.gaussian_sinkhorn(
+                jnp.zeros(2), covariance, mean, covariance, 0.7
+            ).total
+        ),
     }
 
 
@@ -203,3 +214,35 @@ def test_kernel_maps_check_their_arguments() -> None:
     with pytest.raises(KeyError, match="energy, hellinger"):
         sigma_eff("js", 0.1)
     assert KERNEL_METRICS == ("energy", "mmd")
+
+
+# * Optimal transport
+
+
+@pytest.mark.parametrize("shift", SHIFTS)
+@pytest.mark.parametrize("dimension", [1, 3, 16])
+def test_sliced_maps_return_the_shift_of_unit_gaussians(
+    shift: float, dimension: int
+) -> None:
+    """A shift Δ gives ‖Δ‖²/n over uniform directions in n dimensions, at every ε."""
+    for metric, value in (
+        ("sliced_w2", closed_forms.gaussian_sliced_w2(shift, 1.0, 0, dimension)),
+        (
+            "sliced_sinkhorn",
+            closed_forms.gaussian_sliced_sinkhorn(shift, 1.0, 0, dimension, 0.4),
+        ),
+    ):
+        mapped = sigma_eff(metric, value, dimension=dimension)
+        assert float(mapped) == pytest.approx(shift, rel=1e-12, abs=1e-15), metric
+
+
+def test_transport_maps_check_their_arguments() -> None:
+    """Negative values have no shift, and sliced metrics need their dimension."""
+    assert math.isnan(float(sigma_eff("sinkhorn", -1e-3)))
+    assert math.isnan(float(sigma_eff("sliced_w2", -1e-3, dimension=4)))
+    with pytest.raises(ValueError, match="'sliced_sinkhorn' needs its dimension"):
+        sigma_eff("sliced_sinkhorn", 0.1)
+    for dimension in (0, False):
+        with pytest.raises(ValueError, match="dimension must be a positive integer"):
+            sigma_eff("sliced_w2", 0.1, dimension=dimension)
+    assert SLICED_METRICS == ("sliced_sinkhorn", "sliced_w2")
