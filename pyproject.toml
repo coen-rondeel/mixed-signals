@@ -147,8 +147,8 @@ select = [
 ]
 # * jaxtyping shape strings such as "sample param" are not Python, but F722 parses them as annotations.
 ignore = ["F722"]
-# * Scientific docstrings write σ, ρ and the minus sign −, which the confusable-character rules flag.
-allowed-confusables = ["σ", "ρ", "−"]
+# * Scientific docstrings write σ, ρ, α, ν, ℓ and the minus sign −, which the confusable-character rules flag.
+allowed-confusables = ["σ", "ρ", "α", "ν", "ℓ", "−"]
 
 [tool.ruff.lint.per-file-ignores]
 # * Re-exports in the package root must follow the float64 switch.

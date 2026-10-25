@@ -6,10 +6,10 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
-from scipy import special
+from scipy import special, stats
 
 from mixed_signals.metrics.moments import gaussian_hellinger, gaussian_kl, gaussian_w2
-from mixed_signals.sigma.maps import SIGMA_EFF_MAPS, r_eff, sigma_eff
+from mixed_signals.sigma.maps import KERNEL_METRICS, SIGMA_EFF_MAPS, r_eff, sigma_eff
 from mixed_signals.zoo import closed_forms
 
 SHIFTS = [0.0, 1e-6, 0.3, 1.0, 3.0]
@@ -115,3 +115,91 @@ def test_maps_compile_and_map() -> None:
         assert float(ratios[index]) == pytest.approx(
             float(r_eff("kl_shape", value, 1.0))
         )
+
+
+# * Kernel metrics
+
+
+def chi_mean(dimension: int, noncentrality: float) -> float:
+    """Return E[χ_D(λ)]: folded normal and Rice closed forms, else SciPy integration."""
+    if dimension == 1:
+        return math.sqrt(2 / math.pi) * math.exp(
+            -0.5 * noncentrality**2
+        ) + noncentrality * math.erf(noncentrality / math.sqrt(2))
+    if dimension == 2:
+        half = 0.25 * noncentrality**2
+        return math.sqrt(math.pi / 2) * float(
+            (1 + 2 * half) * special.ive(0, half) + 2 * half * special.ive(1, half)
+        )
+    if noncentrality == 0:
+        return float(stats.chi(dimension).mean())
+    return float(stats.ncx2(dimension, noncentrality**2).expect(np.sqrt))
+
+
+@pytest.mark.parametrize(
+    ("dimension", "shift"),
+    [
+        *((dimension, shift) for dimension in (1, 2) for shift in SHIFTS),
+        (1, 120.0),
+        (2, 200.0),
+        *(
+            (dimension, shift)
+            for dimension in (8, 16)
+            for shift in (0.3, 1.0, 3.0, 9.0)
+        ),
+    ],
+)
+def test_energy_map_returns_the_shift_of_unit_gaussians(
+    dimension: int, shift: float
+) -> None:
+    """2√2 (E[χ_D(Δ/√2)] − E[χ_D]) maps back to Δ, past the expansion threshold too."""
+    value = (
+        2
+        * math.sqrt(2)
+        * (chi_mean(dimension, shift / math.sqrt(2)) - chi_mean(dimension, 0.0))
+    )
+    mapped = float(sigma_eff("energy", value, dimension=dimension))
+    assert mapped == pytest.approx(shift, rel=1e-7, abs=1e-6)
+
+
+@pytest.mark.parametrize("dimension", [1, 3, 16])
+@pytest.mark.parametrize("bandwidth", [0.5, 1.3, 4.0])
+def test_mmd_map_returns_the_shift_of_unit_gaussians(
+    dimension: int, bandwidth: float
+) -> None:
+    """2c(1 − exp(−Δ²/(2(ℓ² + 2)))) maps back to Δ for every bandwidth."""
+    scale = (bandwidth**2 / (bandwidth**2 + 2)) ** (dimension / 2)
+    for shift in SHIFTS:
+        value = 2 * scale * -math.expm1(-(shift**2) / (2 * (bandwidth**2 + 2)))
+        mapped = float(
+            sigma_eff("mmd", value, bandwidth=bandwidth, dimension=dimension)
+        )
+        assert mapped == pytest.approx(shift, rel=1e-9, abs=1e-12)
+
+
+def test_kernel_maps_outside_their_range_are_nan() -> None:
+    """Negative values and MMD² at or beyond 2c have no shift; zero is no shift."""
+    assert math.isnan(float(sigma_eff("energy", -0.1, dimension=2)))
+    assert float(sigma_eff("energy", 0.0, dimension=2)) == 0.0
+    assert math.isnan(float(sigma_eff("mmd", -0.1, bandwidth=1.0, dimension=2)))
+    scale = 1 / 3
+    assert math.isnan(float(sigma_eff("mmd", 2 * scale, bandwidth=1.0, dimension=2)))
+    values = jnp.array([-1.0, 0.0, 0.2, 5.0])
+    mapped = sigma_eff("energy", values, dimension=3)
+    for index, value in enumerate(values):
+        single = sigma_eff("energy", value, dimension=3)
+        np.testing.assert_allclose(mapped[index], single, rtol=1e-14)
+
+
+def test_kernel_maps_check_their_arguments() -> None:
+    """Kernel metrics need their dimension, MMD its bandwidth; names are listed."""
+    with pytest.raises(ValueError, match="needs its bandwidth and dimension"):
+        sigma_eff("mmd", 0.1, dimension=2)
+    with pytest.raises(ValueError, match="needs its dimension"):
+        sigma_eff("energy", 0.1)
+    for dimension in (0, True):
+        with pytest.raises(ValueError, match="dimension must be a positive integer"):
+            sigma_eff("energy", 0.1, dimension=dimension)
+    with pytest.raises(KeyError, match="energy, hellinger"):
+        sigma_eff("js", 0.1)
+    assert KERNEL_METRICS == ("energy", "mmd")

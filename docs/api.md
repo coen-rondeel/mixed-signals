@@ -110,6 +110,15 @@
 
 .. automodule:: mixed_signals.metrics.marginal
    :members:
+
+.. automodule:: mixed_signals.metrics.divergence
+   :members:
+
+.. automodule:: mixed_signals.metrics.kernel
+   :members:
+
+.. automodule:: mixed_signals.metrics.classifier
+   :members:
 ```
 
 ## Effect sizes

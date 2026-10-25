@@ -1,4 +1,4 @@
-"""Closed-form σ_eff and r_eff maps of the moment and marginal metrics.
+"""Closed-form σ_eff and r_eff maps of the moment, marginal and kernel metrics.
 
 σ_eff
     The mean shift between two unit Gaussians that gives the same value of a
@@ -7,7 +7,26 @@
     terms are the shift itself; the Gaussian KL total and location terms give
     √(2 KL); KS and Kuiper's V give 2Φ⁻¹((1 + D)/2), because for a shift F − G
     keeps one sign and V = D; the Hellinger total and location terms give
-    √(−8 ln(1 − H²)) (Bhattacharyya 1943; Fukunaga 1990).
+    √(−8 ln(1 − H²)) (Bhattacharyya 1943; Fukunaga 1990). The kNN rows of
+    ``kl`` and ``hellinger`` share these maps.
+Kernel metrics
+    Two unit Gaussians in D dimensions shifted by Δ differ by
+    x − y ~ N(Δ, 2I), so ‖x − y‖²/2 follows a noncentral χ² with D degrees
+    of freedom and noncentrality Δ²/2, and ‖x − y‖/√2 the noncentral χ
+    distribution χ_D(Δ/√2) (Johnson, Kotz and Balakrishnan 1995). The
+    moment generating function of the noncentral χ² gives the squared MMD of
+    the Gaussian kernel of width ℓ (Gretton et al. 2012) as
+    2c(1 − exp(−Δ²/(2(ℓ² + 2)))) with c = (ℓ²/(ℓ² + 2))^(D/2), so
+    σ_eff = √(−2(ℓ² + 2) ln(1 − MMD²/(2c))). The energy distance is
+    2√2 (E[χ_D(Δ/√2)] − E[χ_D(0)]) (Székely and Rizzo 2013), which rises
+    monotonically in Δ and is inverted by bisection. The mean of χ_D(λ) is
+    the Poisson mixture Σⱼ Pois(j; λ²/2) √2 Γ((D + 1)/2 + j)/Γ(D/2 + j)
+    (Johnson, Kotz and Balakrishnan 1995), summed directly because JAX's
+    confluent hypergeometric function loses every digit for large λ, and
+    replaced by its large-λ expansion, checked against the series, where
+    λ²/2 exceeds 6 000. D is the dimension of the space, E + C + 2S for E
+    Euclidean axes, C circles and S spheres, whose chordal distances equal
+    the Euclidean ones locally.
 r_eff
     The ratio of widths along one axis between two unit Gaussians that gives
     the same value, for rows that measure only a difference in width. The
@@ -32,23 +51,39 @@ References:
     :cite:t:`givens1984class`; :cite:t:`vallender1974calculation`;
     :cite:t:`smirnov1948table`; :cite:t:`kuiper1960tests`;
     :cite:t:`hellinger1909neue`; :cite:t:`bhattacharyya1943measure`;
-    :cite:t:`fukunaga1990introduction`; :cite:t:`nakagawa2015meta`.
+    :cite:t:`fukunaga1990introduction`; :cite:t:`nakagawa2015meta`;
+    :cite:t:`gretton2012kernel`; :cite:t:`szekely2013energy`;
+    :cite:t:`johnson1995continuous`.
 """
 
 import functools
+import math
 from collections.abc import Callable, Mapping
 from types import MappingProxyType
-from typing import Final
+from typing import Final, cast
 
 import jax
 import jax.numpy as jnp
-from jax.scipy.special import ndtri
+from jax.scipy.special import gammaln, ndtri
 from jax.typing import ArrayLike
 from jaxtyping import Array, Float
 
 _NEWTON_STEPS: Final = 64
 """Newton steps of the KL shape inversion; near zero, where the root is double,
 each step at least halves the error, so 64 steps reach float64 resolution."""
+
+_BISECTION_STEPS: Final = 64
+"""Bisection steps of the energy inversion: each halves an interval of a
+width below the shift, so 64 steps reach float64 resolution."""
+
+_POISSON_TERMS: Final = 8_192
+"""Terms of the Poisson mixture of the noncentral χ mean; for rates up to
+6 000 the terms left out carry less than e^(−360) of the mass."""
+
+_ASYMPTOTIC_RATE: Final = 6_000.0
+"""Rate λ²/2 above which the mean of χ_D(λ) takes its large-λ expansion
+λ + (D − 1)/(2λ) − (D − 1)(D − 3)/(8λ³), within 1e-7 of the series there for
+D up to 32."""
 
 
 def _shift(value: Array) -> Array:
@@ -87,40 +122,71 @@ SIGMA_EFF_MAPS: Final[Mapping[str, Callable[[Array], Array]]] = MappingProxyType
         "hellinger_location": _hellinger_sigma,
     }
 )
-"""The closed-form σ_eff map of each metric, by metric name.
+"""The closed-form σ_eff map of each metric that needs only its value, by name.
+
+The kernel metrics ``mmd`` and ``energy`` also need the dimension of the
+space, and ``mmd`` its bandwidth; :func:`sigma_eff` takes both.
 
 :meta hide-value:
 """
 
+KERNEL_METRICS: Final = ("energy", "mmd")
+"""Metrics whose σ_eff map also needs the dimension, and for ``mmd`` the bandwidth."""
+
 
 def sigma_eff(
-    metric: str, value: Float[ArrayLike, " *leading"]
+    metric: str,
+    value: Float[ArrayLike, " *leading"],
+    *,
+    bandwidth: Float[ArrayLike, ""] | None = None,
+    dimension: int | None = None,
 ) -> Float[Array, " *leading"]:
     """Return the Gaussian-equivalent shift σ_eff of metric values.
 
     Args:
-        metric: Name of the metric, a key of :data:`SIGMA_EFF_MAPS`.
-        value: Values of the metric, in the units of the whitening.
+        metric: Name of the metric: a key of :data:`SIGMA_EFF_MAPS`, or one
+            of :data:`KERNEL_METRICS`.
+        value: Values of the metric, in the units of the whitening; the
+            squared MMD for ``mmd``.
+        bandwidth: Kernel width ℓ of ``mmd`` values.
+        dimension: Dimension D of the space, for ``mmd`` and ``energy``
+            values.
 
     Returns:
         σ_eff for each value; NaN outside the range of the metric.
 
     Raises:
         KeyError: If the metric has no closed-form map.
+        ValueError: If a kernel metric lacks its bandwidth or dimension, or
+            the dimension is not a positive integer.
 
     References:
         :cite:t:`kullback1951information`; :cite:t:`smirnov1948table`;
         :cite:t:`kuiper1960tests`; :cite:t:`bhattacharyya1943measure`;
-        :cite:t:`fukunaga1990introduction`.
+        :cite:t:`fukunaga1990introduction`; :cite:t:`gretton2012kernel`;
+        :cite:t:`szekely2013energy`; :cite:t:`johnson1995continuous`.
     """
+    values = jnp.asarray(value, dtype=jnp.float64)
+    if metric in KERNEL_METRICS:
+        if dimension is None or (metric == "mmd" and bandwidth is None):
+            needs = "bandwidth and dimension" if metric == "mmd" else "dimension"
+            raise ValueError(f"the sigma_eff of {metric!r} needs its {needs}")
+        if isinstance(dimension, bool) or dimension < 1:
+            raise ValueError(f"dimension must be a positive integer, got {dimension!r}")
+        if metric == "mmd":
+            return _mmd_sigma(
+                values, jnp.asarray(bandwidth, dtype=jnp.float64), dimension
+            )
+        return _energy_sigma(values, dimension)
     try:
         mapping = SIGMA_EFF_MAPS[metric]
     except KeyError:
+        names = sorted([*SIGMA_EFF_MAPS, *KERNEL_METRICS])
         raise KeyError(
             f"no closed-form sigma_eff map for {metric!r}; the maps cover"
-            f" {', '.join(sorted(SIGMA_EFF_MAPS))}"
+            f" {', '.join(names)}"
         ) from None
-    return mapping(jnp.asarray(value, dtype=jnp.float64))
+    return mapping(values)
 
 
 def r_eff(
@@ -205,3 +271,96 @@ _SHAPE_MAPS: Final[Mapping[str, Callable[[Array, Array], Array]]] = MappingProxy
         "hellinger_shape": _hellinger_shape_ratio,
     }
 )
+
+
+def _jit[**Parameters, Result](
+    function: Callable[Parameters, Result], *static_names: str
+) -> Callable[Parameters, Result]:
+    """Compile a map with :func:`jax.jit` and keep its signature for type checks."""
+    return cast(
+        Callable[Parameters, Result], jax.jit(function, static_argnames=static_names)
+    )
+
+
+def _mmd_sigma(value: Array, bandwidth: Array, dimension: int) -> Array:
+    """Return Δ with 2c(1 − exp(−Δ²/(2(ℓ² + 2)))) = MMD², c = (ℓ²/(ℓ² + 2))^(D/2)."""
+    squared_width = bandwidth**2
+    scale = (squared_width / (squared_width + 2)) ** (0.5 * dimension)
+    ratio = value / (2 * scale)
+    inside = (value >= 0) & (ratio < 1)
+    # * log1p keeps the digits of small squared discrepancies.
+    log_term = jnp.log1p(-jnp.where(inside, ratio, 0.0))
+    return jnp.where(inside, jnp.sqrt(-2 * (squared_width + 2) * log_term), jnp.nan)
+
+
+def _central_chi_mean(dimension: int) -> float:
+    """Return E[χ_D(0)] = √2 Γ((D + 1)/2)/Γ(D/2)."""
+    return math.sqrt(2) * math.exp(
+        math.lgamma(0.5 * (dimension + 1)) - math.lgamma(0.5 * dimension)
+    )
+
+
+def _chi_mean_excess(rate: Array, dimension: int) -> Array:
+    """Return E[χ_D(λ)] − E[χ_D(0)] for the rate λ²/2, from the Poisson mixture."""
+    base = _central_chi_mean(dimension)
+    terms = jnp.arange(1, _POISSON_TERMS, dtype=jnp.float64)
+    # * Each term carries m_j − m_0 > 0, so small rates keep their digits.
+    excess_means = (
+        jnp.exp(
+            0.5 * math.log(2)
+            + gammaln(0.5 * (dimension + 1) + terms)
+            - gammaln(0.5 * dimension + terms)
+        )
+        - base
+    )
+    safe_rate = jnp.where(rate > 0, rate, 1.0)[..., None]
+    log_weights = -safe_rate + terms * jnp.log(safe_rate) - gammaln(terms + 1)
+    series = jnp.sum(jnp.exp(log_weights) * excess_means, axis=-1)
+    noncentrality = jnp.sqrt(2 * jnp.where(rate > 0, rate, 1.0))
+    expansion = (
+        noncentrality
+        + (dimension - 1) / (2 * noncentrality)
+        - (dimension - 1) * (dimension - 3) / (8 * noncentrality**3)
+        - base
+    )
+    return jnp.where(
+        rate > 0, jnp.where(rate > _ASYMPTOTIC_RATE, expansion, series), 0.0
+    )
+
+
+def _energy_of_shift(shift: Array, dimension: int) -> Array:
+    """Return 2√2 (E[χ_D(Δ/√2)] − E[χ_D(0)]), the energy distance of a shift Δ."""
+    return 2 * math.sqrt(2) * _chi_mean_excess(0.25 * shift**2, dimension)
+
+
+def _bisection_step(
+    _: Array,
+    bounds: tuple[Array, Array],
+    target: Array,
+    dimension: int,
+) -> tuple[Array, Array]:
+    """Halve the interval that holds the shift whose energy distance is the target."""
+    lower, upper = bounds
+    middle = 0.5 * (lower + upper)
+    below = _energy_of_shift(middle, dimension) < target
+    return jnp.where(below, middle, lower), jnp.where(below, upper, middle)
+
+
+def _energy_sigma_kernel(value: Array, dimension: int) -> Array:
+    """Return Δ with 2√2 (E[χ_D(Δ/√2)] − E[χ_D(0)]) = value, by bisection."""
+    inside = value >= 0
+    target = jnp.where(inside, value, 0.0)
+    # * E‖z + μ‖ lies between ‖μ‖ and ‖μ‖ + E‖z‖, which brackets Δ.
+    lower = 0.5 * target
+    upper = lower + math.sqrt(2) * _central_chi_mean(dimension)
+    lower, upper = jax.lax.fori_loop(
+        0,
+        _BISECTION_STEPS,
+        functools.partial(_bisection_step, target=target, dimension=dimension),
+        (lower, upper),
+    )
+    shift = jnp.where(target == 0, 0.0, 0.5 * (lower + upper))
+    return jnp.where(inside, shift, jnp.nan)
+
+
+_energy_sigma = _jit(_energy_sigma_kernel, "dimension")

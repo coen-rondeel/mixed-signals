@@ -10,7 +10,8 @@ from scipy import stats
 
 from mixed_signals._config import SAMPLE_CAP
 from mixed_signals.errors import SubsamplingWarning
-from mixed_signals.metrics._cap import cap_samples
+from mixed_signals.metrics._cap import cap_pair, cap_samples
+from mixed_signals.prng import derive_key
 
 
 def test_samples_below_the_cap_come_back_unchanged() -> None:
@@ -108,4 +109,81 @@ def test_cap_checks_its_inputs() -> None:
     with pytest.raises(ValueError, match=r"log_weights \(\.\.\., N\)"):
         cap_samples(
             jnp.zeros((5, 1)), jnp.zeros(4), key=jax.random.key(0), metric="mmd"
+        )
+
+
+def test_a_pair_below_the_cap_comes_back_unchanged() -> None:
+    """Both posteriors at or below the cap pass through without a warning."""
+    first, second = jnp.ones((6, 2)), jnp.zeros((4, 2))
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        kept = cap_pair(
+            first,
+            jnp.zeros(6),
+            second,
+            jnp.zeros(4),
+            key=jax.random.key(0),
+            metric="mmd",
+            cap=6,
+        )
+    assert [part.shape for part in kept] == [(6, 2), (6,), (4, 2), (4,)]
+
+
+def test_a_pair_above_the_cap_warns_once_and_draws_each_from_its_key() -> None:
+    """Each posterior above the cap draws from its own derived key; the other stays."""
+    first = jnp.arange(40.0).reshape(20, 2)
+    second = jnp.arange(16.0).reshape(8, 2)
+    key = jax.random.key(3)
+    with pytest.warns(SubsamplingWarning, match="kl: 20 and 8 samples") as caught:
+        kept = cap_pair(
+            first, jnp.zeros(20), second, jnp.zeros(8), key=key, metric="kl", cap=10
+        )
+    assert len(caught) == 1
+    expected, _ = cap_samples_quietly(first, derive_key(key, "first"), 10)
+    np.testing.assert_array_equal(kept[0], expected)
+    np.testing.assert_array_equal(kept[2], second)
+    assert kept[1].shape == (10,)
+
+
+def test_a_pair_checks_its_shapes() -> None:
+    """Both posteriors need (N, D) samples, (N,) weights and the same D."""
+    key = jax.random.key(0)
+    with pytest.raises(ValueError, match="cap must be at least 1"):
+        cap_pair(
+            jnp.zeros((3, 1)),
+            jnp.zeros(3),
+            jnp.zeros((3, 1)),
+            jnp.zeros(3),
+            key=key,
+            metric="kl",
+            cap=0,
+        )
+    with pytest.raises(ValueError, match=r"shaped \(N, D\) and its log_weights"):
+        cap_pair(
+            jnp.zeros(3),
+            jnp.zeros(3),
+            jnp.zeros((3, 1)),
+            jnp.zeros(3),
+            key=key,
+            metric="kl",
+        )
+    with pytest.raises(ValueError, match="same parameters, got 1 and 2"):
+        cap_pair(
+            jnp.zeros((3, 1)),
+            jnp.zeros(3),
+            jnp.zeros((3, 2)),
+            jnp.zeros(3),
+            key=key,
+            metric="kl",
+        )
+
+
+def cap_samples_quietly(
+    samples: jax.Array, key: jax.Array, cap: int
+) -> tuple[jax.Array, jax.Array]:
+    """Return cap_samples of equally weighted samples without its warning."""
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", SubsamplingWarning)
+        return cap_samples(
+            samples, jnp.zeros(samples.shape[0]), key=key, metric="test", cap=cap
         )

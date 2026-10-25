@@ -16,7 +16,7 @@ The implementation is split into twenty focused sessions, numbered 0 to 19. They
 | 6 | Estimators | B | 2 | Done (2026-10-14) |
 | 7 | eryn adapters and priors | C | 2, 4 | Done (2026-10-24) |
 | 8 | Metrics I: moments and marginals | C | 3, 6 | Done (2026-10-24) |
-| 9 | Metrics II: divergences, kernels and classifiers | C | 3, 6 | Open |
+| 9 | Metrics II: divergences, kernels and classifiers | C | 3, 6 | Done (2026-10-25) |
 | 10 | Optimal transport | C | 3, 4 | Open |
 | 11 | Diagnostics | C | 5, 6 | Open |
 | 12 | Nulls and σ | D | 8 | Next |
@@ -169,6 +169,8 @@ Scope: `metrics/divergence.py`, `metrics/kernel.py`, `metrics/classifier.py`.
 - The classifier two-sample test (C2ST) as a placeholder: its final signature and docstring, raising `NotImplementedError`.
 - Done when each metric vanishes on identical distributions, within its null, and orders the zoo's shifts correctly.
 
+Outcome (2026-10-25): the developers decided ten items, now in `DESIGN.md`. `metrics/divergence.py` has `knn_kl_divergence`, the estimator of Wang, Kulkarni and Verdú (2009), `knn_js_divergence`, from the Kozachenko-Leonenko entropies of the pooled samples and of each input after the larger posterior is subsampled to the count of the smaller, and `knn_hellinger_distance`, the mean of the two directional Bhattacharyya estimates of Póczos and Schneider (2011) at α = ½; their rows read `kl`, `js` and `hellinger` with the estimator `knn`. A zoo check on shifted unit Gaussians in 1 to 16 dimensions set the ranks k = 3 for KL, 10 for JS and 5 for Hellinger, which gave the most resolution of a shift for little extra bias. JS stayed within −1 to +10% of the truth and H² within 0 to −9%, but KL read low from D = 4 for every k (−29 to −32% at D = 16), also in the bias-reduced form of the same authors, so session 12 calibrates the σ_eff map of kNN KL rows. The kNN values stay raw: KL and JS may fall below zero, and Hellinger is the signed root of 1 − B̂C. `metrics/kernel.py` has `maximum_mean_discrepancy`, whose rows hold the weighted V-statistic MMD² of a Gaussian kernel, `energy_distance`, the weighted V-statistic of Székely and Rizzo (2013), and `median_bandwidth`, the weighted median over all pairs of 1 000 samples per posterior. Both kernel metrics measure circles and spheres along chords: on the zoo they resolved shifts as well as arc lengths did, and only chords resolved two circle distributions that differ in even harmonics, where arc lengths lose strict negative type (Lyons 2020) and a positive-definite Gaussian kernel (Feragen, Lauze and Hauberg 2015). `metrics/_cap.py` gained `cap_pair`, which caps both posteriors of a pair with one warning, and `sigma/maps.py` the closed-form σ_eff maps of MMD² and the energy distance, the latter through a Poisson mixture for the noncentral χ mean, because JAX's `hyp1f1` fails at large arguments. `metrics/classifier.py` holds the placeholder `classifier_two_sample_test`. ruff gained α, ν and ℓ as allowed confusable characters. Later sessions pass every kNN, MMD and energy call a key derived from the row's path ending in `"subsample"`, compute `median_bandwidth` once per comparison from a path ending in `"bandwidth"`, and give the kernel σ_eff maps the dimension E + C + 2S.
+
 ### 10. Optimal transport
 
 Scope: `metrics/ot/`. The developers own the method choices, so the session opens with options, not a pick.
@@ -179,6 +181,7 @@ Scope: `metrics/ot/`. The developers own the method choices, so the session open
 - The Sinkhorn divergence through ott-jax, and sliced W2 on the Euclidean block.
 - Port from catpylisa's `common_tools.distances.optimal_transport` module: `geometries.py` (chordal and geodesic sphere costs, composite cost, coupling-scale calibration) and `divergence.py` (adaptive ε, Sinkhorn divergence). Read the ε-scaling notes in `ot_convergence.md`.
 - Pitfall: ott-jax imports jaxopt, which raises a DeprecationWarning; tests turn warnings into errors, so add a targeted `filterwarnings` entry for it.
+- MMD and the energy distance already measure circles and spheres along chords (session 9), in the coordinates they receive, so the weight that this session gives spheres against the whitened Euclidean block also sets their weight in those two metrics.
 - Done when the costs respect each topology and the divergences vanish on identical inputs.
 
 ### 11. Diagnostics
@@ -205,6 +208,9 @@ Scope: `nulls/`, `sigma/`, and a calibration script in `scripts/`.
 - A script that rebuilds the σ_eff and r_eff calibration tables and the validation page from the zoo. The zoo's `batch_size` draws independent problems for the null-uniformity checks, and its `mahalanobis_shift` and `width_ratio` rows are the true σ_eff and r_eff. The page also reruns the session 6 zoo checks, the GMM starts behind `DEFAULT_STARTS` and the railing scores of the reflected and corrected KDEs, and the session 8 timing behind `SAMPLE_CAP`.
 - `sigma/maps.py` holds the closed-form maps of session 8; add the tabulated AD and JS curves next to them. The marginal JS and Hellinger come from KDEs, whose kernels shrink a shift by 1/√(1 + f²), 1.4% at N = 10⁴, so calibrate their curves with the KDE included.
 - Settle with the developers how null-subtracted values below zero enter the maps, which give NaN outside the range of their metric.
+- Replace the √(2·KL) σ_eff map of kNN KL rows by a zoo-calibrated one: the estimate reads low from D = 4 for every k, −9 to −17% at D = 4 and −29 to −32% at D = 16 with k = 3 (session 9), so the map depends on the estimator, D and N.
+- kNN Hellinger rows hold the signed root of 1 − B̂C and MMD rows hold MMD², whose additive biases cancel when the null mean is subtracted in the squared space; settle with the developers whether every Hellinger form is null-subtracted in H². The kernel maps take the dimension E + C + 2S, and the MMD map the bandwidth.
+- The validation page also reruns the session 9 zoo checks: the bias and resolution behind the kNN ranks, and chords against arc lengths for MMD and the energy distance on circles and spheres.
 - Done when nulls on identical distributions give uniform p-values, σ_eff recovers the zoo's known shifts, and r_eff its known width ratios.
 
 ### 13. Reweighting
@@ -222,12 +228,13 @@ Scope: `reweight/` and its engine function.
 Scope: `engines/` (`compare` and `diagnose`) and the public API in `__init__.py`.
 
 - `compare` in modes A and B, against a reference or over all pairs, with one shared whitening per comparison. Every row carries its null and null draws, σ_sig, σ_eff or r_eff, the null standard deviation as its uncertainty, validity warnings and provenance.
-- A dry run that counts metric evaluations times null resamples and warns above a budget.
+- A dry run that counts metric evaluations times null resamples and warns above a budget. At the cap, in 16 parameters on one CPU, one evaluation took 2.7 s for kNN KL, 5.3 s for kNN Hellinger and 9.5 s for kNN JS, against 0.3 s for MMD² and the energy distance (session 9), so the budget should weigh each metric by its cost.
 - kNN metrics need equally weighted samples: resample a weighted set in proportion to its weights first (Smith and Gelfand 1992), with a key derived from the row's path.
 - `diagnose` on raw chains and on flat samples.
 - Re-exports in `__init__.py` go below the float64 switch.
 - One whitening per problem through `jax.vmap` of `Whitening.from_samples` (the reference posterior in mode A, the two posteriors of each pair in mode B) or `from_fisher`, with its `description` in the space column. Traced whitenings do not warn, so rebuild a NaN one concretely to capture its `ValidityWarning` in the rows of its problem.
 - Per-parameter rows run on both inputs z-scored by their shared whitening (`decorrelate=False`), joint rows in the decorrelated whitening: the session 8 kernels compute in the coordinates they receive. Fit the marginal KDEs with one `shared_bandwidth_factor` per comparison, reuse it in every null draw, and write `KernelDensitySettings(bandwidth=factor).to_json()` into the rows; the factor is a static setting, so the null draws of one comparison map with `jax.vmap`, while problems with different factors run one by one. `ks_metric_names` names each KS or Kuiper row.
+- kNN, MMD and energy rows pass the metric a key derived from the row's path ending in `"subsample"`. Compute `metrics.kernel.median_bandwidth` once per comparison, from a path ending in `"bandwidth"`, reuse it in every null draw, and write it into the `estimator_settings` of the MMD rows; kNN rows write `NearestNeighbourSettings(neighbours=k).to_json()`. kNN JS needs equal sample counts inside `jax.jit`, where it gives NaN otherwise.
 - Done when a zoo comparison produces the full result table end to end.
 
 ### 15. Data space
@@ -236,7 +243,7 @@ Scope: `generators/`, `dataspace/` and the data-space engine function.
 
 - The minimal generator protocol that data space needs (`generate_template` and a noise model), with capability checks. The full generator contract stays deferred.
 - User code is called at the boundary in chunks, with DLPack hand-off on GPU; it may be CuPy or PyTorch.
-- Energy distance with a noise-weighted inner product supplied by the caller, and Fisher-whitened parameter distances when a Fisher matrix is available, through `Whitening.from_fisher`, which needs a positive-definite Γ (rank truncation is deferred); σ_eff from the energy-distance curve, valid at linear order.
+- Energy distance with a noise-weighted inner product supplied by the caller, through the weighted V-statistic of `metrics/kernel.py` (session 9), and Fisher-whitened parameter distances when a Fisher matrix is available, through `Whitening.from_fisher`, which needs a positive-definite Γ (rank truncation is deferred); σ_eff from the energy-distance curve, valid at linear order.
 - Reference only: `estimate_distances.py` in catpylisa's `common_tools.utils` module (waveform distances with JaxGB). The catpylisa team wrote it, so read it rather than port it.
 - Done when a toy generator gives distances in noise-σ units that match the linear-order Fisher prediction.
 
@@ -270,5 +277,6 @@ Scope: `gw/`, with a `gw` extra if it needs new dependencies.
 
 - A Sphinx user guide and API pages, the validation page, and marimo examples in `examples/`.
 - The GPU suite on the cluster with a single GPU, and a performance check.
+- Benchmark `SAMPLE_CAP` per metric. At the cap, one kNN JS evaluation took 9.5 s and one MMD² evaluation 0.3 s on one CPU (session 9); the developers kept one cap for now, because it is easy to tune.
 - Release blockers: reserve `mixed-signals` on PyPI, and wait for eryn to release its JAX-compatible prior setup, now on its `feat-jaxpriors` branch, because a published package cannot depend on a git branch.
 - Done when version 0.1.0 can be published.
