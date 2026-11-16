@@ -44,7 +44,10 @@ def test_settings_name_their_estimator_and_write_json() -> None:
     assert NearestNeighbourSettings.name == "knn"
     assert MixtureSettings.name == "gmm"
     assert KernelDensitySettings().to_json() == '{"bandwidth":"silverman"}'
-    assert NearestNeighbourSettings(neighbours=5).to_json() == '{"neighbours":5}'
+    assert (
+        NearestNeighbourSettings(neighbours=5).to_json()
+        == '{"neighbours":5,"norm":"euclidean"}'
+    )
 
 
 def test_settings_are_frozen_and_reject_unknown_fields() -> None:

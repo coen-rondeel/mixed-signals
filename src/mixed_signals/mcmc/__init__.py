@@ -17,8 +17,8 @@ and returns a :class:`~mixed_signals.core.samples.SampleSet` with its
     reduction.sample_set.n_eff  # N/τ_k of the kept samples
 
 :mod:`mixed_signals.mcmc.autocorr` estimates τ, :mod:`mixed_signals.mcmc.ess`
-holds the effective sample size, the split-chain Kolmogorov-Smirnov test and
-the informational R̂, and :mod:`mixed_signals.mcmc.reduce` the reduction.
+holds the effective sample size, the split-chain Kolmogorov-Smirnov and Kuiper
+tests and the informational R̂, and :mod:`mixed_signals.mcmc.reduce` the reduction.
 """
 
 from mixed_signals.mcmc.autocorr import (
@@ -34,6 +34,7 @@ from mixed_signals.mcmc.ess import (
     effective_sample_size,
     rank_normalized_split_rhat,
     split_chain_ks,
+    split_chain_kuiper,
 )
 from mixed_signals.mcmc.reduce import (
     TAU_THINNING,
@@ -59,4 +60,5 @@ __all__ = [
     "rank_normalized_split_rhat",
     "reduce_chains",
     "split_chain_ks",
+    "split_chain_kuiper",
 ]

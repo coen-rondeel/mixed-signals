@@ -49,7 +49,7 @@ In v1:
 
 ## Decisions so far
 
-The developers have agreed 210 decisions: 88 from rounds 1–8, the repository setup and the design close-out, 7 from roadmap session 1 (Foundations), 7 from roadmap session 2 (Sample containers) and 14 from roadmap session 3 (Validation zoo), all on 2026-10-13, and 14 from roadmap session 4 (Transforms and whitening), 12 from roadmap session 5 (MCMC tools) and 16 from roadmap session 6 (Estimators), all three on 2026-10-14, 14 from roadmap session 7 (eryn adapters and priors), taken on 2026-10-14 and 2026-10-24, 14 from roadmap session 8 (Metrics I: moments and marginals), on 2026-10-24, and 10 from roadmap session 9 (Metrics II: divergences, kernels and classifiers) and 14 from roadmap session 10 (Optimal transport), both on 2026-10-25.
+The developers have agreed 226 decisions: 88 from rounds 1–8, the repository setup and the design close-out, 7 from roadmap session 1 (Foundations), 7 from roadmap session 2 (Sample containers) and 14 from roadmap session 3 (Validation zoo), all on 2026-10-13, and 14 from roadmap session 4 (Transforms and whitening), 12 from roadmap session 5 (MCMC tools) and 16 from roadmap session 6 (Estimators), all three on 2026-10-14, 14 from roadmap session 7 (eryn adapters and priors), taken on 2026-10-14 and 2026-10-24, 14 from roadmap session 8 (Metrics I: moments and marginals), on 2026-10-24, and 10 from roadmap session 9 (Metrics II: divergences, kernels and classifiers), 14 from roadmap session 10 (Optimal transport) and 16 from roadmap session 11 (Diagnostics), all three on 2026-10-25.
 
 | Topic | Decision |
 | --- | --- |
@@ -139,7 +139,7 @@ The developers have agreed 210 decisions: 88 from rounds 1–8, the repository s
 | R̂ | Rank-normalised split-R̂ across walkers as an informational row, always flagged because the walkers are coupled |
 | Chain rates | Acceptance and swap rates for chains read from an eryn backend |
 | PSIS threshold | Flag k̂ above min(1 − 1/log₁₀ S, 0.7) |
-| Prior railing | Posterior density at a finite bound over its peak density, with a zoo-calibrated threshold |
+| Prior railing | Posterior density at a finite bound over its peak density, from the corrected 1D KDE, flagged above 0.02, the edge-to-peak ratio at which pe-configurator reports railing; the zoo checks the recovery of the score |
 | Interfaces | Kernels, SampleSet functions, and the YAML + CLI pipeline |
 | Key derivation | `prng.derive_key` folds the first 64 bits of the SHA-256 digest of each element of a named path into the parent key, so a key does not depend on which other calls run or in which order; root keys use Threefry-2x32 whatever the process default |
 | Warnings | Ordinary Python warnings in a `MixedSignalsWarning` hierarchy, raised outside jit; engines capture them per row as category and message entries. Errors derive from `MixedSignalsError`; invalid pydantic models raise pydantic's `ValidationError` |
@@ -166,7 +166,7 @@ The developers have agreed 210 decisions: 88 from rounds 1–8, the repository s
 | Zoo sphere cases | von Mises-Fisher distributions centred near a pole and rotated over it, in any polar form, with closed-form KL and Hellinger |
 | Zoo rotated Gaussians | Rotated by ±α/2 in one plane, so the marginals stay identical and only the sign of the correlation differs |
 | Zoo mixtures | A two-component mixture against its moment-matched Gaussian, one component alone (a dropped mode) and the same components reweighted |
-| Zoo railed cases | Unit normals truncated at one bound, one per offset, with the railing score, truncated moments and closed-form KL |
+| Zoo railed cases | Unit normals truncated at one bound, one per offset, with the railing score in rows named `railing_lower` or `railing_upper` by side, truncated moments and closed-form KL |
 | Zoo AR(1) chains | AR(1) chains as `Chains` with τ = (1 + φ)/(1 − φ), built in session 3 for sessions 5, 11 and 12 |
 | Zoo base Gaussians | The shift and scale builders take an optional mean and covariance, and the rotation builder a mean and per-parameter scales; shifts stay in Mahalanobis units |
 | Pooled whitening | The mean of the within-posterior covariances, each posterior weighted equally, the pooled within-group covariance of the Mahalanobis distance; circles take the root mean square of their circular standard deviations. The covariance of the pooled samples would shrink a shift d to d/√(1 + d²/4) |
@@ -204,11 +204,11 @@ The developers have agreed 210 decisions: 88 from rounds 1–8, the repository s
 | Circles in estimators | The Gaussian and the GMM unwrap each circle about its circular mean and sum over windings; the KDE unwraps for its bandwidth and wraps its kernels; sphere axes follow their own topologies |
 | Unresolved circles | The Gaussian and the GMM warn when the Rayleigh statistic 2N_effR̄² lies below 5.99, the 95% point of χ²₂ |
 | Gaussian estimator | The weighted mean and the unbiased weighted covariance, unbounded on intervals, with `sample` for the Gaussian surrogates |
-| kNN scope | Topology-aware brute-force distances (Euclidean block, shorter arc, great-circle arc times the sphere's radius), the k-th neighbour with self-exclusion, and the digamma-corrected log density; the divergence formulas stay in session 9 and KSG's max norm comes with session 11 |
+| kNN scope | Topology-aware brute-force distances (Euclidean block, shorter arc, great-circle arc times the sphere's radius), the k-th neighbour with self-exclusion, and the digamma-corrected log density; the divergence formulas stay in session 9; since session 11 a maximum norm and counts of the samples strictly within a radius serve the KSG estimator |
 | kNN weights | Zero weights leave every search; unequal positive weights give NaN with a warning, so engines resample first |
 | GMM start | Weighted k-means++ seeds, nearest-centre assignment and one M-step, as in scikit-learn; the best of 18 starts by default, from a zoo check |
 | GMM stopping | The rule of scikit-learn on z-scored axes: 1e-3 on the mean log-likelihood per sample, at most 100 iterations and 1e-6 on every diagonal; a winning start at the cap warns |
-| BIC | Formed in session 11 from the GMM's mean log-likelihood and parameter count |
+| BIC | −2n·ℓ̄ + p ln n from the GMM's mean log-likelihood and parameter count, for 1 to 5 components, with n the posterior's n_eff in both terms, as Kass and Raftery (1995) and Jones (2011) take n; on repeated draws, n = N inflated ΔBIC tenfold |
 | Placeholders | `FlowDensity.fit(samples, log_weights, space, settings, *, key)` and `ClassifierRatio.fit(first, first_log_weights, second, second_log_weights, space, settings, *, key)` raise `NotImplementedError` |
 | Coordinate helpers | `wrap`, `sphere_coordinates` and `unit_vectors` move from the zoo to `core/topology.py`; `circular_mean`, `mean_resultant_length` and `unwrap_about` join `core/samples.py` |
 | eryn transforms | `ErynPhysical` wraps eryn's own JAX backend, on the copy that `to_backend("jax")` returns, so its maps and Jacobians run under jit, vmap and grad: `forward` is eryn's `inverse_transform`, `inverse` its `forward_transform`, and ln\|det ∂x/∂u\| is minus eryn's `log_jacobian` at x; its description is `physical(eryn)` |
@@ -263,6 +263,22 @@ The developers have agreed 210 decisions: 88 from rounds 1–8, the repository s
 | OT σ_eff maps | √S_ε for `sinkhorn`, √(n · value) for `sliced_w2` and `sliced_sinkhorn` with n = E + 2C + 3S; exact for shifts of the Euclidean block, and calibrated on circles and spheres in session 12 |
 | Gaussian OT truths | Zoo functions for S_ε between Gaussians (Janati et al. 2020; Mallasto, Gerolin and Minh 2022) and for sliced W2² and sliced S_ε of shifted and axis-scaled unit Gaussians; reference tables hold only values free of ε |
 | OT names | `sinkhorn_divergence` in `metrics/ot/sinkhorn.py`; `sliced_directions`, `sliced_wasserstein_distance`, `sliced_sinkhorn_divergence` and `sliced_sinkhorn_epsilon` in `metrics/ot/sliced.py`; the embedding in the private `metrics/_embedding.py`; `spherical_width` in `core/samples.py` |
+| Diagnostics scope | Kernels in `diagnostics/`, the Gaussian-surrogate null in `nulls/surrogates.py`, the empirical p-value and σ_sig in `sigma/significance.py` without a tail fit, the KSG max norm and counts in `estimators/knn.py` and the split-chain Kuiper test in `mcmc/ess.py`; session 12 adds the other nulls and the tail fit, session 14 the rows |
+| Diagnostic flags | A diagnostic row flags when its value minus the null mean (the value itself without a null) passes a per-metric default threshold, overridable in the YAML, and σ_sig reaches 2; σ_eff and r_eff stay null on diagnostic rows |
+| Diagnostic thresholds | Skewness 0.5 and the one-sample AD 0.005, anchored on the zoo's normal railed 1σ inside its bound; excess kurtosis 1, an equal mixture of unit normals at a separation of 3.1; Mardia's b₁ 0.25 and b₂ 1, the marginal values carried over; circular skewness 2√2 · 0.5 and kurtosis 2, their narrow-circle limits; Spearman 0.1, distance correlation 0.1 and mutual information 0.05 nats, about the zoo banana with b = 0.003; mode dip 0.1; ΔBIC 10; railing 0.02; ESS below 400 (Vehtari et al. 2021); split-chain statistic 0.1 |
+| Diagnostic p-values | Two-sided for signed rows, with σ_sig = Φ⁻¹(1 − p/2) so that it reads \|z\| for a symmetric null; upper elsewhere, with Φ⁻¹(1 − p); the null recipe names the side |
+| Sphere axes in diagnostics | Their own topologies, the azimuth a circle and the polar axis an interval; polar axes, which end at the poles, get no railing rows |
+| Shape statistics | Per parameter the plug-in skewness g₁ and excess kurtosis g₂ of the weighted samples (Rimoldini 2014) and the one-sample AD distance A²/n against the normal of the weighted mean and unbiased variance; jointly Mardia's b₁ and b₂, b₂ being the mean of the squared Mahalanobis distances squared, under `SAMPLE_CAP` |
+| Dependence statistics | For every pair, Pearson's r as an informational row, and Spearman's ρ_s, the distance correlation and the KSG mutual information as excesses over their Gaussian values at the r of the same samples: raw values sit at the centre of a surrogate null drawn at the sample's own r, their excesses are calibrated |
+| Pair cap and KSG rank | The pairwise O(N²) statistics run on at most 2 000 samples per posterior; KSG takes k = 10, which read a banana's mutual information within −9 to +4% at that cap and resolved it 1.7 times better than k = 3 |
+| Circles in diagnostics | Circular skewness and kurtosis on circles; the distance correlation along chords and KSG along arcs; Pearson, Spearman, Mardia and AD on values unwrapped about the circular mean, AD cut opposite it; rows that involve a circle wider than a circular standard deviation of 1 rad warn, because there the surrogate null drifts |
+| Multimodality | GMM-BIC gives the component count and the discriminant directions; the modes of the bounded 1D KDE at Silverman's factor along every marginal and every pair's discriminant coordinate give the mode rows, whose deepest valley, 1 − valley/lower peak, is the effect size against Gaussian surrogates; modes of the fitted mixture misread curved and railed posteriors |
+| Mode counting | A local maximum counts as a peak above 5% of the highest peak; valleys shallower than 0.1 merge neighbouring peaks into one mode; a circle is cut at its lowest density; mode rows on intervals take surrogates truncated to the interval by inverse CDF |
+| Railing rows | `railing_lower` and `railing_upper` for every finite bound of an interval outside the polar axes, without a null, since a Gaussian surrogate knows no bound |
+| Chain health | Per parameter τ, the ESS, the split-chain test (KS, or Kuiper's V with its limiting distribution on circles) and the informational R̂; acceptance rates per temperature and swap rates, informational |
+| Circle τ | The larger τ of the observables cos(θ − θ̄) and sin(θ − θ̄), with θ̄ the circular mean, which no cut changes; the split test thins by the larger factor, and R̂ runs on values unwrapped about θ̄ |
+| Diagnostic names | `skewness`, `kurtosis`, `circular_skewness`, `circular_kurtosis`, `anderson_darling`, `mardia_skewness`, `mardia_kurtosis`, `pearson`, `spearman`, `distance_correlation`, `mutual_information`, `gmm_bic`, `mode_dip`, `mode_count`, `railing_lower`, `railing_upper`, `tau`, `ess`, `rhat`, `acceptance_rate`, `swap_rate`, `split_chain_ks` and `split_chain_kuiper_ks`; the estimator `knn` for the mutual information, `kde` for modes and railing, `gmm` for GMM-BIC and `empirical` otherwise |
+| Diagnostic modules | `diagnostics/shape.py`, `dependence.py`, `modes.py`, `railing.py`, `chains.py` and `flags.py`, with shared helpers in the private `_common.py` |
 
 ## Design principles
 
@@ -327,6 +343,8 @@ Comparisons run on flat samples shaped (B, K, N, D); diagnostics also read chain
 
 **Optimal transport (session 10).** The Sinkhorn divergence S_ε = OT_ε(p, q) − ½OT_ε(p, p) − ½OT_ε(q, q) (Cuturi 2013; Genevay, Peyré and Cuturi 2018; Feydy et al. 2019), sliced W2 (Rabin et al. 2012; Bonneel et al. 2015) and the sliced Sinkhorn divergence (Nadjahi et al. 2020) transport the squared Euclidean distance of the chordal embedding, the embedding of MMD and the energy distance, through ott-jax (Cuturi et al. 2022). A zoo check compared three costs on circles and spheres, with 400 samples per posterior, 20 permutation draws and ε from 0.05 to 125 times the median pooled cost. Squared arcs, the earlier design, gave S_ε of −0.14 to −0.23 at ε of 5 times the median and above for a circle with modes at 0 and π against modes at ±π/2, 77 to 210 null widths below the null, −0.57 to −0.93 for a bipolar against a girdle distribution on the sphere, and negative null draws on wide circles and spheres. Squared chords and unsquared arcs stayed non-negative, as positive definite Gibbs kernels guarantee (Feydy et al. 2019; Feragen, Lauze and Hauberg 2015), but unsquared arcs would add σ to the σ² of the Euclidean block. Every cost resolved shifts; chords read 3% below arcs for a 2σ shift on a narrow circle, and about half for a circle of width 1 rad. Whitening gives each sphere the radius 1/s for its pooled angular width s = √(1 − R̄), the width 1/√κ of a concentrated von Mises-Fisher distribution (Fisher 1953): next to four whitened axes, sky shifts of one and two widths of 0.02 and 0.1 rad gave √(S_ε − null mean) of 1.00 and 1.98 to 1.99, against 0.05 to 0.19 in radians, while catpylisa's median-cost coupling read 1.44 and 2.51 and changed with the shift. ε is 0.25ℓ², with ℓ the median bandwidth: on whitened Gaussians with 1 000 samples per posterior in 2, 8 and 16 dimensions, this factor kept the most resolution of a width ratio of 1.3 on one axis (12.7, 4.2 and 1.6 null widths) and 72 to 85% of the best resolution of a 0.5σ shift at D ≥ 8, where 0.05ℓ² halved the shift resolution at D = 16 with 6 to 20 times the iterations and 1ℓ² lost the width; √(S_ε − null mean) recovered the shift at every ε. The released ott-jax 0.6.0 cannot run its memory-bounded online mode on JAX 0.9 and later (ott-jax issue 700); its main branch fixed this in June 2026, so development pins commit 36338c9 until a release. Online, one divergence took 6.5 s and about 1 GB at the cap of 10 000 samples in 16 dimensions on an Apple M4 Pro CPU, against 3.7 s and about 5 GB with the cost matrices in memory; at ε = 0.25ℓ² the iterations converged in 10 to 30 steps, and ott-jax's default threshold of 1e-3 moved S_ε by a thousandth of the null spread, so the threshold of 1e-6 leaves a margin. A shifted copy of the same samples, whose optimal plan is a permutation, did not converge within 2 000 iterations at a tenth of that ε and gives NaN. Sliced W2² matched the energy distance in resolving shifts and exceeded it for width ratios (12.7 against 7.4 null widths at D = 2), with the same resolution for 100 and 1 000 directions; the sliced Sinkhorn divergence with 20 directions resolved no better than sliced W2² at 100 to 200 times its cost, 6.4 s at its cap of 2 000 samples. The closed form of S_ε between Gaussians (Janati et al. 2020, Theorem 1; Mallasto, Gerolin and Minh 2022) matched ott-jax's Sinkhorn of fine grids to 1e-7 and tends to the squared Bures distance as ε → 0, and the sliced closed forms matched SciPy's Beta expectations to 1e-9.
 
+**Diagnostics (session 11).** The kernels take the weighted samples of one posterior and are compared with Gaussian surrogates drawn at its N_eff (Efron and Tibshirani 1993). On 30 Gaussian replicates with 100 surrogates each, the shape statistics kept a calibrated null, z spread 0.8 to 1.2, but raw dependence statistics sat at the centre of theirs, z spread 0.12 for Pearson and 0.4 to 0.5 for Spearman, the distance correlation and the mutual information, because every surrogate shares the sample's correlation; measured as excesses over their Gaussian values at the same sample's r they were calibrated, z spread 0.96 to 1.33, and resolved bananas better (a banana of 0.08 nats at 9.5 instead of 6.5 null widths for the distance correlation). Shape statistics are the plug-in skewness and kurtosis of the weighted samples (Joanes and Gill 1998; Rimoldini 2014), the one-sample Anderson-Darling distance (Anderson and Darling 1954; Stephens 1974), and Mardia's (1970) b₁ and b₂, of which b₁ alone caught a banana of 0.01 nats, in 95% of replicates. On circles the circular skewness and kurtosis (Fisher 1993; Mardia and Jupp 2000) stayed calibrated at every width, while linear statistics of values unwrapped about the circular mean drifted from a circular standard deviation of 1.25 rad, where wrapping changes the dependence the surrogates reproduce; on a narrow circle the circular moments tend to −2√2·g₁ and 2·g₂, so their thresholds scale by these factors. The KSG estimator (Kraskov, Stögbauer and Grassberger 2004) uses the maximum norm and counts of `NearestNeighbours`; against the mutual information of the zoo's bananas by quadrature (0.010 to 1.99 nats), k = 10 read within −9 to +4% at 2 000 samples. At that cap, 16 parameters take about 20 minutes on one CPU with 201 sample sets, dominated by KSG. On the zoo, BIC chose 2 to 5 components for bananas and railed normals, and the modes of those mixtures, found by the fixed-point iteration of Carreira-Perpiñán (2000), numbered up to five for a unimodal banana, with valleys as deep as those of true bimodal mixtures; the modes of the bounded 1D KDE along marginals and discriminant directions stayed one for every banana and railed case and found every mixture from a separation of 2.5, with dips of 0.10 to 0.57, including an 8-parameter mixture that BIC missed. A peak floor of 1% let single samples in heavy tails count as modes in 5 to 25% of marginals, against none at 5%. The railing score of the corrected KDE recovered exp(−z²/2) within a few per cent for peaks up to 2.5σ to 3σ inside the bound, with a scatter of 0.04, 0.022 and 0.015 at z = 2 for N = 10³, 4·10³ and 10⁴. The split-chain Kuiper test kept uniform p-values on stationary circle chains (5.7 to 6.3% below 0.05 in 300 runs). With these defaults, the zoo's Gaussians, a narrow wrapped normal and a normal 4σ from its bound raised no flag, bananas flagged their dependence, Mardia's skewness and GMM-BIC but no mode, mixtures at separation 4 their mode and kurtosis, and normals railed at 0σ and 1σ their bound and skewness.
+
 **Structure layering (Decided)**
 
 - equinox modules for anything crossing jit: samples, weights, transforms, estimator state.
@@ -340,7 +358,7 @@ Four engines share the data model and declare what they need. The menus below ar
 
 | Engine | Needs | v1 methods |
 | --- | --- | --- |
-| `diagnose` | Chains (flat samples: shape checks only) | Chain health: τ, ESS, split-chain KS, informational R̂ across walkers, and acceptance and swap rates for eryn backends. Shape: Mahalanobis distances vs χ²_D, skewness, kurtosis, Anderson–Darling. Dependence: Pearson, Spearman, distance correlation and mutual information vs their Gaussian values (bananas). GMM-BIC multimodality. Prior railing |
+| `diagnose` | Chains (flat samples: shape checks only) | Chain health: τ, ESS, split-chain KS (Kuiper's V on circles), informational R̂ across walkers, and acceptance and swap rates for eryn backends. Shape: skewness, kurtosis (circular on circles), one-sample Anderson–Darling, Mardia's b₁ and b₂ of the Mahalanobis distances. Dependence: Pearson, and Spearman, distance correlation and mutual information against their Gaussian values (bananas). Modes: GMM-BIC structure and the modes of 1D kernel estimates along marginals and discriminant directions. Prior railing |
 | `compare` | Two or more SampleSets in one space | Moments: per-parameter mean shift and width ratio; Gaussian KL, W2 and Hellinger, split into location and shape. Marginals: KS, k-sample Anderson–Darling, 1D W1, and JS and Hellinger with a bounded KDE. Joint: kNN KL, JS and Hellinger, MMD, energy distance. OT: Sinkhorn divergence, sliced W2, sliced Sinkhorn divergence. C2ST as a placeholder |
 | `reweight` | Stored log π plus a new prior, stored log L plus a new likelihood, or an approximation's density q | Importance weights; evidence ratio Z_new/Z_old = E_old[L_new/L_old]; ESS and PSIS k̂ on every weight set, flagged above min(1 − 1/log₁₀ S, 0.7); weights stay raw, and Pareto smoothing is opt-in |
 | Data space | A generator with `generate_template`, plus a noise model | Energy distance with the noise-weighted norm; Fisher-whitened parameter distances when a Fisher matrix is available |
@@ -356,9 +374,10 @@ Four engines share the data model and declare what they need. The menus below ar
 - MMD and the energy distance measure circles and spheres along chords, so both stay characteristic and the Gaussian kernel positive definite (Lyons 2013; Lyons 2020; Feragen, Lauze and Hauberg 2015); the energy distance is the weighted V-statistic of Székely and Rizzo (2013).
 - The Sinkhorn divergence, sliced W2 and the sliced Sinkhorn divergence transport the squared distance of the chordal embedding, whose Gibbs kernel is positive definite at every ε (Feydy et al. 2019). The sliced metrics project the embedded points, E + 2C + 3S coordinates, onto uniform directions drawn once per comparison, which determine the distribution (Cramér and Wold 1936; Nadjahi et al. 2020).
 - C2ST and the normalizing-flow estimator are placeholders: their functions exist with final signatures and raise `NotImplementedError` until the classifier and its training setup are chosen.
-- Split-chain KS compares the τ-thinned halves of a chain, pooled over the walkers, because the test assumes independent draws (Brooks, Giudici and Philippe 2003); its p-value comes from the limiting Kolmogorov distribution (Smirnov 1948) and is approximate for coupled walkers.
-- Gaussianity and dependence statistics are compared with Gaussian surrogates; see Null construction.
-- The prior-railing score is the marginal posterior density at a finite bound divided by its peak density, both from the one-dimensional bounded KDE, which corrects its bounds as Jones and Foster (1996) do. No paper defines a railing diagnostic. The LVK tool pe-configurator checks chirp-mass railing with a histogram; our flag threshold is calibrated on the zoo's railed cases and shown on the validation page.
+- Split-chain KS compares the τ-thinned halves of a chain, pooled over the walkers, because the test assumes independent draws (Brooks, Giudici and Philippe 2003); its p-value comes from the limiting Kolmogorov distribution (Smirnov 1948) and is approximate for coupled walkers. Circle parameters take Kuiper's V of values unwrapped about the circular mean, with Kuiper's (1960) limiting distribution, thinned by the larger τ of cos(θ − θ̄) and sin(θ − θ̄).
+- Gaussianity, dependence and mode statistics are compared with Gaussian surrogates; see Null construction. Dependence statistics enter as excesses over their bivariate-Gaussian values at the same sample's Pearson r: (6/π) arcsin(r/2) for Spearman (Pearson 1907), Theorem 7 of Székely, Rizzo and Bakirov (2007) for the distance correlation, and −½ ln(1 − r²) for the mutual information (Cover and Thomas 2006).
+- Multimodality: a mixture fits any non-Gaussian shape, so GMM-BIC flags structure; the mode rows count the modes of the bounded 1D KDE (Silverman 1981) along every marginal and along the discriminant coordinate of every pair of mixture components, onto which Hennig (2010) projects such pairs.
+- The prior-railing score is the marginal posterior density at a finite bound divided by its peak density, both from the one-dimensional bounded KDE, which corrects its bounds as Jones and Foster (1996) do. No paper defines a railing diagnostic. The LVK tool pe-configurator reports railing when the edge bin of a 50-bin histogram exceeds 2% of the highest bin, and the default flag threshold takes the same 0.02; the zoo checks that the score recovers exp(−z²/2).
 
 **Comparison topologies (Decided)**
 
@@ -379,7 +398,7 @@ Distances are in noise-σ units, and ‖δh‖ ≲ 1 is indistinguishable in the
 
 ## Statistical reporting
 
-Every result row carries a value, its uncertainty, its null, σ_sig and an effect size: σ_eff, or r_eff for rows that measure only a difference in width. Thresholds act on the effect size, with per-metric defaults that the YAML config can override.
+Every result row carries a value, its uncertainty, its null, σ_sig and an effect size: σ_eff, or r_eff for rows that measure only a difference in width. Thresholds act on the effect size, with per-metric defaults that the YAML config can override. Diagnostic rows measure one posterior, not a shift between two, so their effect size is their value minus the null mean, on the scale of their statistic, and σ_eff and r_eff stay null; `diagnostics/flags.py` holds their thresholds.
 
 **Result columns:** problem, pair, metric, estimator, estimator settings (a JSON object), space (transform chain), parameters, value, uncertainty, uncertainty method, null mean, null std, null draws, null recipe (construction, number of draws, sample size per side), p-value, σ_sig, σ_eff, r_eff, warnings (category and message of each entry), provenance (package version, seed, PRNG key, input hashes, JAX version, device platform, config hash). A null entry means that a column does not apply to the row; NaN marks a value at a hard validity limit. The PRNG key is the key that the engine received, so a row from a direct call without a seed can still be rebuilt.
 
@@ -425,7 +444,7 @@ At linear order, a posterior whose covariance is the inverse Fisher matrix maps 
 **Null construction (Decided).** Configurable, with a standard default per method: 200 draws, both sets subsampled to the smaller N_eff, and more draws for significance claims.
 
 - Comparisons, both modes: permutation of the τ-thinned pooled samples (Good 2005); thinning makes the samples close to exchangeable. Splitting the reference into halves at the approximation's N_eff stays available for mode A.
-- Posterior-shape diagnostics: 200 Gaussian surrogate sets with the posterior's mean and covariance at its N_eff, a parametric bootstrap (Efron and Tibshirani 1993). The null then carries the finite-N bias of the kNN and KSG estimators. Closed forms, such as Theorem 7 of Székely, Rizzo and Bakirov (2007) for distance correlation and Moran (1948) for Spearman's ρ, serve as test references.
+- Posterior-shape diagnostics: 200 Gaussian surrogate sets with the posterior's mean and covariance at its N_eff, a parametric bootstrap (Efron and Tibshirani 1993), drawn by `nulls.surrogates.gaussian_surrogates`; mode rows on intervals take surrogates truncated to the interval. The null then carries the finite-N bias of the kNN and KSG estimators. The closed forms of Theorem 7 of Székely, Rizzo and Bakirov (2007) and of Pearson (1907) are the Gaussian values that the dependence statistics subtract. Railing, GMM-BIC and chain-health rows have no surrogate null.
 - C2ST: chosen with its implementation.
 
 **Validity domains (Decided).** Each metric declares where it is reliable: minimum N_eff relative to D, bandwidth and ε relative to the whitened scale, maximum D for KDEs. Each limit cites its source or its zoo calibration. A soft limit adds a structured warning to the row. A hard limit, where the estimator is undefined (for example fewer samples than neighbours for kNN), gives a NaN value plus the warning. Nothing raises, so a long run never stops on one metric.
@@ -442,7 +461,7 @@ Distributions with known answers serve as the test suite, as the source of the �
 | `rotated_gaussians` | `reference` and `rotated`, at ∓α/2 in one plane | As for `gaussians`; every marginal and per-parameter value is exactly zero |
 | `banana` | Twisted Gaussian B(b, v) and its moment-matched `gaussian` | Moments; KL(B ‖ N) = ½ ln(1 + 2b²v²) and KL(N ‖ B) = 2b²v² − ½ ln(1 + 2b²v²) |
 | `gaussian_mixture` | Two-component `mixture`, its moment-matched `gaussian`, one `component` and the `reweighted` modes | Moments; KL of every pair, by quadrature along the separation axis |
-| `railed_gaussians` | Unit normals truncated at zero, one per offset z | Railing score exp(−z²/2), or 1 for z ≤ 0; truncated moments; KL of every pair; marginal KS, W1, Hellinger, JS and AD on the railed axis |
+| `railed_gaussians` | Unit normals truncated at zero, one per offset z | Railing score exp(−z²/2), or 1 for z ≤ 0, in rows `railing_lower` or `railing_upper`; truncated moments; KL of every pair; marginal KS, W1, Hellinger, JS and AD on the railed axis |
 | `wrapped_gaussians` | A wrapped normal centred on the circle boundary, and a copy shifted by δσ | Circular mean and mean resultant length; the generating shift; Kuiper's V, W1 along the circle, AD after the pooled cut, JS and Hellinger |
 | `von_mises_fisher` | A von Mises-Fisher distribution near the north pole, and a copy rotated over it | Mean resultant length; KL and Hellinger; the angular shift |
 | `ar1_chains` | AR(1) `Chains` with one coefficient φ per parameter | τ = (1 + φ)/(1 − φ); stationary mean and width |
@@ -577,7 +596,7 @@ mixed-signals/
 │   │   ├── autocorr.py     # own τ estimator
 │   │   ├── ess.py          # ESS, split-chain KS, informational R̂
 │   │   └── reduce.py       # burn-in, τ-thinning → SampleSet
-│   ├── diagnostics/        # shape, dependence, modes, railing
+│   ├── diagnostics/        # shape, dependence, modes, railing, chain health, flags
 │   ├── metrics/            # pure JAX kernels
 │   │   ├── _cap.py         # O(N²) subsampling cap and warning
 │   │   ├── _embedding.py   # chordal embedding of MMD, energy and OT
@@ -590,8 +609,9 @@ mixed-signals/
 │   ├── reweight/           # importance weights, evidence ratio, PSIS
 │   ├── dataspace/          # noise-weighted energy distance, Fisher
 │   ├── generators/         # benched: protocols, capability checks
-│   ├── nulls/              # permutation, split-half, Gaussian surrogates, N_eff matching
+│   ├── nulls/              # permutation, split-half, Gaussian surrogates (surrogates.py), N_eff matching
 │   ├── sigma/              # σ_sig, σ_eff and r_eff maps, calibration tables
+│   │   ├── significance.py # empirical p-values and σ_sig
 │   │   └── maps.py         # closed-form σ_eff and r_eff maps
 │   ├── engines/            # diagnose, compare, reweight, dataspace
 │   ├── zoo/                # cases with known answers: distributions, closed forms
@@ -642,20 +662,23 @@ Every method and assumption above cites the sources below. Each module cites the
 | Integrated autocorrelation time τ | Geyer (1992); Vehtari et al. (2021); Goodman and Weare (2010); Sokal (1997); Foreman-Mackey et al. (2013); emcee documentation |
 | Effective sample size | Geyer (1992); Vehtari et al. (2021); Kish (1965) for weights |
 | Thinning factor; error of τ | Madras and Sokal (1988); Wolff (2004) |
-| Split-chain KS | Brooks, Giudici and Philippe (2003); LaplacesDemon R package, `KS.Diagnostic` (Hall, Hall and Statisticat 2026); Smirnov (1948) |
+| Split-chain KS | Brooks, Giudici and Philippe (2003); LaplacesDemon R package, `KS.Diagnostic` (Hall, Hall and Statisticat 2026); Smirnov (1948); on circles Kuiper (1960), Maag and Stephens (1968); calibration: zoo check |
 | R̂, informational only | Gelman and Rubin (1992); Vehtari et al. (2021); Blom (1958); emcee documentation |
 | Acceptance rates of ensemble moves; the (step, walker, param) chain layout | Foreman-Mackey et al. (2013) |
 | Swap rates and the cold chain of parallel tempering | Vousden, Farr and Mandel (2016) |
 | eryn | Karnesis et al. (2023) |
-| Mahalanobis distances vs χ²_D | Mahalanobis (1936); Johnson and Wichern (2007) |
-| Skewness and kurtosis | Joanes and Gill (1998) |
+| Mahalanobis distances vs χ²_D: Mardia's multivariate skewness and kurtosis | Mardia (1970); Mahalanobis (1936); Johnson and Wichern (2007) |
+| Skewness and kurtosis | Joanes and Gill (1998); weighted: Rimoldini (2014); on circles: Fisher (1993), Mardia and Jupp (2000); narrow-circle limits: zoo check |
 | Anderson–Darling, one sample | Anderson and Darling (1954); Stephens (1974) |
-| Spearman's ρ and its Gaussian value | Spearman (1904); Moran (1948) |
-| Distance correlation and its Gaussian value | Székely, Rizzo and Bakirov (2007) |
-| Mutual information and its Gaussian value | Kraskov, Stögbauer and Grassberger (2004); Cover and Thomas (2006) |
-| GMM-BIC multimodality | Dempster, Laird and Rubin (1977); McLachlan and Peel (2000); Schwarz (1978); Fraley and Raftery (2002); k-means++ starts: Arthur and Vassilvitskii (2007); stopping rule: scikit-learn (Pedregosa et al. 2011); number of starts: zoo check |
-| Prior railing | Bounded KDE: Jones (1993), Jones and Foster (1996); related LVK check: pe-configurator; threshold: validation page |
-| Gaussian surrogates | Efron and Tibshirani (1993) |
+| Spearman's ρ and its Gaussian value | Spearman (1904); Pearson (1907); Moran (1948) |
+| Distance correlation and its Gaussian value | Székely, Rizzo and Bakirov (2007); weighted and chordal: Lyons (2013) |
+| Mutual information and its Gaussian value | Kraskov, Stögbauer and Grassberger (2004); Cover and Thomas (2006); rank and cap: zoo check |
+| Excess dependence over the Gaussian value | Calibration against the surrogates: zoo check |
+| GMM-BIC structure | Dempster, Laird and Rubin (1977); McLachlan and Peel (2000); Schwarz (1978); Kass and Raftery (1995); Fraley and Raftery (2002); n = n_eff: Kass and Raftery (1995), Jones (2011), zoo check; k-means++ starts: Arthur and Vassilvitskii (2007); stopping rule: scikit-learn (Pedregosa et al. 2011); number of starts: zoo check |
+| Modes of 1D kernel estimates | Silverman (1981); Silverman (1986); discriminant directions: Hennig (2010); modes of mixtures misread: Carreira-Perpiñán (2000), zoo check; peak floor and valley merging: zoo check |
+| Prior railing | Bounded KDE: Jones (1993), Jones and Foster (1996); threshold: pe-configurator (Estelles, Ossokine and Williams 2023); recovery: zoo check |
+| Diagnostic thresholds | Kass and Raftery (1995); Fraley and Raftery (2002); Vehtari et al. (2021); pe-configurator; zoo anchors |
+| Gaussian surrogates | Efron and Tibshirani (1993); truncation to intervals: Devroye (1986) |
 | Mean shift | Glass, McGaw and Smith (1981); Cohen (1988) |
 | Width ratio | Nakagawa et al. (2015) |
 | Gaussian KL | Kullback and Leibler (1951); Rasmussen and Williams (2006), Appendix A |
@@ -726,6 +749,7 @@ Every method and assumption above cites the sources below. Each module cites the
 - Bonneel, N., Rabin, J., Peyré, G. and Pfister, H. (2015). Sliced and Radon Wasserstein barycenters of measures. *Journal of Mathematical Imaging and Vision* 51(1), 22–45.
 - Blom, G. (1958). *Statistical Estimates and Transformed Beta-Variables*. Wiley.
 - Brooks, S. P., Giudici, P. and Philippe, A. (2003). Nonparametric convergence assessment for MCMC model selection. *Journal of Computational and Graphical Statistics* 12(1), 1–22.
+- Carreira-Perpiñán, M. Á. (2000). Mode-finding for mixtures of Gaussian distributions. *IEEE Transactions on Pattern Analysis and Machine Intelligence* 22(11), 1318–1323.
 - Chan, T. F., Golub, G. H. and LeVeque, R. J. (1983). Algorithms for computing the sample variance: analysis and recommendations. *The American Statistician* 37(3), 242–247.
 - Claessen, K. and Pałka, M. H. (2013). Splittable pseudorandom number generators using cryptographic hashing. *Proceedings of the 2013 ACM SIGPLAN Symposium on Haskell*, 47–58.
 - Cohen, J. (1988). *Statistical Power Analysis for the Behavioral Sciences*, 2nd edition. Lawrence Erlbaum.
@@ -745,6 +769,7 @@ Every method and assumption above cites the sources below. Each module cites the
 - Feragen, A., Lauze, F. and Hauberg, S. (2015). Geodesic exponential kernels: When curvature and linearity conflict. *Proceedings of the IEEE Conference on Computer Vision and Pattern Recognition*, 3032–3042.
 - Feydy, J., Séjourné, T., Vialard, F.-X., Amari, S., Trouvé, A. and Peyré, G. (2019). Interpolating between optimal transport and MMD using Sinkhorn divergences. *Proceedings of AISTATS*, PMLR 89, 2681–2690.
 - Finn, L. S. (1992). Detection, measurement, and gravitational radiation. *Physical Review D* 46(12), 5236–5249.
+- Fisher, N. I. (1993). *Statistical Analysis of Circular Data*. Cambridge University Press.
 - Fisher, N. I., Lewis, T. and Embleton, B. J. J. (1987). *Statistical Analysis of Spherical Data*. Cambridge University Press.
 - Fisher, R. A. (1953). Dispersion on a sphere. *Proceedings of the Royal Society of London A* 217(1130), 295–305.
 - Foreman-Mackey, D., Hogg, D. W., Lang, D. and Goodman, J. (2013). emcee: The MCMC Hammer. *Publications of the Astronomical Society of the Pacific* 125(925), 306–312.
@@ -764,6 +789,7 @@ Every method and assumption above cites the sources below. Each module cites the
 - Hartung, N. (2024). kldest: Sample-based estimation of Kullback-Leibler divergence. R package version 1.0.0. <https://cran.r-project.org/package=kldest>
 - Harris, C. R. et al. (2020). Array programming with NumPy. *Nature* 585, 357–362.
 - Hellinger, E. (1909). Neue Begründung der Theorie quadratischer Formen von unendlichvielen Veränderlichen. *Journal für die reine und angewandte Mathematik* 136, 210.
+- Hennig, C. (2010). Methods for merging Gaussian mixture components. *Advances in Data Analysis and Classification* 4(1), 3–34.
 - Hermans, J., Delaunoy, A., Rozet, F., Wehenkel, A., Begy, V. and Louppe, G. (2022). A trust crisis in simulation-based inference? Your posterior approximations can be unfaithful. *Transactions on Machine Learning Research*.
 - Hoy, C. and Raymond, V. (2021). PESummary: the code agnostic Parameter Estimation Summary page builder. *SoftwareX* 15, 100765.
 - Hu, Y. and Scarrott, C. (2018). evmix: An R package for extreme value mixture modeling, threshold estimation and boundary corrected kernel density estimation. *Journal of Statistical Software* 84(5).
@@ -779,6 +805,8 @@ Every method and assumption above cites the sources below. Each module cites the
 - Jones, M. C. (1993). Simple boundary correction for kernel density estimation. *Statistics and Computing* 3(3), 135–146.
 - Jones, M. C. and Foster, P. J. (1996). A simple nonnegative boundary correction method for kernel density estimation. *Statistica Sinica* 6(4), 1005–1013.
 - Karnesis, N., Katz, M. L., Korsakova, N., Gair, J. R. and Stergioulas, N. (2023). Eryn: a multipurpose sampler for Bayesian inference. *Monthly Notices of the Royal Astronomical Society* 526(4), 4814–4830. arXiv:2303.02164.
+- Jones, R. H. (2011). Bayesian information criterion for longitudinal and clustered data. *Statistics in Medicine* 30(25), 3050–3056.
+- Kass, R. E. and Raftery, A. E. (1995). Bayes factors. *Journal of the American Statistical Association* 90(430), 773–795.
 - Kessy, A., Lewin, A. and Strimmer, K. (2018). Optimal whitening and decorrelation. *The American Statistician* 72(4), 309–314.
 - Kish, L. (1965). *Survey Sampling*. Wiley.
 - Knijnenburg, T. A., Wessels, L. F. A., Reinders, M. J. T. and Shmulevich, I. (2009). Fewer permutations, more accurate P-values. *Bioinformatics* 25(12), i161–i168.
@@ -799,6 +827,7 @@ Every method and assumption above cites the sources below. Each module cites the
 - Madras, N. and Sokal, A. D. (1988). The pivot algorithm: a highly efficient Monte Carlo method for the self-avoiding walk. *Journal of Statistical Physics* 50(1–2), 109–186.
 - Mahalanobis, P. C. (1936). On the generalised distance in statistics. *Proceedings of the National Institute of Sciences of India* 2(1), 49–55.
 - Mallasto, A., Gerolin, A. and Minh, H. Q. (2022). Entropy-regularized 2-Wasserstein distance between Gaussian measures. *Information Geometry* 5(1), 289–323.
+- Mardia, K. V. (1970). Measures of multivariate skewness and kurtosis with applications. *Biometrika* 57(3), 519–530.
 - Mardia, K. V. and Jupp, P. E. (2000). *Directional Statistics*. Wiley.
 - McLachlan, G. and Peel, D. (2000). *Finite Mixture Models*. Wiley.
 - Moran, P. A. P. (1948). Rank correlation and product-moment correlation. *Biometrika* 35(1/2), 203–206.
@@ -808,7 +837,8 @@ Every method and assumption above cites the sources below. Each module cites the
 - National Institute of Standards and Technology (2015). Secure Hash Standard (SHS). Federal Information Processing Standards Publication 180-4.
 - Papamakarios, G., Nalisnick, E., Rezende, D. J., Mohamed, S. and Lakshminarayanan, B. (2021). Normalizing flows for probabilistic modeling and inference. *Journal of Machine Learning Research* 22(57), 1–64.
 - Payne, E., Talbot, C. and Thrane, E. (2019). Higher order gravitational-wave modes with likelihood reweighting. *Physical Review D* 100(12), 123017.
-- pe-configurator (Estelles, H., Ossokine, S. and Williams, D.). Waveform settings and prior bounds for gravitational-wave parameter estimation, MIT license. <https://pypi.org/project/pe-configurator>
+- pe-configurator: Estelles, H., Ossokine, S. and Williams, D. (2023). pe-configurator: tools to identify waveform settings and prior bounds for gravitational wave parameter estimation. Python package, version 1.0.5, MIT license. <https://pypi.org/project/pe-configurator>
+- Pearson, K. (1907). *Mathematical Contributions to the Theory of Evolution. XVI. On Further Methods of Determining Correlation*. Drapers' Company Research Memoirs, Biometric Series IV. Dulau and Co.
 - Pedregosa, F. et al. (2011). Scikit-learn: Machine learning in Python. *Journal of Machine Learning Research* 12(85), 2825–2830.
 - Pettitt, A. N. (1976). A two-sample Anderson-Darling rank statistic. *Biometrika* 63(1), 161–168.
 - Peyré, G. and Cuturi, M. (2019). Computational optimal transport. *Foundations and Trends in Machine Learning* 11(5–6), 355–607.
@@ -822,6 +852,7 @@ Every method and assumption above cites the sources below. Each module cites the
 - Raveri, M. and Doux, C. (2021). Non-Gaussian estimates of tensions in cosmological parameters. *Physical Review D* 104(4), 043504.
 - Raveri, M. and Hu, W. (2019). Concordance and discordance in cosmology. *Physical Review D* 99(4), 043506.
 - Rényi, A. (1961). On measures of entropy and information. *Proceedings of the Fourth Berkeley Symposium on Mathematical Statistics and Probability*, Volume 1, 547–561.
+- Rimoldini, L. (2014). Weighted skewness and kurtosis unbiased by sample size and Gaussian uncertainties. *Astronomy and Computing* 5, 1–8.
 - Romero-Shaw, I. M. et al. (2020). Bayesian inference for compact binary coalescences with BILBY: validation and application to the first LIGO–Virgo gravitational-wave transient catalogue. *Monthly Notices of the Royal Astronomical Society* 499(3), 3295–3319.
 - Salmon, J. K., Moraes, M. A., Dror, R. O. and Shaw, D. E. (2011). Parallel random numbers: as easy as 1, 2, 3. *Proceedings of the 2011 International Conference for High Performance Computing, Networking, Storage and Analysis*, 1–12.
 - Schilling, M. F., Watkins, A. E. and Watkins, W. (2002). Is human height bimodal? *The American Statistician* 56(3), 223–229.
@@ -830,6 +861,7 @@ Every method and assumption above cites the sources below. Each module cites the
 - Schwarz, G. (1978). Estimating the dimension of a model. *Annals of Statistics* 6(2), 461–464.
 - Sejdinovic, D., Sriperumbudur, B., Gretton, A. and Fukumizu, K. (2013). Equivalence of distance-based and RKHS-based statistics in hypothesis testing. *Annals of Statistics* 41(5), 2263–2291.
 - Sejdinovic, D., Strathmann, H., Garcia, M. L., Andrieu, C. and Gretton, A. (2014). Kernel adaptive Metropolis-Hastings. *Proceedings of the 31st International Conference on Machine Learning*, PMLR 32(2), 1665–1673.
+- Silverman, B. W. (1981). Using kernel density estimates to investigate multimodality. *Journal of the Royal Statistical Society B* 43(1), 97–99.
 - Silverman, B. W. (1986). *Density Estimation for Statistics and Data Analysis*. Chapman and Hall.
 - Smirnov, N. (1948). Table for estimating the goodness of fit of empirical distributions. *Annals of Mathematical Statistics* 19(2), 279–281.
 - Smith, A. F. M. and Gelfand, A. E. (1992). Bayesian statistics without tears: a sampling-resampling perspective. *The American Statistician* 46(2), 84–88.

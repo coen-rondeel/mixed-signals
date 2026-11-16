@@ -7,6 +7,21 @@ spheres, the angle times the sphere's radius, combined as the root of the
 summed squares. The space is then locally Euclidean with d = E + C + 2S
 dimensions, for E Euclidean axes, C circles and S spheres.
 
+Maximum norm
+    With ``norm="max"`` the distance is instead the largest of the distances
+    along each Euclidean axis, each circle and each sphere, the norm of the
+    mutual-information estimator of Kraskov, Stögbauer and Grassberger
+    (2004). Its unit ball is a product of intervals and discs, of volume
+    2^(E+C) π^S, which the log density takes instead of the Euclidean ball.
+Neighbour counts
+    :meth:`NearestNeighbours.count_within` counts the samples strictly
+    closer to each point than a radius of its own, and
+    :meth:`NearestNeighbours.leave_one_out_count` does so for each sample,
+    leaving the sample itself out. Both compare the same floating-point
+    distances as the searches, so a neighbour that sets a radius in one
+    space falls outside it, as the estimator of Kraskov, Stögbauer and
+    Grassberger (2004) counts.
+
 Log density
     log p̂(x) = ψ(k) − ψ(n + 1) − ln V_d − d ln r_k(x), with r_k(x) the
     distance from x to the k-th nearest of n samples and
@@ -47,7 +62,7 @@ References:
 
 import functools
 import math
-from typing import ClassVar, Final
+from typing import ClassVar, Final, Literal
 
 import equinox as eqx
 import jax
@@ -57,7 +72,7 @@ from jax.typing import ArrayLike
 from jaxtyping import Array, Bool, Float
 from pydantic import PositiveInt
 
-from mixed_signals.core.samples import _is_concrete, unwrap_about
+from mixed_signals.core.samples import _check_real, _is_concrete, unwrap_about
 from mixed_signals.core.space import ParamSpace
 from mixed_signals.core.topology import unit_vectors
 from mixed_signals.estimators.base import (
@@ -74,6 +89,12 @@ from mixed_signals.estimators.base import (
 WEIGHT_TOLERANCE: Final = 1e-9
 """Largest spread of the positive log weights that still counts as equal weights."""
 
+EUCLIDEAN_NORM: Final = "euclidean"
+"""Norm that combines the distances along the axes as their root summed square."""
+
+MAXIMUM_NORM: Final = "max"
+"""Norm that takes the largest of the distances along the axes."""
+
 
 class NearestNeighbourSettings(EstimatorSettings):
     """Settings of the k-nearest-neighbour estimator.
@@ -81,14 +102,18 @@ class NearestNeighbourSettings(EstimatorSettings):
     Attributes:
         neighbours: The rank k of the neighbour whose distance enters the
             estimates. Each metric sets its own default.
+        norm: ``"euclidean"`` combines the distances along the Euclidean
+            axes, circles and spheres as the root of their summed squares;
+            ``"max"`` takes the largest of them.
 
     References:
-        :cite:t:`loftsgaarden1965nonparametric`.
+        :cite:t:`loftsgaarden1965nonparametric`; :cite:t:`kraskov2004mutual`.
     """
 
     name: ClassVar[str] = "knn"
 
     neighbours: PositiveInt
+    norm: Literal["euclidean", "max"] = EUCLIDEAN_NORM
 
 
 class NearestNeighbours(Estimator):
@@ -271,25 +296,104 @@ class NearestNeighbours(Estimator):
             _warn_about_coincidences(distances, self.settings.neighbours, "samples")
         return log_values
 
+    def count_within(
+        self,
+        points: Float[ArrayLike, "*leading param"],
+        radii: ArrayLike,
+    ) -> Float[Array, " *leading"]:
+        """Return the number of samples strictly within each point's radius.
 
-def _squared_distances(
+        Args:
+            points: Points shaped (..., D), in the coordinates of the space.
+            radii: One radius per point, shaped (...), in the distance of
+                the settings' norm.
+
+        Returns:
+            The counts as floats, shaped (...); NaN where the radius is NaN
+            or the estimator is invalid.
+
+        Raises:
+            ValueError: If the points do not end in the D parameters, or the
+                radii do not have the leading shape of the points.
+            TypeError: If the points are not real-valued.
+
+        References:
+            :cite:t:`kraskov2004mutual`.
+        """
+        values = _read_points(points, len(self.space))
+        radii_array = _read_radii(radii, values.shape[:-1])
+        flat = values.reshape(-1, values.shape[-1])
+        counts = _counts(self, flat, radii_array.reshape(-1))
+        return counts.reshape(values.shape[:-1])
+
+    def leave_one_out_count(self, radii: ArrayLike) -> Float[Array, " sample"]:
+        """Return the number of other samples strictly within each sample's radius.
+
+        Each sample leaves its own count, but copies of it stay.
+
+        Args:
+            radii: One radius per sample, shaped (N,), in the distance of the
+                settings' norm.
+
+        Returns:
+            The counts as floats, shaped (N,); NaN where the radius is NaN or
+            the estimator is invalid.
+
+        Raises:
+            ValueError: If the radii are not shaped (N,).
+
+        References:
+            :cite:t:`kraskov2004mutual`.
+        """
+        radii_array = _read_radii(radii, self.samples.shape[:1])
+        return _leave_one_out_counts(self, radii_array)
+
+
+def _comparable_distances(
     space: ParamSpace,
+    norm: str,
     queries: Float[Array, "*leading param"],
     samples: Float[Array, "sample param"],
 ) -> Float[Array, "*leading sample"]:
-    """Return squared topology-aware distances between queries (Q, D) and samples."""
-    blocks = space.axis_blocks
+    """Return values that order as the distances: squared ones for the Euclidean norm.
+
+    For the maximum norm the values are the distances themselves, the largest
+    distance along any Euclidean axis, circle or sphere.
+    """
+    euclidean = norm == EUCLIDEAN_NORM
     total = jnp.zeros((queries.shape[0], samples.shape[0]))
+    for component in _axis_distances(space, queries, samples, squared=euclidean):
+        total = total + component if euclidean else jnp.maximum(total, component)
+    return total
+
+
+def _axis_distances(
+    space: ParamSpace,
+    queries: Float[Array, "*leading param"],
+    samples: Float[Array, "sample param"],
+    *,
+    squared: bool,
+) -> list[Float[Array, "*leading sample"]]:
+    """Return the distances along the Euclidean block, each circle and each sphere.
+
+    Squared distances sum the whole Euclidean block into one term; plain ones
+    keep each Euclidean axis apart, for the maximum norm.
+    """
+    blocks = space.axis_blocks
+    components = []
     if blocks.euclidean:
         euclidean = list(blocks.euclidean)
         differences = queries[:, None, euclidean] - samples[None, :, euclidean]
-        total = total + jnp.sum(differences**2, axis=-1)
+        if squared:
+            components.append(jnp.sum(differences**2, axis=-1))
+        else:
+            components.extend(jnp.moveaxis(jnp.abs(differences), -1, 0))
     for position in blocks.circles:
         lower, upper = space.parameters[position].bounds
-        differences = unwrap_about(
+        arcs = unwrap_about(
             queries[:, None, position] - samples[None, :, position], 0.0, upper - lower
         )
-        total = total + differences**2
+        components.append(arcs**2 if squared else jnp.abs(arcs))
     for (azimuth, polar), sphere in zip(blocks.spheres, space.spheres, strict=True):
         query_units, _, _ = unit_vectors(
             queries[:, azimuth], queries[:, polar], sphere.polar_form
@@ -302,16 +406,23 @@ def _squared_distances(
             jnp.cross(query_units[:, None, :], sample_units[None, :, :]), axis=-1
         )
         dot = jnp.sum(query_units[:, None, :] * sample_units[None, :, :], axis=-1)
-        total = total + (sphere.radius * jnp.arctan2(cross, dot)) ** 2
-    return total
+        arcs = sphere.radius * jnp.arctan2(cross, dot)
+        components.append(arcs**2 if squared else arcs)
+    return components
+
+
+def _comparable_radii(radii: Array, norm: str) -> Array:
+    """Return radii in the form of :func:`_comparable_distances`."""
+    return radii**2 if norm == EUCLIDEAN_NORM else radii
 
 
 def _kth_distance(
-    squared: Float[Array, "*leading sample"], neighbours: int
+    values: Float[Array, "*leading sample"], neighbours: int, norm: str
 ) -> Float[Array, " *leading"]:
-    """Return the k-th smallest distance in each row of squared distances."""
-    smallest, _ = jax.lax.top_k(-squared, neighbours)
-    return jnp.sqrt(-smallest[..., neighbours - 1])
+    """Return the k-th smallest distance in each row of comparable distances."""
+    smallest, _ = jax.lax.top_k(-values, neighbours)
+    kth = -smallest[..., neighbours - 1]
+    return jnp.sqrt(kth) if norm == EUCLIDEAN_NORM else kth
 
 
 def _chunk_size(estimator: NearestNeighbours) -> int:
@@ -336,9 +447,12 @@ def _chunk_distances(
     estimator: NearestNeighbours, chunk: Float[Array, "*leading param"]
 ) -> Float[Array, " *leading"]:
     """Return the k-th neighbour distance of one chunk of points."""
-    squared = _squared_distances(estimator.space, chunk, estimator.samples)
+    norm = estimator.settings.norm
+    values = _comparable_distances(estimator.space, norm, chunk, estimator.samples)
     return _kth_distance(
-        jnp.where(estimator.present, squared, jnp.inf), estimator.settings.neighbours
+        jnp.where(estimator.present, values, jnp.inf),
+        estimator.settings.neighbours,
+        norm,
     )
 
 
@@ -367,10 +481,85 @@ def _chunk_leave_one_out(
 ) -> Float[Array, " *leading"]:
     """Return the k-th neighbour distance of indexed samples, each one skipped."""
     sample_count, size = estimator.samples.shape
-    squared = _squared_distances(estimator.space, chunk[:, :size], estimator.samples)
+    norm = estimator.settings.norm
+    values = _comparable_distances(
+        estimator.space, norm, chunk[:, :size], estimator.samples
+    )
     own = jnp.arange(sample_count)[None, :] == chunk[:, size:].astype(int)
-    squared = jnp.where(estimator.present & ~own, squared, jnp.inf)
-    return _kth_distance(squared, estimator.settings.neighbours)
+    values = jnp.where(estimator.present & ~own, values, jnp.inf)
+    return _kth_distance(values, estimator.settings.neighbours, norm)
+
+
+def _counts_kernel(
+    estimator: NearestNeighbours,
+    points: Float[Array, "*leading param"],
+    radii: Float[Array, " *leading"],
+) -> Float[Array, " *leading"]:
+    """Return the number of samples strictly within each point's radius."""
+    # * The radius rides along as a last column of its point.
+    indexed = jnp.concatenate([points, radii[:, None]], axis=1)
+    counts = _map_in_chunks(
+        functools.partial(_chunk_counts, estimator), indexed, _chunk_size(estimator)
+    )
+    return jnp.where(estimator.valid & ~jnp.isnan(radii), counts, jnp.nan)
+
+
+def _chunk_counts(
+    estimator: NearestNeighbours, chunk: Float[Array, "*leading param"]
+) -> Float[Array, " *leading"]:
+    """Return the counts of one chunk of points with their radii."""
+    size = estimator.samples.shape[1]
+    norm = estimator.settings.norm
+    values = _comparable_distances(
+        estimator.space, norm, chunk[:, :size], estimator.samples
+    )
+    inside = values < _comparable_radii(chunk[:, size], norm)[:, None]
+    return jnp.sum(estimator.present & inside, axis=1).astype(jnp.float64)
+
+
+def _leave_one_out_counts_kernel(
+    estimator: NearestNeighbours, radii: Float[Array, " sample"]
+) -> Float[Array, " sample"]:
+    """Return the number of other samples strictly within each sample's radius."""
+    sample_count = estimator.samples.shape[0]
+    indexed = jnp.concatenate(
+        [
+            estimator.samples,
+            jnp.arange(sample_count, dtype=jnp.float64)[:, None],
+            radii[:, None],
+        ],
+        axis=1,
+    )
+    counts = _map_in_chunks(
+        functools.partial(_chunk_leave_one_out_counts, estimator),
+        indexed,
+        _chunk_size(estimator),
+    )
+    return jnp.where(estimator.valid & ~jnp.isnan(radii), counts, jnp.nan)
+
+
+def _chunk_leave_one_out_counts(
+    estimator: NearestNeighbours, chunk: Float[Array, "*leading param"]
+) -> Float[Array, " *leading"]:
+    """Return the counts of indexed samples with their radii, each one skipped."""
+    sample_count, size = estimator.samples.shape
+    norm = estimator.settings.norm
+    values = _comparable_distances(
+        estimator.space, norm, chunk[:, :size], estimator.samples
+    )
+    own = jnp.arange(sample_count)[None, :] == chunk[:, size : size + 1].astype(int)
+    inside = values < _comparable_radii(chunk[:, size + 1], norm)[:, None]
+    return jnp.sum(estimator.present & ~own & inside, axis=1).astype(jnp.float64)
+
+
+def _log_unit_ball(estimator: NearestNeighbours) -> float:
+    """Return ln V of the unit ball: Euclidean, or of intervals and discs (max norm)."""
+    dimension = estimator.dimension
+    if estimator.settings.norm == EUCLIDEAN_NORM:
+        return 0.5 * dimension * math.log(math.pi) - math.lgamma(0.5 * dimension + 1)
+    blocks = estimator.space.axis_blocks
+    lines = len(blocks.euclidean) + len(blocks.circles)
+    return lines * math.log(2) + len(blocks.spheres) * math.log(math.pi)
 
 
 def _log_density_from_kernel(
@@ -382,14 +571,11 @@ def _log_density_from_kernel(
     """Return ψ(k) − ψ(n + 1) − ln V_d − d ln r_k plus the log area elements."""
     dimension = estimator.dimension
     neighbours = estimator.settings.neighbours
-    log_unit_ball = 0.5 * dimension * math.log(math.pi) - math.lgamma(
-        0.5 * dimension + 1
-    )
     others_float = jnp.asarray(others, dtype=jnp.float64)
     log_values = (
         digamma(float(neighbours))
         - digamma(others_float + 1)
-        - log_unit_ball
+        - _log_unit_ball(estimator)
         - dimension * jnp.log(distances)
     )
     blocks = estimator.space.axis_blocks
@@ -402,6 +588,15 @@ def _log_density_from_kernel(
         log_area = log_area + 2 * math.log(sphere.radius)
         log_values = jnp.where(inside, log_values + log_area, -jnp.inf)
     return jnp.where(distances > 0, log_values, jnp.nan)
+
+
+def _read_radii(radii: ArrayLike, shape: tuple[int, ...]) -> Array:
+    """Return radii as float64 after checking that they have the given shape."""
+    array = jnp.asarray(radii)
+    _check_real("radii", array)
+    if array.shape != shape:
+        raise ValueError(f"radii must be shaped {shape}, got shape {array.shape}")
+    return array.astype(jnp.float64)
 
 
 def _warn_about_coincidences(distances: Array, neighbours: int, noun: str) -> None:
@@ -420,3 +615,5 @@ def _warn_about_coincidences(distances: Array, neighbours: int, noun: str) -> No
 _distances = _jit(_distances_kernel)
 _leave_one_out_distances = _jit(_leave_one_out_distances_kernel)
 _log_density_from = _jit(_log_density_from_kernel)
+_counts = _jit(_counts_kernel)
+_leave_one_out_counts = _jit(_leave_one_out_counts_kernel)

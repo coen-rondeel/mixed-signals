@@ -1,4 +1,4 @@
-"""Effective sample size, split-chain Kolmogorov-Smirnov tests and R̂.
+"""Effective sample size, split-chain Kolmogorov-Smirnov and Kuiper tests, and R̂.
 
 The functions take samples shaped (step, walker, param) after burn-in, as
 :mod:`mixed_signals.mcmc.autocorr` does, and return one value per parameter.
@@ -22,6 +22,14 @@ Split-chain Kolmogorov-Smirnov test
     small p-value flags halves that differ, such as a transient that the
     burn-in has not removed. Coupled walkers make the pooled samples less than
     independent, so for ensemble samplers the p-value is approximate.
+Split-chain Kuiper test
+    The same halves compared with Kuiper's V, which no rotation of a circle
+    changes (Kuiper 1960; Maag and Stephens 1968), for circle parameters
+    given within one period. The p-value comes from Kuiper's limiting
+    distribution, Q(λ) = 2 Σⱼ (4j²λ² − 1) exp(−2j²λ²) at λ = √(n/2)·V
+    (Kuiper 1960). Both tests take the thinning factor of each parameter from
+    its τ, or from the caller, who computes τ of a circle from observables
+    that do not depend on a cut.
 R̂
     The rank-normalised split-R̂ of Vehtari et al. (2021): the larger of the
     values for the draws and for the folded draws, their absolute deviations
@@ -45,13 +53,15 @@ Checks
 References:
     :cite:t:`geyer1992practical`; :cite:t:`vehtari2021rank`;
     :cite:t:`brooks2003nonparametric`; :cite:t:`hall2026ks`;
-    :cite:t:`smirnov1948table`; :cite:t:`blom1958statistical`;
+    :cite:t:`smirnov1948table`; :cite:t:`kuiper1960tests`;
+    :cite:t:`maag1968vnm`; :cite:t:`blom1958statistical`;
     :cite:t:`gelman1992inference`; :cite:t:`foremanmackey2017autocorrelation`.
 """
 
 import math
 import warnings
-from typing import Final, NamedTuple
+from collections.abc import Callable
+from typing import Final, NamedTuple, cast
 
 import jax
 import jax.numpy as jnp
@@ -74,7 +84,7 @@ from mixed_signals.mcmc.autocorr import (
     _truncation_kernel,
     _warn,
 )
-from mixed_signals.metrics.marginal import ks_statistic
+from mixed_signals.metrics.marginal import ks_statistic, kuiper_statistic
 
 MINIMUM_SPLIT_EFFECTIVE_SAMPLE_SIZE: Final = 50
 """Effective samples per split chain below which R̂ warns.
@@ -97,13 +107,18 @@ _KOLMOGOROV_TERMS: Final = 8
 _KOLMOGOROV_CROSSOVER: Final = 1.0
 # * Below this argument the survival function equals 1 in float64.
 _KOLMOGOROV_SMALLEST: Final = 0.1
+# * Above its smallest argument, Kuiper's series converges within 20 terms.
+_KUIPER_TERMS: Final = 20
+# * Below this argument Kuiper's survival function equals 1 to within 1e-15.
+_KUIPER_SMALLEST: Final = 0.3
 
 
 class SplitChainTest(NamedTuple):
-    """Split-chain Kolmogorov-Smirnov test of each parameter."""
+    """Split-chain Kolmogorov-Smirnov or Kuiper test of each parameter."""
 
     statistic: Float[Array, " param"]
-    """Largest gap D between the distribution functions of the two halves."""
+    """Largest gap D between the distribution functions of the two halves, or
+    Kuiper's V."""
     p_value: Float[Array, " param"]
     """Asymptotic p-value of D for independent draws."""
     thin: Int[Array, " param"]
@@ -150,7 +165,9 @@ def effective_sample_size(samples: ArrayLike) -> Float[Array, " param"]:
     return step_count * walker_count / tau
 
 
-def split_chain_ks(samples: ArrayLike) -> SplitChainTest:
+def split_chain_ks(
+    samples: ArrayLike, *, thin: ArrayLike | None = None
+) -> SplitChainTest:
     """Test whether the two halves of the chains share one distribution.
 
     Each walker's chain is split into its first and its second ⌊S/2⌋ steps,
@@ -161,6 +178,8 @@ def split_chain_ks(samples: ArrayLike) -> SplitChainTest:
     Args:
         samples: Chains after burn-in, shaped (step, walker, param), with at
             least :data:`~mixed_signals.mcmc.autocorr.MINIMUM_STEPS` steps.
+        thin: Thinning factor of each parameter, shaped (param,), integers
+            of at least 1; from τ of the samples when ``None``.
 
     Returns:
         The statistic, p-value, thinning factor and half size of each
@@ -168,13 +187,14 @@ def split_chain_ks(samples: ArrayLike) -> SplitChainTest:
 
     Raises:
         ValueError: If the samples are not shaped (step, walker, param) with
-            enough steps, or concrete samples are not finite.
+            enough steps, concrete samples are not finite, or ``thin`` does
+            not hold one factor of at least 1 per parameter.
         TypeError: If the samples are not real-valued.
 
     Warns:
         ValidityWarning: As
             :func:`~mixed_signals.mcmc.autocorr.integrated_autocorrelation_time`,
-            whose τ sets the thinning.
+            when τ sets the thinning.
         PrecisionWarning: If the samples are narrower than float64.
 
     References:
@@ -182,8 +202,67 @@ def split_chain_ks(samples: ArrayLike) -> SplitChainTest:
         :cite:t:`smirnov1948table`.
     """
     chain_samples = _read_chain_samples(samples, MINIMUM_STEPS)
-    thin = _estimate_autocorrelation(chain_samples).thin
-    return _split_test(chain_samples, thin)
+    return _split_test(chain_samples, _thinning_factors(chain_samples, thin), False)
+
+
+def split_chain_kuiper(
+    samples: ArrayLike, *, thin: ArrayLike | None = None
+) -> SplitChainTest:
+    """Test with Kuiper's V whether the halves of circle chains share a distribution.
+
+    The halves are formed and thinned as in :func:`split_chain_ks`. Kuiper's
+    V of the halves does not depend on where the circle is cut, provided the
+    values of each parameter lie within one period, such as values unwrapped
+    about their circular mean. With n kept draws per half, the p-value is
+    Q(√(n/2)·V) of Kuiper's limiting distribution.
+
+    Args:
+        samples: Chains after burn-in, shaped (step, walker, param), each
+            parameter within one period, with at least
+            :data:`~mixed_signals.mcmc.autocorr.MINIMUM_STEPS` steps.
+        thin: Thinning factor of each parameter, shaped (param,), integers
+            of at least 1; from τ of the samples when ``None``.
+
+    Returns:
+        Kuiper's V, its p-value, the thinning factor and the half size of each
+        parameter.
+
+    Raises:
+        ValueError: If the samples are not shaped (step, walker, param) with
+            enough steps, concrete samples are not finite, or ``thin`` does
+            not hold one factor of at least 1 per parameter.
+        TypeError: If the samples are not real-valued.
+
+    Warns:
+        ValidityWarning: As
+            :func:`~mixed_signals.mcmc.autocorr.integrated_autocorrelation_time`,
+            when τ sets the thinning.
+        PrecisionWarning: If the samples are narrower than float64.
+
+    References:
+        :cite:t:`kuiper1960tests`; :cite:t:`maag1968vnm`;
+        :cite:t:`brooks2003nonparametric`.
+    """
+    chain_samples = _read_chain_samples(samples, MINIMUM_STEPS)
+    return _split_test(chain_samples, _thinning_factors(chain_samples, thin), True)
+
+
+def _thinning_factors(chain_samples: Array, thin: ArrayLike | None) -> Array:
+    """Return the thinning factor of each parameter: given, or from τ."""
+    if thin is None:
+        return _estimate_autocorrelation(chain_samples).thin
+    factors = np.asarray(thin)
+    param_count = chain_samples.shape[-1]
+    if (
+        factors.shape != (param_count,)
+        or not np.issubdtype(factors.dtype, np.integer)
+        or bool(np.any(factors < 1))
+    ):
+        raise ValueError(
+            "thin must hold one integer of at least 1 for each of the"
+            f" {param_count} parameters, got {factors!r}"
+        )
+    return jnp.asarray(factors, dtype=jnp.int64)
 
 
 def rank_normalized_split_rhat(samples: ArrayLike) -> Float[Array, " param"]:
@@ -301,10 +380,24 @@ def _kolmogorov_survival(
     return jnp.where(scaled >= _KOLMOGOROV_CROSSOVER, alternating, theta)
 
 
+def _kuiper_survival(
+    scaled: Float[Array, " *leading"],
+) -> Float[Array, " *leading"]:
+    """Return Kuiper's limiting survival Q(λ) = 2 Σⱼ (4j²λ² − 1) exp(−2j²λ²)."""
+    terms = jnp.arange(1, _KUIPER_TERMS + 1, dtype=jnp.float64)
+    large = jnp.maximum(scaled, _KUIPER_SMALLEST)[..., None]
+    series = 2 * jnp.sum(
+        (4 * terms**2 * large**2 - 1) * jnp.exp(-2 * terms**2 * large**2), axis=-1
+    )
+    return jnp.where(scaled >= _KUIPER_SMALLEST, jnp.clip(series, 0.0, 1.0), 1.0)
+
+
 def _split_test_kernel(
-    samples: Float[Array, "step walker param"], thin: Int[Array, " param"]
+    samples: Float[Array, "step walker param"],
+    thin: Int[Array, " param"],
+    kuiper: bool,
 ) -> SplitChainTest:
-    """Return the Kolmogorov-Smirnov test between the thinned halves of chains."""
+    """Return the KS or Kuiper test between the thinned halves of chains."""
     step_count, walker_count, param_count = samples.shape
     half = step_count // 2
     kept = jnp.arange(half)[:, None] % thin[None, :] == 0
@@ -314,18 +407,24 @@ def _split_test_kernel(
     ).reshape(param_count, -1)
     first = jnp.moveaxis(samples[:half], -1, 0).reshape(param_count, -1)
     second = jnp.moveaxis(samples[step_count - half :], -1, 0).reshape(param_count, -1)
-    statistic = ks_statistic(first, log_weights, second, log_weights)
+    statistic_function = kuiper_statistic if kuiper else ks_statistic
+    statistic = statistic_function(first, log_weights, second, log_weights)
     half_size = walker_count * jnp.sum(kept, axis=0)
+    survival = _kuiper_survival if kuiper else _kolmogorov_survival
     return SplitChainTest(
         statistic=statistic,
-        p_value=_kolmogorov_survival(jnp.sqrt(half_size / 2) * statistic),
+        p_value=survival(jnp.sqrt(half_size / 2) * statistic),
         thin=thin,
         half_size=half_size,
     )
 
 
 _rank_rhat = _jit(_rank_rhat_kernel)
-_split_test = _jit(_split_test_kernel)
+# * The choice of statistic changes the compiled program, so it is static.
+_split_test = cast(
+    Callable[[Array, Array, bool], SplitChainTest],
+    jax.jit(_split_test_kernel, static_argnums=2),
+)
 
 
 def _warn_about_rhat(result: _RankRhat) -> None:

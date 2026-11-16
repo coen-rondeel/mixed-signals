@@ -19,10 +19,12 @@ from mixed_signals.mcmc import (
     integrated_autocorrelation_time,
     rank_normalized_split_rhat,
     split_chain_ks,
+    split_chain_kuiper,
 )
-from mixed_signals.mcmc.ess import _kolmogorov_survival
+from mixed_signals.mcmc.ess import _kolmogorov_survival, _kuiper_survival
 
 STANDARD_ERRORS = 5.0
+TWO_PI = 2 * math.pi
 
 
 def cold_samples(
@@ -164,6 +166,121 @@ def test_kolmogorov_survival_matches_scipy() -> None:
     grid = np.concatenate([[0.0, 0.01, 0.1], np.linspace(0.2, 4.0, 77), [10.0, 30.0]])
     values = np.asarray(_kolmogorov_survival(jnp.asarray(grid)))
     np.testing.assert_allclose(values, scipy.special.kolmogorov(grid), atol=1e-15)
+
+
+# * Split-chain Kuiper test
+
+
+def circle_samples(
+    seed: int, step_count: int, walker_count: int, width: float, shift: float = 0.0
+) -> np.ndarray:
+    """Return AR(1) chains (φ = 0.5) scaled by a width and wrapped onto [−π, π)."""
+    samples = cold_samples((0.5,), seed, step_count, walker_count) * width
+    samples[: step_count // 2] += shift * width
+    return np.mod(samples + math.pi, TWO_PI) - math.pi
+
+
+def reference_kuiper(first: np.ndarray, second: np.ndarray) -> float:
+    """Return Kuiper's V = max(F − G) + max(G − F) of two samples."""
+    pooled = np.sort(np.concatenate([first, second]))
+    first_cdf = np.searchsorted(np.sort(first), pooled, side="right") / first.size
+    second_cdf = np.searchsorted(np.sort(second), pooled, side="right") / second.size
+    return float(
+        np.max(first_cdf - second_cdf, initial=0.0)
+        + np.max(second_cdf - first_cdf, initial=0.0)
+    )
+
+
+def test_kuiper_survival_matches_a_simulation() -> None:
+    """Q(λ) is the tail of √n·V for uniform draws at large n (Kuiper 1960)."""
+    rng = np.random.default_rng(13)
+    count = 2_000
+    ordered = np.sort(rng.uniform(size=(4_000, count)), axis=1)
+    index = np.arange(1, count + 1)
+    scaled = math.sqrt(count) * (
+        np.max(index / count - ordered, axis=1)
+        + np.max(ordered - (index - 1) / count, axis=1)
+    )
+    for value in (1.0, 1.3, 1.6):
+        expected = float(_kuiper_survival(jnp.asarray(value)))
+        observed = float(np.mean(scaled > value))
+        error = math.sqrt(expected * (1 - expected) / scaled.size)
+        assert abs(observed - expected) < STANDARD_ERRORS * error
+    assert float(_kuiper_survival(jnp.asarray(0.0))) == 1.0
+    assert float(_kuiper_survival(jnp.asarray(0.29))) == 1.0
+    assert float(_kuiper_survival(jnp.asarray(10.0))) == pytest.approx(0.0, abs=1e-15)
+
+
+def test_split_kuiper_matches_a_direct_computation() -> None:
+    """V and p equal Kuiper's V of the thinned halves and its limiting tail."""
+    samples = circle_samples(14, 2_001, 8, 2.0)
+    result = quiet(split_chain_kuiper, samples)
+    half = samples.shape[0] // 2
+    thin = int(result.thin[0])
+    first = samples[:half:thin, :, 0].ravel()
+    second = samples[samples.shape[0] - half :: thin, :, 0].ravel()
+    assert int(result.half_size[0]) == first.size == second.size
+    expected = reference_kuiper(first, second)
+    assert float(result.statistic[0]) == pytest.approx(expected, abs=1e-12)
+    scaled = math.sqrt(first.size / 2) * expected
+    assert float(result.p_value[0]) == pytest.approx(
+        float(_kuiper_survival(jnp.asarray(scaled))), abs=1e-15
+    )
+
+
+def test_split_kuiper_does_not_depend_on_where_the_circle_is_cut() -> None:
+    """Rotating every value and wrapping it again leaves V; KS changes."""
+    samples = circle_samples(15, 1_000, 8, 2.0, shift=0.3)
+    rotated = np.mod(samples + 2.0 + math.pi, TWO_PI) - math.pi
+    thin = np.array([3])
+    original = split_chain_kuiper(samples, thin=thin)
+    turned = split_chain_kuiper(rotated, thin=thin)
+    assert float(turned.statistic[0]) == pytest.approx(
+        float(original.statistic[0]), abs=1e-12
+    )
+    assert float(split_chain_ks(samples, thin=thin).statistic[0]) != pytest.approx(
+        float(split_chain_ks(rotated, thin=thin).statistic[0]), abs=1e-3
+    )
+
+
+def test_split_kuiper_p_values_are_uniform_for_stationary_circle_chains() -> None:
+    """Chains that wrap around the circle but never change give uniform p-values."""
+    p_values = np.array(
+        [
+            float(
+                split_chain_kuiper(
+                    circle_samples(seed, 1_000, 16, 2.5), thin=np.array([3])
+                ).p_value[0]
+            )
+            for seed in range(100)
+        ]
+    )
+    assert abs(p_values.mean() - 0.5) < STANDARD_ERRORS * math.sqrt(1 / 12 / 100)
+    assert np.mean(p_values < 0.05) < 0.05 + STANDARD_ERRORS * math.sqrt(
+        0.05 * 0.95 / 100
+    )
+
+
+def test_split_kuiper_flags_a_rotated_first_half() -> None:
+    """A first half turned by one width fails the test."""
+    samples = circle_samples(16, 1_000, 16, 0.5, shift=1.0)
+    assert float(split_chain_kuiper(samples, thin=np.array([3])).p_value[0]) < 1e-3
+
+
+@pytest.mark.parametrize(
+    "thin", [np.array([3, 3]), np.array([0]), np.array([2.5]), np.array([[3]])]
+)
+def test_given_thinning_needs_one_whole_factor_per_parameter(thin: np.ndarray) -> None:
+    """The thinning holds one whole factor of at least 1 per parameter."""
+    samples = circle_samples(17, 200, 4, 1.0)
+    with pytest.raises(
+        ValueError, match="one integer of at least 1 for each of the 1 parameters"
+    ):
+        split_chain_kuiper(samples, thin=thin)
+    with pytest.raises(
+        ValueError, match="one integer of at least 1 for each of the 1 parameters"
+    ):
+        split_chain_ks(samples, thin=thin)
 
 
 # * R̂

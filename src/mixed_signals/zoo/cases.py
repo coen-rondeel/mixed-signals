@@ -41,8 +41,9 @@ The metrics of the reference table:
     Mean direction and mean resultant length of a circle marginal, or the
     mean resultant length of the unit vectors of a sphere, which is
     coth κ − 1/κ for a von Mises-Fisher distribution.
-``railing_score``
-    Density at the finite bound over the peak density of a railed marginal.
+``railing_lower``, ``railing_upper``
+    Density at the lower or upper finite bound over the peak density of a
+    railed marginal, the rows of the railing diagnostic.
 ``tau``
     Integrated autocorrelation time of one parameter of AR(1) chains.
 ``mean_shift``, ``width_ratio``
@@ -836,10 +837,11 @@ def railed_gaussians(
     param_names = _parameter_names(param_count)
     rows = _Rows()
     _moment_rows(rows, names, param_names, means, covariances)
+    railing_metric = "railing_lower" if side == "lower" else "railing_upper"
     for name, offset in zip(names, offset_values, strict=True):
         rows.add(
             (name,),
-            "railing_score",
+            railing_metric,
             param_names[:1],
             closed_forms.railing_score(offset),
         )

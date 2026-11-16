@@ -381,7 +381,7 @@ def estimate_row(
             ),
             0.0,
         )
-    if metric == "railing_score":
+    if metric in ("railing_lower", "railing_upper"):
         return railing_score_from_density(case, first, columns[0]), 0.0, 1e-7
     if metric in ("sinkhorn", "sliced_w2", "sliced_sinkhorn"):
         return transport_estimate(
@@ -698,7 +698,7 @@ def test_mixture_partners_carry_their_expected_relations() -> None:
 def test_railed_scores_and_bounds() -> None:
     """Scores follow the offsets, and the space puts the finite bound at zero."""
     case = railed_gaussians([2.0, 0.0, -1.0], side="upper")
-    scores = [case.reference_value("railing_score", name, "x0") for name in case.names]
+    scores = [case.reference_value("railing_upper", name, "x0") for name in case.names]
     assert scores == pytest.approx([math.exp(-2.0), 1.0, 1.0])
     assert case.space["x0"].topology is Topology.INTERVAL
     assert case.space["x0"].bounds == (-math.inf, 0.0)

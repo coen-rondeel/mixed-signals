@@ -253,4 +253,112 @@ def test_vmap_and_jit_give_the_concrete_results() -> None:
     np.testing.assert_allclose(
         compiled(concrete, batch[0, :5]), concrete.log_density(batch[0, :5])
     )
-    assert concrete.settings.to_json() == '{"neighbours":3}'
+    assert concrete.settings.to_json() == '{"neighbours":3,"norm":"euclidean"}'
+
+
+# * Maximum norm and neighbour counts
+
+
+def max_settings(neighbours: int) -> NearestNeighbourSettings:
+    """Return kNN settings with the maximum norm."""
+    return NearestNeighbourSettings(neighbours=neighbours, norm="max")
+
+
+def test_max_norm_distances_match_a_kd_tree() -> None:
+    """Maximum-norm distances equal SciPy's k-d tree with p = ∞."""
+    samples = np.random.default_rng(20).normal(size=(2_000, 3))
+    fitted = NearestNeighbours.fit(samples, None, REAL_TRIPLE, max_settings(5))
+    tree = spatial.cKDTree(samples)
+    queries = samples[:100] + 0.03
+    expected, _ = tree.query(queries, k=5, p=np.inf)
+    np.testing.assert_allclose(fitted.neighbour_distance(queries), expected[:, 4])
+    own, _ = tree.query(samples, k=6, p=np.inf)
+    np.testing.assert_allclose(fitted.leave_one_out_distance(), own[:, 5])
+
+
+def test_max_norm_takes_the_shorter_arc_on_circles() -> None:
+    """On a circle, the maximum norm compares the shorter arc with the other axes."""
+    case = zoo.wrapped_gaussians(0.0, width=1.5, param_count=2)
+    samples = np.asarray(case.sample(jax.random.key(21), 600).samples[0, 0])
+    fitted = NearestNeighbours.fit(samples, None, case.space, max_settings(3))
+    arcs = np.abs(samples[:, None, 0] - samples[None, :, 0])
+    arcs = np.minimum(arcs, TWO_PI - arcs)
+    lines = np.abs(samples[:, None, 1] - samples[None, :, 1])
+    distances = np.maximum(arcs, lines)
+    np.fill_diagonal(distances, np.inf)
+    expected = np.sort(distances, axis=1)[:, 2]
+    np.testing.assert_allclose(fitted.leave_one_out_distance(), expected, atol=1e-12)
+
+
+def test_counts_are_strict_and_match_brute_force() -> None:
+    """Counts include samples strictly inside the radius, in either norm."""
+    rng = np.random.default_rng(22)
+    samples = rng.normal(size=(800, 3))
+    queries = rng.normal(size=(50, 3))
+    radii = rng.uniform(0.2, 1.5, size=50)
+    for norm, order in (("euclidean", 2), ("max", np.inf)):
+        fitted = NearestNeighbours.fit(
+            samples,
+            None,
+            REAL_TRIPLE,
+            NearestNeighbourSettings(neighbours=2, norm=norm),
+        )
+        distances = np.linalg.norm(
+            queries[:, None, :] - samples[None, :, :], ord=order, axis=-1
+        )
+        expected = np.sum(distances < radii[:, None], axis=1)
+        np.testing.assert_array_equal(fitted.count_within(queries, radii), expected)
+    # * A sample at exactly the radius stays outside.
+    fitted = NearestNeighbours.fit(samples, None, REAL_TRIPLE, max_settings(2))
+    gap = float(np.max(np.abs(samples[1] - samples[0])))
+    assert float(fitted.leave_one_out_count(np.full(800, gap))[0]) == float(
+        np.sum(np.max(np.abs(samples[1:] - samples[0]), axis=1) < gap)
+    )
+
+
+def test_leave_one_out_counts_skip_the_sample_but_keep_copies() -> None:
+    """Each sample leaves its own count; an exact copy of it still counts."""
+    space = ParamSpace.model_validate({"parameters": [{"name": "x0"}]})
+    samples = np.array([[0.0], [0.0], [0.5], [2.0]])
+    fitted = NearestNeighbours.fit(samples, None, space, max_settings(1))
+    counts = fitted.leave_one_out_count(np.array([1.0, 0.25, 0.6, 1.4]))
+    np.testing.assert_array_equal(counts, [2.0, 1.0, 2.0, 0.0])
+
+
+def test_counts_give_nan_for_nan_radii_and_invalid_estimators() -> None:
+    """A NaN radius or unequal weights give NaN counts."""
+    samples = np.random.default_rng(23).normal(size=(30, 3))
+    fitted = NearestNeighbours.fit(samples, None, REAL_TRIPLE, max_settings(2))
+    counts = fitted.leave_one_out_count(np.r_[np.nan, np.ones(29)])
+    assert math.isnan(float(counts[0]))
+    assert bool(jnp.all(jnp.isfinite(counts[1:])))
+    with pytest.warns(ValidityWarning, match="equally weighted samples"):
+        unequal = NearestNeighbours.fit(
+            samples, np.linspace(0.0, 1.0, 30), REAL_TRIPLE, max_settings(2)
+        )
+    assert math.isnan(float(unequal.count_within(np.zeros(3), np.asarray(1.0))))
+    with pytest.raises(ValueError, match="radii must be shaped"):
+        fitted.leave_one_out_count(np.ones(5))
+    with pytest.raises(ValueError, match="radii must be shaped"):
+        fitted.count_within(np.zeros((4, 3)), np.ones(3))
+
+
+def test_max_norm_entropy_uses_its_unit_ball() -> None:
+    """With the max norm, the unit ball 2^d still recovers a Gaussian's entropy."""
+    covariance = np.array([[1.5, 0.4], [0.4, 0.8]])
+    case = zoo.gaussians([[0.0, 0.0]], [covariance], names=["only"])
+    batch = case.sample(jax.random.key(24), 4_000, batch_size=8).samples[:, 0]
+    entropies = np.asarray(
+        jax.vmap(
+            lambda values: (
+                -jnp.mean(
+                    NearestNeighbours.fit(
+                        values, None, case.space, max_settings(4)
+                    ).leave_one_out_log_density()
+                )
+            )
+        )(batch)
+    )
+    truth = 0.5 * math.log(np.linalg.det(2 * math.pi * math.e * covariance))
+    error = entropies.std(ddof=1) / math.sqrt(len(entropies))
+    assert abs(entropies.mean() - truth) < STANDARD_ERRORS * error

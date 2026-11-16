@@ -129,10 +129,46 @@
    :members:
 ```
 
-## Effect sizes
+## Diagnostics
+
+```{eval-rst}
+.. automodule:: mixed_signals.diagnostics
+
+.. automodule:: mixed_signals.diagnostics.shape
+   :members:
+
+.. automodule:: mixed_signals.diagnostics.dependence
+   :members:
+
+.. automodule:: mixed_signals.diagnostics.modes
+   :members:
+
+.. automodule:: mixed_signals.diagnostics.railing
+   :members:
+
+.. automodule:: mixed_signals.diagnostics.chains
+   :members:
+
+.. automodule:: mixed_signals.diagnostics.flags
+   :members:
+```
+
+## Nulls
+
+```{eval-rst}
+.. automodule:: mixed_signals.nulls
+
+.. automodule:: mixed_signals.nulls.surrogates
+   :members:
+```
+
+## Significance and effect sizes
 
 ```{eval-rst}
 .. automodule:: mixed_signals.sigma
+
+.. automodule:: mixed_signals.sigma.significance
+   :members:
 
 .. automodule:: mixed_signals.sigma.maps
    :members:

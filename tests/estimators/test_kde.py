@@ -271,7 +271,7 @@ def test_railing_score_is_recovered() -> None:
             np.asarray(KernelDensity.fit(samples, None, case.space).log_density(grid))
         )
         scores.append(density[0] / density.max())
-    truth = case.reference_value("railing_score", "railed_0")
+    truth = case.reference_value("railing_lower", "railed_0")
     # * Single scores scatter by 7 per cent, so the mean of 20 by 1.6 per cent.
     assert np.mean(scores) == pytest.approx(truth, rel=0.08)
 
