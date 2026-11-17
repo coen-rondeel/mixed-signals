@@ -67,6 +67,7 @@ References:
 """
 
 import functools
+import math
 from collections.abc import Callable
 from typing import Final
 
@@ -208,8 +209,11 @@ def maximum_mean_discrepancy(
         :cite:t:`gretton2012kernel`.
     """
     width = jnp.asarray(bandwidth, dtype=jnp.float64)
-    if _is_concrete(width) and not (bool(jnp.isfinite(width)) and float(width) > 0):
-        raise ValueError(f"bandwidth must be positive and finite, got {float(width)}")
+    if _is_concrete(width):
+        # * Test the host value: a jnp test of a closed-over array is staged in a trace.
+        host_width = float(width)
+        if not (math.isfinite(host_width) and host_width > 0):
+            raise ValueError(f"bandwidth must be positive and finite, got {host_width}")
     arrays = read_and_cap_pair(
         first,
         first_log_weights,

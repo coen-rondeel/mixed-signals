@@ -86,6 +86,7 @@ from jax.typing import ArrayLike
 from jaxtyping import Array, Float
 
 from mixed_signals.core.samples import (
+    _is_concrete,
     circular_standard_deviation,
     spherical_width,
     weighted_covariance,
@@ -343,7 +344,9 @@ class Whitening(Transform):
                 f" got shape {centre_array.shape}"
             )
         if _is_concrete(fisher_array, centre_array):
-            _check_fisher(fisher_array, centre_array, space)
+            # * Eager: a closed-over matrix would stage these checks inside a trace.
+            with jax.ensure_compile_time_eval():
+                _check_fisher(fisher_array, centre_array, space)
         blocks = space.axis_blocks
         parts = _fisher_parts(
             fisher_array,
@@ -502,11 +505,6 @@ def _float64(name: str, value: ArrayLike) -> Array:
             skip_file_prefixes=(_PACKAGE_DIRECTORY,),
         )
     return array.astype(jnp.float64)
-
-
-def _is_concrete(*arrays: Array) -> bool:
-    """Return whether every array holds known values, outside a JAX trace."""
-    return not any(isinstance(array, jax.core.Tracer) for array in arrays)
 
 
 def _whitening_parts(

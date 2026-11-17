@@ -49,7 +49,7 @@ In v1:
 
 ## Decisions so far
 
-The developers have agreed 226 decisions: 88 from rounds 1–8, the repository setup and the design close-out, 7 from roadmap session 1 (Foundations), 7 from roadmap session 2 (Sample containers) and 14 from roadmap session 3 (Validation zoo), all on 2026-10-13, and 14 from roadmap session 4 (Transforms and whitening), 12 from roadmap session 5 (MCMC tools) and 16 from roadmap session 6 (Estimators), all three on 2026-10-14, 14 from roadmap session 7 (eryn adapters and priors), taken on 2026-10-14 and 2026-10-24, 14 from roadmap session 8 (Metrics I: moments and marginals), on 2026-10-24, and 10 from roadmap session 9 (Metrics II: divergences, kernels and classifiers), 14 from roadmap session 10 (Optimal transport) and 16 from roadmap session 11 (Diagnostics), all three on 2026-10-25.
+The developers have agreed 238 decisions: 88 from rounds 1–8, the repository setup and the design close-out, 7 from roadmap session 1 (Foundations), 7 from roadmap session 2 (Sample containers) and 14 from roadmap session 3 (Validation zoo), all on 2026-10-13, and 14 from roadmap session 4 (Transforms and whitening), 12 from roadmap session 5 (MCMC tools) and 16 from roadmap session 6 (Estimators), all three on 2026-10-14, 14 from roadmap session 7 (eryn adapters and priors), taken on 2026-10-14 and 2026-10-24, 14 from roadmap session 8 (Metrics I: moments and marginals), on 2026-10-24, and 10 from roadmap session 9 (Metrics II: divergences, kernels and classifiers), 14 from roadmap session 10 (Optimal transport) and 16 from roadmap session 11 (Diagnostics), all three on 2026-10-25, and 12 from the first part of roadmap session 12 (Nulls and σ), on 2026-11-16.
 
 | Topic | Decision |
 | --- | --- |
@@ -84,7 +84,7 @@ The developers have agreed 226 decisions: 88 from rounds 1–8, the repository s
 | Periodic whitening | For now, whiten the Euclidean block only and scale periodic axes by their circular standard deviation √(−2 ln R̄); optional |
 | Nulls | Every comparison ships with a finite-sample null |
 | Null construction | Configurable; each method has a standard default |
-| Null defaults | 200 resamples, both sets subsampled to the smaller N_eff; more resamples for significance claims |
+| Null defaults | 200 resamples; the null sides carry the effective sample size, which replaced the subsampling of both sets to the smaller N_eff in session 12; more resamples for significance claims |
 | O(N²) metrics | Subsample above a cap with a warning; a kwarg sets the cap |
 | σ reporting | Report σ_eff, or r_eff for shape-only rows, and σ_sig; pass/fail on σ_eff or r_eff, with σ_sig checking it is resolved |
 | Whitening | An explicit choice, recorded with every result |
@@ -129,7 +129,7 @@ The developers have agreed 226 decisions: 88 from rounds 1–8, the repository s
 | Diagnostic nulls | Gaussian surrogates with the posterior's mean and covariance at its N_eff |
 | Uncertainty | The null standard deviation, marked approximate; a subsampling bootstrap on request |
 | Result additions | Null draws, null recipe, r_eff, JAX version, device platform and config hash; then estimator settings, the uncertainty method and the PRNG key in provenance |
-| σ_eff maps | Closed forms where they exist, tabulated curves for AD and JS, all checked on the zoo |
+| σ_eff maps | Closed forms where they exist; AD and JS by bisection on the zoo's quadratures, which replaced the tabulated curves in session 12; all checked on the zoo |
 | Width effect size | r_eff, the Gaussian-equivalent width ratio, for shape-only rows; thresholds on \|ln r_eff\| |
 | JS units | Nats |
 | MMD bandwidth | Median heuristic on the pooled whitened samples, fixed once per comparison |
@@ -279,6 +279,18 @@ The developers have agreed 226 decisions: 88 from rounds 1–8, the repository s
 | Circle τ | The larger τ of the observables cos(θ − θ̄) and sin(θ − θ̄), with θ̄ the circular mean, which no cut changes; the split test thins by the larger factor, and R̂ runs on values unwrapped about θ̄ |
 | Diagnostic names | `skewness`, `kurtosis`, `circular_skewness`, `circular_kurtosis`, `anderson_darling`, `mardia_skewness`, `mardia_kurtosis`, `pearson`, `spearman`, `distance_correlation`, `mutual_information`, `gmm_bic`, `mode_dip`, `mode_count`, `railing_lower`, `railing_upper`, `tau`, `ess`, `rhat`, `acceptance_rate`, `swap_rate`, `split_chain_ks` and `split_chain_kuiper_ks`; the estimator `knn` for the mutual information, `kde` for modes and railing, `gmm` for GMM-BIC and `empirical` otherwise |
 | Diagnostic modules | `diagnostics/shape.py`, `dependence.py`, `modes.py`, `railing.py`, `chains.py` and `flags.py`, with shared helpers in the private `_common.py` |
+| Session 12 in two parts | Two commits: 12a holds the comparison nulls, the σ_sig tail fit, the σ_eff and r_eff maps and the thresholds; 12b the optimal-transport additions, the calibration script and the validation page |
+| Null sides at N_eff | Chains stay thinned by τ, the value of a row uses all samples, and the two sides of every null draw carry the effective sample size; conservative, because one N_eff, that of the slowest parameter's mean, over-corrects other parameters and statistics |
+| Weighted nulls | A permutation moves (sample, weight) pairs: each set's weights sum to one, the sets are pooled, and every draw takes two disjoint sides of equal size; resampling to equal weights before permuting rejected 3 to 7 times too often |
+| Null side size | s = round(½(N₁ + N₂) · (1/K₁ + 1/K₂)/(1/n₁ + 1/n₂)) for sample counts N, Kish sizes K and effective sizes n, clipped to [2, ⌊(N₁ + N₂)/2⌋]: half the pool for independent weighted samples, the harmonic mean of the two N_eff for equal-weight sets of equal size |
+| Split-half sides | The reference alone, in two sides of round((N_r/K_r) · 2/(1/n_r + 1/n_a)) samples, which match the variance of the comparison; a `ValidityWarning` when they stop at half the reference, below about three times the approximation's N_eff. Replaces "halves at the approximation's N_eff", which rejected ten times too rarely |
+| σ_sig tail fit | Below 10 draws at least as extreme as the value (Knijnenburg et al. 2009): a generalized Pareto fit by the estimator of Zhang and Stephens (2009) to the most extreme 25% of the draws, with the end of its support kept above the value (Peschel et al. 2026), flagged by an `ExtrapolationWarning`; it never returns p = 0 and reads low far in the tail |
+| Null subtraction space | Where a metric is quadratic in the shift: KS, Kuiper's V, W1, W2 and every Hellinger form subtract the null mean of their squares, the width ratio that of ln r, and KL, JS, AD, the energy distance, MMD², SW2², the sliced Sinkhorn divergence and S_ε subtract plainly |
+| Values below zero | Signed maps: σ_eff = sign(v) · map(\|v\|) for a null-subtracted value v, and ln r_eff = direction · sign(v) · \|ln r(\|v\|)\| for shape terms; values above the range of a metric stay NaN, and thresholds act on the signed effect, so a row below its null never fails |
+| No stored calibration tables | AD and JS invert the zoo's quadratures by bisection at call time, and the KDE rows of JS and Hellinger multiply by √(1 + f²) for their bandwidth factor f; nothing is tabulated or shipped as data |
+| kNN KL calibration | At run time: the estimator runs on unit Gaussians at the row's own dimension, sample counts and k for six shifts and four replicates, 28 evaluations next to 200 null draws, and σ_eff inverts that curve; √(2 KL) read 5 to 20% low |
+| Comparison thresholds | One default for every σ_eff row, 0.2, the GWTC-2 criterion (Abbott et al. 2021) and Cohen's small effect, and one for every r_eff row, \|ln r_eff\| = 0.14, the width ratio of the same JS divergence; a row fails when its effect size reaches the threshold and σ_sig reaches 2; overridable per metric in the YAML |
+| Null and σ modules | `nulls/plan.py` (`NullPlan`, `random_sides`, `null_draws`), `nulls/permutation.py` and `nulls/split_half.py`; `sigma/pareto.py`, `sigma/calibration.py` and `sigma/thresholds.py` next to `significance.py` and `maps.py`; a null is a plan of positions in a pool, so one statistic runs on every draw without copies |
 
 ## Design principles
 
@@ -345,6 +357,8 @@ Comparisons run on flat samples shaped (B, K, N, D); diagnostics also read chain
 
 **Diagnostics (session 11).** The kernels take the weighted samples of one posterior and are compared with Gaussian surrogates drawn at its N_eff (Efron and Tibshirani 1993). On 30 Gaussian replicates with 100 surrogates each, the shape statistics kept a calibrated null, z spread 0.8 to 1.2, but raw dependence statistics sat at the centre of theirs, z spread 0.12 for Pearson and 0.4 to 0.5 for Spearman, the distance correlation and the mutual information, because every surrogate shares the sample's correlation; measured as excesses over their Gaussian values at the same sample's r they were calibrated, z spread 0.96 to 1.33, and resolved bananas better (a banana of 0.08 nats at 9.5 instead of 6.5 null widths for the distance correlation). Shape statistics are the plug-in skewness and kurtosis of the weighted samples (Joanes and Gill 1998; Rimoldini 2014), the one-sample Anderson-Darling distance (Anderson and Darling 1954; Stephens 1974), and Mardia's (1970) b₁ and b₂, of which b₁ alone caught a banana of 0.01 nats, in 95% of replicates. On circles the circular skewness and kurtosis (Fisher 1993; Mardia and Jupp 2000) stayed calibrated at every width, while linear statistics of values unwrapped about the circular mean drifted from a circular standard deviation of 1.25 rad, where wrapping changes the dependence the surrogates reproduce; on a narrow circle the circular moments tend to −2√2·g₁ and 2·g₂, so their thresholds scale by these factors. The KSG estimator (Kraskov, Stögbauer and Grassberger 2004) uses the maximum norm and counts of `NearestNeighbours`; against the mutual information of the zoo's bananas by quadrature (0.010 to 1.99 nats), k = 10 read within −9 to +4% at 2 000 samples. At that cap, 16 parameters take about 20 minutes on one CPU with 201 sample sets, dominated by KSG. On the zoo, BIC chose 2 to 5 components for bananas and railed normals, and the modes of those mixtures, found by the fixed-point iteration of Carreira-Perpiñán (2000), numbered up to five for a unimodal banana, with valleys as deep as those of true bimodal mixtures; the modes of the bounded 1D KDE along marginals and discriminant directions stayed one for every banana and railed case and found every mixture from a separation of 2.5, with dips of 0.10 to 0.57, including an 8-parameter mixture that BIC missed. A peak floor of 1% let single samples in heavy tails count as modes in 5 to 25% of marginals, against none at 5%. The railing score of the corrected KDE recovered exp(−z²/2) within a few per cent for peaks up to 2.5σ to 3σ inside the bound, with a scatter of 0.04, 0.022 and 0.015 at z = 2 for N = 10³, 4·10³ and 10⁴. The split-chain Kuiper test kept uniform p-values on stationary circle chains (5.7 to 6.3% below 0.05 in 300 runs). With these defaults, the zoo's Gaussians, a narrow wrapped normal and a normal 4σ from its bound raised no flag, bananas flagged their dependence, Mardia's skewness and GMM-BIC but no mode, mixtures at separation 4 their mode and kurtosis, and normals railed at 0σ and 1σ their bound and skewness.
 
+**Nulls and σ (session 12a).** A comparison null is a plan: a pool of samples with their log weights and, for every draw, the positions of two disjoint sides (`NullPlan`), on which `null_draws` evaluates any statistic of two weighted sides with `jax.lax.map` and returns the draws on the last axis; a statistic may return an array, such as S_ε at a vector of ε. Value checks and concrete-only warnings do not run inside a staging trace (`jax.jit`, `jax.lax.map`, `jax.lax.scan`), also for arrays that the traced function closes over, where a check would be staged and fail. On AR(1) chains with τ = 19, `reduce_chains` leaves τ_k = 1.37 (N = 2 944, N_eff = 2 116). Over 2 000 pairs of identical runs with 199 permutations, the 5% level rejected 8.0, 7.3 and 5.3% for the mean shift, KS and the width when all thinned samples were permuted, 7.7, 6.6 and 4.7% when both sets were first cut to N_eff at random, 3.6, 1.8 and 1.5% with null sides of N_eff samples, and 5.1, 5.5 and 4.6% after thinning by 2τ (τ_k = 1.04); the developers kept the thinning by τ and chose the sides at N_eff. With importance weights (a proposal 1.5 times wider than the target, N = 4 000, Kish size 2 766) against 2 000 equal-weight draws, permuting (sample, weight) pairs in two equal halves rejected 4.8, 5.1 and 4.3%, sides of the sets' own counts 3.0, 2.7 and 3.3%, and resampling to equal weights first 16.6, 33.7 and 16.6%; equal-weight sets of 4 000 and 1 000 samples gave 5.2, 5.4 and 4.9% in equal halves. The side size ½(N₁ + N₂)(1/K₁ + 1/K₂)/(1/n₁ + 1/n₂) matches, to first order, the variance σ²(1/n₁ + 1/n₂) of a weighted mean difference and covers both rules. A split-half null of a reference of 10 000 against an approximation of 1 000 samples rejected 4.6, 4.7 and 5.7% with sides of the harmonic mean, 1 818, and 0.5, 0.2 and 0.3% with sides of 1 000; a reference of 4 000 against 2 000 cannot supply such sides and rejected 1.7, 1.1 and 1.3%. For σ_sig beyond the draws, on normal, Kolmogorov and χ²₄ nulls with 200 draws, the unconstrained maximum-likelihood fit of Knijnenburg et al. (2009) returned p = 0 in 18 to 31, 40 to 64 and 51 to 79% of the cases at a true 3, 4 and 5σ. The Zhang-Stephens fit with its support kept above the value gave medians of 2.9, 3.4 to 3.6 and 3.8 to 4.1, with a scatter of about ±0.3 and no infinite value, and 3.0, 4.05 and 4.7 to 4.9 with 1 000 draws; an exponential tail read 5.4 at a true 5σ for a χ²₁ null, and a Gaussian z-score 11.4 for χ²₄. On shifted unit Gaussians (N = 1 000, shifts 0.2, 0.5 and 1.0) the metrics that grow linearly with the shift read low by about their null mean under plain subtraction (KS 0.15, 0.44, 0.93; Gaussian W2 0.11, 0.38, 0.87; Hellinger with KDE 0.12, 0.40, 0.89) and recovered the shift when the null mean of their squares was subtracted (KS 0.22, 0.53, 1.03; W2 0.19, 0.50, 1.00; Hellinger 0.20, 0.51, 1.01); KL, JS, AD, the energy distance, MMD² and SW2² recovered it with plain subtraction (0.19 to 0.20, 0.50, 1.00). About half of the null-subtracted values of identical inputs are negative; a signed map kept the mean σ_eff at +0.007 (energy) and 0.000 (W1), where clipping gave +0.035 and +0.021. The null-subtracted kNN KL over the truth ran from 1.0 at D = 1 to 0.62 to 0.72 at D = 16 and fell with the shift at every D (D = 4 and N = 1 000: 0.89, 0.83, 0.77 and 0.68 at shifts 0.5, 1, 2 and 3), so its σ_eff comes from a curve measured at the row's own D, N and k. A 0.2σ shift has a JS divergence of 0.0072 bit, the 0.007 bit that GWTC-2 deems significant (Abbott et al. 2021), and the width ratio of the same JS is 1.153 or 0.867.
+
 **Structure layering (Decided)**
 
 - equinox modules for anything crossing jit: samples, weights, transforms, estimator state.
@@ -404,20 +418,20 @@ Every result row carries a value, its uncertainty, its null, σ_sig and an effec
 
 **Uncertainty (Decided).** The null standard deviation, marked approximate. It is accurate when the difference is small, which is where thresholds decide. A keyword switches on a subsampling bootstrap on half-samples drawn without replacement (Politis, Romano and Wolf 1999), so kNN metrics never see duplicate points.
 
-**σ_eff, the Gaussian-equivalent shift (Decided).** σ_eff is the mean shift between two unit Gaussians that gives the same null-subtracted metric value, in units of the whitening σ. "Exact" marks a closed form for this case. With a squared-Euclidean cost, a pure shift Δ of any distribution gives W2 = |Δ|, SW2² = |Δ|²/n over uniform directions in n dimensions, and S_ε = |Δ|² and a sliced S_ε of |Δ|²/n for every ε, by the translation property of optimal transport (Peyré and Cuturi 2019; Janati et al. 2020), so those maps hold beyond Gaussians. On periodic and sphere axes, zoo-calibrated corrections replace the Euclidean closed forms. Every map is checked on the zoo and shown on the validation page.
+**σ_eff, the Gaussian-equivalent shift (Decided).** σ_eff is the mean shift between two unit Gaussians that gives the same null-subtracted metric value, in units of the whitening σ. "Exact" marks a closed form for this case. With a squared-Euclidean cost, a pure shift Δ of any distribution gives W2 = |Δ|, SW2² = |Δ|²/n over uniform directions in n dimensions, and S_ε = |Δ|² and a sliced S_ε of |Δ|²/n for every ε, by the translation property of optimal transport (Peyré and Cuturi 2019; Janati et al. 2020), so those maps hold beyond Gaussians. On periodic and sphere axes, zoo-calibrated corrections replace the Euclidean closed forms. The null mean is subtracted where a metric is quadratic in the shift (`sigma.maps.null_subtract`): KS, Kuiper's V, W1, W2 and the Hellinger forms subtract the null mean of their squares, the width ratio that of ln r, and the other metrics subtract plainly. Every map is signed, σ_eff = sign(v) · map(|v|) for a null-subtracted value v, so identical inputs scatter around zero. Every map is checked on the zoo and shown on the validation page.
 
 | Metric | σ_eff | Basis |
 | --- | --- | --- |
 | Mean shift, per parameter | The value itself | Exact |
 | Gaussian KL, total and location term | √(2·KL) | Exact |
-| kNN KL (each direction) | √(2·KL), until session 12 replaces it: the estimate reads low from D = 4 | Exact for an unbiased estimate; zoo calibration in session 12 |
+| kNN KL (each direction) | Inverse of a curve measured at run time: the estimator on unit Gaussians at the row's D, sample counts and k, at six shifts (`sigma.calibration.knn_kl_curve`) | Numerical, at run time |
 | Gaussian W2, total and location term | The value itself | Exact |
 | 1D W1, along the circle on circles | The value itself | Exact |
 | KS | 2Φ⁻¹((1 + D_KS)/2) | Exact |
 | Kuiper's V, circle marginals | 2Φ⁻¹((1 + V)/2), as V = D for a shift | Exact |
-| k-sample AD, divided by nm/(n + m) | Tabulated curve, the same for every N | Numerical |
-| JS, bounded KDE or kNN (nats) | Tabulated curve, the same for every D | Numerical |
-| Hellinger, all forms; Gaussian total and location term | √(−8 ln(1 − H²)) | Exact |
+| k-sample AD, divided by nm/(n + m) | Inverse of the zoo's quadrature for two unit normals, by bisection; the same for every N | Numerical |
+| JS, bounded KDE or kNN (nats) | Inverse of the zoo's quadrature, by bisection, the same for every D; KDE rows times √(1 + f²) for their bandwidth factor f | Numerical |
+| Hellinger, all forms; Gaussian total and location term | √(−8 ln(1 − H²)); KDE rows times √(1 + f²) | Exact |
 | MMD² at bandwidth ℓ, the value of `mmd` rows | √(−2(ℓ² + 2) ln(1 − MMD²/(2c))), with c = (ℓ²/(ℓ² + 2))^(D/2) | Exact |
 | Energy distance | Inverse of 2√2 (E[χ_D(Δ/√2)] − E[χ_D]), with χ_D(λ) the noncentral chi distribution | Exact |
 | Sliced W2, the value SW2² of `sliced_w2` rows | √(n · SW2²), with n = E + 2C + 3S the coordinates the directions span | Exact for shifts of the Euclidean block |
@@ -426,11 +440,11 @@ Every result row carries a value, its uncertainty, its null, σ_sig and an effec
 | C2ST accuracy (placeholder) | 2Φ⁻¹(acc); a lower bound, since real classifiers are sub-optimal | Exact for the Bayes classifier |
 | Data-space energy distance | The energy-distance curve with D parameters, in noise σ | Linear order |
 
-`sigma/maps.py` holds the closed-form maps, those of MMD² and the energy distance since session 9, with D the dimension E + C + 2S of the space, and those of the OT metrics since session 10, the sliced ones with n = E + 2C + 3S; a value outside the range of its metric maps to NaN.
+`sigma/maps.py` holds the closed-form maps, those of MMD² and the energy distance since session 9, with D the dimension E + C + 2S of the space, and those of the OT metrics since session 10, the sliced ones with n = E + 2C + 3S; since session 12 it also holds the null subtraction and the AD and JS maps, every map is signed, and a value above the range of its metric maps to NaN.
 
 At linear order, a posterior whose covariance is the inverse Fisher matrix maps to a unit Gaussian on the D-dimensional tangent space of the noise-whitened data space, so the data-space energy distance follows the same curve and noise σ equals posterior σ.
 
-**r_eff, the Gaussian-equivalent width ratio (Decided).** Rows that measure only a difference in width carry r_eff instead of σ_eff: the ratio of widths along one axis between two unit Gaussians that gives the same null-subtracted value. r_eff is below 1 when the posterior is narrower than its reference; for joint shape terms the sign of the log-determinant ratio sets the direction. Thresholds act on |ln r_eff|, with per-metric defaults calibrated on the zoo's scaled Gaussians.
+**r_eff, the Gaussian-equivalent width ratio (Decided).** Rows that measure only a difference in width carry r_eff instead of σ_eff: the ratio of widths along one axis between two unit Gaussians that gives the same null-subtracted value. r_eff is below 1 when the posterior is narrower than its reference; for joint shape terms the sign of the log-determinant ratio sets the direction. Shape terms are signed in ln r: ln r_eff = direction · sign(v) · |ln r(|v|)|, so a term below its null mean puts r_eff on the other side of one. Thresholds act on |ln r_eff|; see Thresholds.
 
 | Metric | r_eff | Basis |
 | --- | --- | --- |
@@ -439,19 +453,21 @@ At linear order, a posterior whose covariance is the inverse Fisher matrix maps 
 | Gaussian W2, shape term | 1 ± the value, with the sign from the log-determinant ratio | Exact |
 | Gaussian Hellinger, shape term | The ratio r for which the Hellinger distance between N(0, 1) and N(0, r²) equals the value, with the direction from the log-determinant ratio | Exact |
 
-**σ_sig.** The null's empirical p-value with the +1 correction (Phipson and Smyth 2010), converted to a one-sided σ, Z = Φ⁻¹(1 − p) (Cowan et al. 2011). 200 draws resolve about 2.6σ and 1000 draws about 3.1σ; beyond that a generalized Pareto fit to the null tail is used (Knijnenburg et al. 2009) and flagged as extrapolated.
+**σ_sig.** The null's empirical p-value with the +1 correction (Phipson and Smyth 2010), converted to a one-sided σ, Z = Φ⁻¹(1 − p) (Cowan et al. 2011). 200 draws resolve about 2.6σ and 1000 draws about 3.1σ. When fewer than 10 draws are at least as extreme as the value (Knijnenburg et al. 2009), the p-value comes from a generalized Pareto distribution fitted to the most extreme 25% of the draws with the estimator of Zhang and Stephens (2009), whose support is kept above the value (Peschel et al. 2026), and the row carries an `ExtrapolationWarning`. With 200 draws the fit read 2.9, 3.4 to 3.6 and 3.8 to 4.1 at a true 3, 4 and 5σ on known nulls, so it does not overstate; claims beyond 4σ need more draws.
 
-**Null construction (Decided).** Configurable, with a standard default per method: 200 draws, both sets subsampled to the smaller N_eff, and more draws for significance claims.
+**Null construction (Decided).** Configurable, with a standard default per method: 200 draws, null sides at the effective sample size, and more draws for significance claims.
 
-- Comparisons, both modes: permutation of the τ-thinned pooled samples (Good 2005); thinning makes the samples close to exchangeable. Splitting the reference into halves at the approximation's N_eff stays available for mode A.
+- Comparisons, both modes: permutation of the τ-thinned pooled samples (Good 2005). Every sample keeps its weight, each set's weights sum to one, and each draw splits the pool into two disjoint sides of round(½(N₁ + N₂)(1/K₁ + 1/K₂)/(1/n₁ + 1/n₂)) samples, with K the Kish sizes and n the effective sizes. The sides so carry the correlation that thinning by τ leaves (τ_k ≈ 1.4 for an AR(1) chain) and the spread of the weights, while the value of the row uses all samples. Splitting the reference alone into two sides of round((N_r/K_r) · 2/(1/n_r + 1/n_a)) samples stays available for mode A, with a warning when the reference holds less than about three times the approximation's N_eff.
 - Posterior-shape diagnostics: 200 Gaussian surrogate sets with the posterior's mean and covariance at its N_eff, a parametric bootstrap (Efron and Tibshirani 1993), drawn by `nulls.surrogates.gaussian_surrogates`; mode rows on intervals take surrogates truncated to the interval. The null then carries the finite-N bias of the kNN and KSG estimators. The closed forms of Theorem 7 of Székely, Rizzo and Bakirov (2007) and of Pearson (1907) are the Gaussian values that the dependence statistics subtract. Railing, GMM-BIC and chain-health rows have no surrogate null.
 - C2ST: chosen with its implementation.
+
+**Thresholds (Decided).** A σ_eff row fails at 0.2 and an r_eff row at |ln r_eff| = 0.14, when σ_sig also reaches 2; the YAML config overrides each default per metric. GWTC-2 deems a JS divergence of 0.007 bit between waveform models significant, which for a Gaussian is a shift of 20% of its standard deviation (Abbott et al. 2021, Appendix A); a 0.2σ shift has 0.0072 bit by the zoo's quadrature, the width ratio of the same JS is 1.153 or 0.867, and 0.2 is also the small effect of Cohen (1988). The threshold acts on the signed effect: |σ_eff| for mean shifts, σ_eff for the other rows, |ln r_eff| for width ratios and sign(v) · |ln r_eff| for shape terms (`sigma.thresholds.verdict`), so a row below its null never fails.
 
 **Validity domains (Decided).** Each metric declares where it is reliable: minimum N_eff relative to D, bandwidth and ε relative to the whitened scale, maximum D for KDEs. Each limit cites its source or its zoo calibration. A soft limit adds a structured warning to the row. A hard limit, where the estimator is undefined (for example fewer samples than neighbours for kNN), gives a NaN value plus the warning. Nothing raises, so a long run never stops on one metric.
 
 ## Validation zoo
 
-Distributions with known answers serve as the test suite, as the source of the σ_eff and r_eff calibration tables, and as the content of the validation page. Session 3 built them in `mixed_signals.zoo`.
+Distributions with known answers serve as the test suite, as the source of the σ_eff and r_eff calibrations, and as the content of the validation page. Session 3 built them in `mixed_signals.zoo`.
 
 | Builder | Posteriors | Reference values |
 | --- | --- | --- |
@@ -609,17 +625,24 @@ mixed-signals/
 │   ├── reweight/           # importance weights, evidence ratio, PSIS
 │   ├── dataspace/          # noise-weighted energy distance, Fisher
 │   ├── generators/         # benched: protocols, capability checks
-│   ├── nulls/              # permutation, split-half, Gaussian surrogates (surrogates.py), N_eff matching
-│   ├── sigma/              # σ_sig, σ_eff and r_eff maps, calibration tables
-│   │   ├── significance.py # empirical p-values and σ_sig
-│   │   └── maps.py         # closed-form σ_eff and r_eff maps
+│   ├── nulls/              # every null carries the effective sample size
+│   │   ├── plan.py         # NullPlan: a pool and the sides of every draw; null_draws
+│   │   ├── permutation.py  # pooled (sample, weight) pairs in two equal sides
+│   │   ├── split_half.py   # the reference alone, in two sides
+│   │   └── surrogates.py   # Gaussian surrogates of the diagnostics
+│   ├── sigma/              # σ_sig, σ_eff and r_eff maps, thresholds
+│   │   ├── significance.py # empirical p-values, the tail fit and σ_sig
+│   │   ├── pareto.py       # generalized Pareto fit of a tail
+│   │   ├── maps.py         # null subtraction, σ_eff and r_eff maps
+│   │   ├── calibration.py  # run-time curve of the kNN KL map
+│   │   └── thresholds.py   # default thresholds and the verdict of a row
 │   ├── engines/            # diagnose, compare, reweight, dataspace
 │   ├── zoo/                # cases with known answers: distributions, closed forms
 │   ├── pipeline/           # YAML config models, runner, dry-run cost
 │   ├── report/             # marimo notebook, cantuccio plots
 │   ├── cli.py              # argparse: mixed-signals run config.yaml
 │   └── gw/                 # GW conventions, readers, waveform helpers
-├── scripts/                # style-rule check; rebuild calibration tables and the validation page from the zoo
+├── scripts/                # style-rule check; rebuild the validation page from the zoo
 ├── tests/                  # mirrors src/, zoo validation, GPU suite run by hand
 ├── examples/               # marimo notebooks
 └── docs/                   # Sphinx, references.bib, validation page
@@ -678,6 +701,7 @@ Every method and assumption above cites the sources below. Each module cites the
 | Modes of 1D kernel estimates | Silverman (1981); Silverman (1986); discriminant directions: Hennig (2010); modes of mixtures misread: Carreira-Perpiñán (2000), zoo check; peak floor and valley merging: zoo check |
 | Prior railing | Bounded KDE: Jones (1993), Jones and Foster (1996); threshold: pe-configurator (Estelles, Ossokine and Williams 2023); recovery: zoo check |
 | Diagnostic thresholds | Kass and Raftery (1995); Fraley and Raftery (2002); Vehtari et al. (2021); pe-configurator; zoo anchors |
+| Comparison thresholds | Abbott et al. (2021); Cohen (1988); zoo quadrature of the JS divergence |
 | Gaussian surrogates | Efron and Tibshirani (1993); truncation to intervals: Devroye (1986) |
 | Mean shift | Glass, McGaw and Smith (1981); Cohen (1988) |
 | Width ratio | Nakagawa et al. (2015) |
@@ -709,8 +733,8 @@ Every method and assumption above cites the sources below. Each module cites the
 | KL direction in mode A | Hermans et al. (2022) |
 | σ_eff maps | Peyré and Cuturi (2019); Janati et al. (2020); Fukunaga (1990); Johnson, Kotz and Balakrishnan (1995); zoo checks on the validation page |
 | p-values and σ_sig | Phipson and Smyth (2010); Cowan et al. (2011) |
-| Null tail fit | Knijnenburg et al. (2009) |
-| Permutation nulls | Good (2005) |
+| Null tail fit | Knijnenburg et al. (2009); Zhang and Stephens (2009); Pickands (1975); support constraint: Peschel et al. (2026); zoo check |
+| Permutation and split-half nulls | Good (2005); Kish (1965); side sizes and weights: zoo checks |
 | Subsampling bootstrap | Politis, Romano and Wolf (1999) |
 | Importance weights and evidence ratio | Payne, Talbot and Thrane (2019); Thrane and Talbot (2019) |
 | PSIS k̂ | Vehtari et al. (2024) |
@@ -741,6 +765,7 @@ Every method and assumption above cites the sources below. Each module cites the
 
 **Bibliography**
 
+- Abbott, R. et al. (LIGO Scientific Collaboration and Virgo Collaboration) (2021). GWTC-2: Compact binary coalescences observed by LIGO and Virgo during the first half of the third observing run. *Physical Review X* 11(2), 021053.
 - Anderson, T. W. and Darling, D. A. (1954). A test of goodness of fit. *Journal of the American Statistical Association* 49(268), 765–769.
 - Arthur, D. and Vassilvitskii, S. (2007). k-means++: the advantages of careful seeding. *Proceedings of the Eighteenth Annual ACM-SIAM Symposium on Discrete Algorithms*, 1027–1035.
 - Baringhaus, L. and Franz, C. (2004). On a new multivariate two-sample test. *Journal of Multivariate Analysis* 88(1), 190–206.
@@ -840,9 +865,11 @@ Every method and assumption above cites the sources below. Each module cites the
 - pe-configurator: Estelles, H., Ossokine, S. and Williams, D. (2023). pe-configurator: tools to identify waveform settings and prior bounds for gravitational wave parameter estimation. Python package, version 1.0.5, MIT license. <https://pypi.org/project/pe-configurator>
 - Pearson, K. (1907). *Mathematical Contributions to the Theory of Evolution. XVI. On Further Methods of Determining Correlation*. Drapers' Company Research Memoirs, Biometric Series IV. Dulau and Co.
 - Pedregosa, F. et al. (2011). Scikit-learn: Machine learning in Python. *Journal of Machine Learning Research* 12(85), 2825–2830.
+- Peschel, S., Boulesteix, A.-L., von Mutius, E. and Müller, C. L. (2026). permApprox: a general framework for accurate permutation p-value approximation. arXiv:2602.22975.
 - Pettitt, A. N. (1976). A two-sample Anderson-Darling rank statistic. *Biometrika* 63(1), 161–168.
 - Peyré, G. and Cuturi, M. (2019). Computational optimal transport. *Foundations and Trends in Machine Learning* 11(5–6), 355–607.
 - Phipson, B. and Smyth, G. K. (2010). Permutation P-values should never be zero: calculating exact P-values when permutations are randomly drawn. *Statistical Applications in Genetics and Molecular Biology* 9(1), article 39.
+- Pickands, J. (1975). Statistical inference using extreme order statistics. *The Annals of Statistics* 3(1), 119–131.
 - Piessens, R., de Doncker-Kapenga, E., Überhuber, C. W. and Kahaner, D. K. (1983). *QUADPACK: A Subroutine Package for Automatic Integration*. Springer Series in Computational Mathematics 1. Springer.
 - Póczos, B. and Schneider, J. (2011). On the estimation of α-divergences. *Proceedings of AISTATS*, PMLR 15, 609–617.
 - Politis, D. N., Romano, J. P. and Wolf, M. (1999). *Subsampling*. Springer.
@@ -883,3 +910,4 @@ Every method and assumption above cites the sources below. Each module cites the
 - Vousden, W. D., Farr, W. M. and Mandel, I. (2016). Dynamic temperature selection for parallel tempering in Markov chain Monte Carlo simulations. *Monthly Notices of the Royal Astronomical Society* 455(2), 1919–1937.
 - Wang, Q., Kulkarni, S. R. and Verdú, S. (2009). Divergence estimation for multidimensional densities via k-nearest-neighbor distances. *IEEE Transactions on Information Theory* 55(5), 2392–2405.
 - Wolff, U. (2004). Monte Carlo errors with less errors. *Computer Physics Communications* 156(2), 143–153.
+- Zhang, J. and Stephens, M. A. (2009). A new and efficient estimation method for the generalized Pareto distribution. *Technometrics* 51(3), 316–325.

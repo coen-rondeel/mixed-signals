@@ -393,6 +393,20 @@ def test_fisher_whitening_matches_covariance_whitening_at_gw_scale() -> None:
     np.testing.assert_allclose(mapped, np.eye(2), atol=1e-9)
 
 
+def test_fisher_whitening_builds_under_jit_from_a_closed_over_matrix() -> None:
+    """A concrete Γ and centre that a jitted function closes over pass their checks."""
+    space = real_space(2)
+    fisher = jnp.asarray(np.linalg.inv(GW_COVARIANCE))
+    centre = jnp.asarray(GW_MEAN)
+    points = jnp.array([[3.0e-3, 1.0], [3.001e-3, 0.5]])
+
+    def whiten(values: jax.Array) -> jax.Array:
+        return Whitening.from_fisher(fisher, centre, space).forward(values)
+
+    expected = Whitening.from_fisher(fisher, centre, space).forward(points)
+    np.testing.assert_allclose(jax.jit(whiten)(points), expected, rtol=1e-12)
+
+
 def test_fisher_whitening_maps_the_density_to_a_unit_normal() -> None:
     """Log N(x; μ, Σ) − ln|det ∂y/∂x| is the unit-normal log density of y."""
     case = zoo.shifted_gaussians(

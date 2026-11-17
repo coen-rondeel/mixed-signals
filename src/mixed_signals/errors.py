@@ -70,10 +70,11 @@ class CoupledChainsWarning(MixedSignalsWarning):
 
 
 class ExtrapolationWarning(MixedSignalsWarning):
-    """A significance lies beyond the resolution of the null draws.
+    """A significance comes from a fit to the tail of the null, not from its draws.
 
-    The value comes from a fit to the tail of the null distribution, not from
-    the draws themselves.
+    The p-value is read off a generalized Pareto fit to the tail, which
+    interpolates between the last draws and extrapolates beyond them, because
+    too few draws reach the value for an empirical p-value.
     """
 
 

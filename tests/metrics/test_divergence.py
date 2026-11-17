@@ -417,3 +417,20 @@ def test_estimates_compile_and_map_over_problems(
     for index in range(3):
         single = estimate(first[index], second[index])
         assert float(mapped[index]) == pytest.approx(float(single), rel=1e-12)
+
+
+def test_knn_kl_over_keys_with_closed_over_data_and_weights_matches_the_loop() -> None:
+    """A lax.map over keys closes over the data and the explicit equal log weights."""
+    case = zoo.shifted_gaussians(0.5, param_count=2)
+    first, second = case.sample(jax.random.key(1), 120).samples[0]
+    weights = jnp.zeros(120)
+    keys = jax.random.split(KEY, 3)
+    mapped = jax.lax.map(
+        lambda key: knn_kl_divergence(first, weights, second, weights, PLANE, key=key),
+        keys,
+    )
+    for index in range(3):
+        eager = knn_kl_divergence(
+            first, weights, second, weights, PLANE, key=keys[index]
+        )
+        assert float(mapped[index]) == pytest.approx(float(eager), rel=1e-12)

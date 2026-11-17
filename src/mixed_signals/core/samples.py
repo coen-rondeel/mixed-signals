@@ -640,8 +640,18 @@ def _warn_narrow_floats(arrays: Mapping[str, Array]) -> None:
 
 
 def _is_concrete(*arrays: Array) -> bool:
-    """Return whether every array holds known values, outside a JAX trace."""
-    return not any(isinstance(array, jax.core.Tracer) for array in arrays)
+    """Return whether every array is known and a check on it can run eagerly.
+
+    A concrete array that ``jax.jit``, ``jax.lax.map`` or ``jax.lax.scan``
+    closes over is not a tracer, but a ``jnp`` operation on it is staged into
+    the trace, and its result cannot become a Python bool. The probe, a fresh
+    ``jnp.zeros(())``, is a tracer exactly inside such a staging trace; under
+    ``jax.vmap``, ``jax.grad``, plain Python and
+    ``jax.ensure_compile_time_eval()`` it is concrete.
+    """
+    if any(isinstance(array, jax.core.Tracer) for array in arrays):
+        return False
+    return not isinstance(jnp.zeros(()), jax.core.Tracer)
 
 
 def _first_true(mask: Bool[Array, "..."]) -> tuple[int, ...] | None:

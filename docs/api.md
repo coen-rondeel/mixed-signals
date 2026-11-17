@@ -158,6 +158,15 @@
 ```{eval-rst}
 .. automodule:: mixed_signals.nulls
 
+.. automodule:: mixed_signals.nulls.plan
+   :members:
+
+.. automodule:: mixed_signals.nulls.permutation
+   :members:
+
+.. automodule:: mixed_signals.nulls.split_half
+   :members:
+
 .. automodule:: mixed_signals.nulls.surrogates
    :members:
 ```
@@ -170,7 +179,16 @@
 .. automodule:: mixed_signals.sigma.significance
    :members:
 
+.. automodule:: mixed_signals.sigma.pareto
+   :members:
+
 .. automodule:: mixed_signals.sigma.maps
+   :members:
+
+.. automodule:: mixed_signals.sigma.calibration
+   :members:
+
+.. automodule:: mixed_signals.sigma.thresholds
    :members:
 ```
 

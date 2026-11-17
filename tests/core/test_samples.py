@@ -16,6 +16,7 @@ from mixed_signals.core.samples import (
     N_EFF_RELATIVE_TOLERANCE,
     SampleSet,
     SampleShape,
+    _is_concrete,
     circular_mean,
     circular_standard_deviation,
     kish_effective_sample_size,
@@ -830,3 +831,65 @@ def test_float32_tensors_warn_and_are_cast() -> None:
     with pytest.warns(PrecisionWarning, match=r"samples \(float32\)"):
         sample_set = SampleSet(draws)
     np.testing.assert_array_equal(sample_set.samples[0, 0], draws.double().numpy())
+
+
+# * The probe that tells whether a check can run eagerly
+
+
+def test_is_concrete_follows_the_staging_of_the_trace() -> None:
+    """True where jnp operations run eagerly, false inside jit, map and scan.
+
+    The probe is a fresh ``jnp.zeros(())``. A JAX release that changes where it
+    is staged must fail this test, since every concrete check relies on it.
+    """
+    closed_over = jnp.ones(3)
+    seen: dict[str, bool] = {}
+
+    def record(name: str, *arrays: jax.Array) -> None:
+        seen[name] = _is_concrete(*arrays)
+
+    record("plain", closed_over)
+    assert seen["plain"]
+    assert _is_concrete()
+
+    def under_vmap(row: jax.Array) -> jax.Array:
+        record("vmap", closed_over)
+        record("vmap mapped", row)
+        return row
+
+    jax.vmap(under_vmap)(jnp.ones((2, 3)))
+    assert seen["vmap"]
+    assert not seen["vmap mapped"]
+
+    def under_grad(value: jax.Array) -> jax.Array:
+        record("grad", closed_over)
+        return value
+
+    jax.grad(under_grad)(1.0)
+    assert seen["grad"]
+
+    def under_jit(value: jax.Array) -> jax.Array:
+        record("jit", closed_over)
+        record("jit argument", value)
+        with jax.ensure_compile_time_eval():
+            record("jit eager", closed_over)
+        return value
+
+    jax.jit(under_jit)(jnp.ones(3))
+    assert not seen["jit"]
+    assert not seen["jit argument"]
+    assert seen["jit eager"]
+
+    def under_map(value: jax.Array) -> jax.Array:
+        record("map", closed_over)
+        return value
+
+    jax.lax.map(under_map, jnp.ones(2))
+    assert not seen["map"]
+
+    def under_scan(carry: jax.Array, value: jax.Array) -> tuple[jax.Array, jax.Array]:
+        record("scan", closed_over)
+        return carry, value
+
+    jax.lax.scan(under_scan, jnp.zeros(()), jnp.ones(2))
+    assert not seen["scan"]

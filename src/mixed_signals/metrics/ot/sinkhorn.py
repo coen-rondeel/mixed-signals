@@ -70,6 +70,7 @@ from typing import Final
 
 import jax
 import jax.numpy as jnp
+import numpy as np
 from jax.typing import ArrayLike
 from jaxtyping import Array, Bool, Float, PRNGKeyArray
 from ott.geometry import costs, pointcloud
@@ -156,10 +157,13 @@ def sinkhorn_divergence(
         :cite:t:`cuturi2022optimal`.
     """
     epsilons = jnp.asarray(epsilon, dtype=jnp.float64)
-    if _is_concrete(epsilons) and not bool(
-        jnp.all(jnp.isfinite(epsilons) & (epsilons > 0))
-    ):
-        raise ValueError(f"epsilon must be positive and finite, got {epsilons}")
+    if _is_concrete(epsilons):
+        # * Test host values: a jnp test of a closed-over array is staged in a trace.
+        host_epsilons = np.asarray(epsilons)
+        if not np.all(np.isfinite(host_epsilons) & (host_epsilons > 0)):
+            raise ValueError(
+                f"epsilon must be positive and finite, got {host_epsilons}"
+            )
     arrays = read_and_cap_pair(
         first,
         first_log_weights,

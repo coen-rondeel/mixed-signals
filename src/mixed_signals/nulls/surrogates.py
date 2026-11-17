@@ -46,9 +46,10 @@ from mixed_signals._config import NULL_DRAWS
 from mixed_signals.core.space import ParamSpace
 from mixed_signals.core.topology import Topology
 from mixed_signals.estimators.gaussian import GaussianDensity
+from mixed_signals.nulls.plan import Construction
 from mixed_signals.prng import derive_key
 
-CONSTRUCTION: Final = "gaussian_surrogate"
+CONSTRUCTION: Final = Construction.GAUSSIAN_SURROGATE
 """Name of the construction in the ``null_recipe`` column of diagnostic rows."""
 
 

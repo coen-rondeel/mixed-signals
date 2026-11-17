@@ -314,3 +314,18 @@ def test_moments_map_over_problems_without_warnings() -> None:
         for index in range(3):
             looped = function(first[index], None, second[index], None, space)
             np.testing.assert_allclose(mapped[index], looped, rtol=1e-12)
+
+
+def test_moments_with_closed_over_data_and_weights_match_the_eager_call() -> None:
+    """Under jit, closed-over data and explicit log weights skip the eager checks."""
+    case = zoo.shifted_gaussians(0.5, param_count=2)
+    first, second = case.sample(jax.random.key(0), 100).samples[0]
+    weights = jnp.log(jnp.linspace(1.0, 2.0, 100))
+    for function in (mean_shift, width_ratio):
+        compiled = jax.jit(
+            lambda function=function: function(
+                first, weights, second, weights, case.space
+            )
+        )()
+        eager = function(first, weights, second, weights, case.space)
+        np.testing.assert_allclose(compiled, eager, rtol=1e-12)

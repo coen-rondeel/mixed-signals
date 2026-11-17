@@ -52,6 +52,7 @@ References:
 """
 
 import functools
+import math
 from typing import Final
 
 import jax
@@ -229,12 +230,11 @@ def sliced_sinkhorn_divergence(
         :cite:t:`cuturi2022optimal`.
     """
     epsilon_array = jnp.asarray(epsilon, dtype=jnp.float64)
-    if _is_concrete(epsilon_array) and not (
-        bool(jnp.isfinite(epsilon_array)) and float(epsilon_array) > 0
-    ):
-        raise ValueError(
-            f"epsilon must be positive and finite, got {float(epsilon_array)}"
-        )
+    if _is_concrete(epsilon_array):
+        # * Test the host value: a jnp test of a closed-over array is staged in a trace.
+        host_epsilon = float(epsilon_array)
+        if not (math.isfinite(host_epsilon) and host_epsilon > 0):
+            raise ValueError(f"epsilon must be positive and finite, got {host_epsilon}")
     direction_array = _read_directions(directions, space)
     arrays = read_and_cap_pair(
         first,

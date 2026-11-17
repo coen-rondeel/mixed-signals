@@ -28,7 +28,7 @@ from mixed_signals.diagnostics.shape import (
     marginal_moments,
     moment_metric_names,
 )
-from mixed_signals.errors import MixedSignalsWarning
+from mixed_signals.errors import ExtrapolationWarning, MixedSignalsWarning
 from mixed_signals.nulls.surrogates import gaussian_surrogates
 
 DRAWS = 80
@@ -50,14 +50,17 @@ def test_effects_pass_their_side_of_the_threshold() -> None:
 def test_null_rows_subtract_the_null_mean_and_need_sigma_sig() -> None:
     """The effect is the value minus the null mean; σ_sig must reach the level."""
     draws = np.linspace(-0.05, 0.05, 199)
-    flagged = evaluate("skewness", -0.8, draws)
+    with pytest.warns(ExtrapolationWarning):
+        flagged = evaluate("skewness", -0.8, draws)
     assert flagged.effect == pytest.approx(-0.8)
-    assert flagged.p_value == pytest.approx(1 / 200)
+    assert flagged.extrapolated
+    assert 0 < flagged.p_value < 1 / 200
     assert flagged.flagged
     wide = np.linspace(-2.0, 2.0, 199)
     unresolved = evaluate("skewness", 0.8, wide)
     assert abs(unresolved.effect) >= THRESHOLDS["skewness"].value
     assert not unresolved.flagged
+    assert not unresolved.extrapolated
 
 
 def test_rows_with_their_own_p_value_use_it() -> None:
@@ -65,6 +68,38 @@ def test_rows_with_their_own_p_value_use_it() -> None:
     assert evaluate("split_chain_ks", 0.2, p_value=1e-4).flagged
     assert not evaluate("split_chain_ks", 0.2, p_value=0.3).flagged
     assert not evaluate("split_chain_ks", 0.05, p_value=1e-9).flagged
+
+
+def test_p_values_beyond_the_draws_come_from_the_tail_fit() -> None:
+    """A value past every null draw is flagged as extrapolated with a finite σ_sig."""
+    case = zoo.shifted_gaussians(0.0, param_count=1)
+    draws = np.abs(np.asarray(case.sample(jax.random.key(0), 200).samples[0, 0, :, 0]))
+    draws *= 0.001
+    with pytest.warns(ExtrapolationWarning, match="1 of 1"):
+        beyond = evaluate("anderson_darling", 0.01, draws)
+    assert beyond.extrapolated
+    assert beyond.flagged
+    assert math.isfinite(beyond.sigma_sig)
+    assert beyond.sigma_sig > 2.58
+    assert 0 < beyond.p_value < 1 / 201
+
+
+def test_p_values_inside_the_draws_stay_empirical() -> None:
+    """With at least ten draws at the value, the p-value is the empirical one."""
+    draws = np.linspace(0.0, 1.0, 199)
+    inside = evaluate("anderson_darling", 0.95, draws)
+    assert not inside.extrapolated
+    assert inside.p_value == pytest.approx((1 + np.sum(draws >= 0.95)) / 200)
+    below_level = evaluate("anderson_darling", 0.5, draws)
+    assert below_level.p_value > 0.4
+    assert not below_level.flagged
+
+
+def test_rows_without_draws_are_never_extrapolated() -> None:
+    """Rows with their own p-value or without any p-value report no extrapolation."""
+    assert not evaluate("split_chain_ks", 0.2, p_value=1e-9).extrapolated
+    assert not evaluate("gmm_bic", 12.0).extrapolated
+    assert not evaluate("ess", 120.0).extrapolated
 
 
 def test_informational_rows_have_no_threshold() -> None:

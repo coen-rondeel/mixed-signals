@@ -2,10 +2,11 @@
 
 A diagnostic row flags when its effect size passes the threshold of its
 metric and, where the row has a null or a p-value of its own, its σ_sig
-reaches :data:`SIGNIFICANCE_LEVEL`. The effect size is the value minus the
-mean of the null for rows with a surrogate null, and the value itself
-otherwise, so a finite-sample bias that the null carries does not count as a
-departure. The YAML config of a pipeline overrides these defaults.
+reaches :data:`~mixed_signals.sigma.thresholds.SIGNIFICANCE_LEVEL`. The effect
+size is the value minus the mean of the null for rows with a surrogate null,
+and the value itself otherwise, so a finite-sample bias that the null carries
+does not count as a departure. The YAML config of a pipeline overrides these
+defaults.
 
 Basis of each default
     ``skewness``: 0.5, the skewness of the zoo's normal railed 1σ inside its
@@ -29,8 +30,12 @@ Basis of each default
     (2021). ``split_chain_ks`` and ``split_chain_kuiper_ks``: 0.1, a shift of
     about 0.25σ between the halves by the σ_eff map of KS.
 Significance
-    :data:`SIGNIFICANCE_LEVEL` is 2: the default 200 null draws resolve σ_sig
-    up to 2.58 before a fit to the tail of the null.
+    :data:`~mixed_signals.sigma.thresholds.SIGNIFICANCE_LEVEL` is 2, shared
+    with the comparison rows: the default 200 null draws resolve σ_sig
+    up to 2.58 without a fit to the tail of the null. The fit of
+    :func:`~mixed_signals.sigma.significance.null_significance` only refines
+    p-values below about 10/(M + 1), 0.05 for 200 draws, so it can change the
+    flag of a row only near the level.
 Informational rows
     ``pearson``, ``mode_count``, ``tau``, ``rhat``, ``acceptance_rate`` and
     ``swap_rate`` have no threshold and never flag.
@@ -38,7 +43,8 @@ Informational rows
 References:
     :cite:t:`kass1995bayes`; :cite:t:`fraley2002model`;
     :cite:t:`vehtari2021rank`; :cite:t:`estelles2023peconfigurator`;
-    :cite:t:`phipson2010permutation`; :cite:t:`cowan2011asymptotic`.
+    :cite:t:`phipson2010permutation`; :cite:t:`cowan2011asymptotic`;
+    :cite:t:`knijnenburg2009fewer`.
 """
 
 import math
@@ -51,10 +57,10 @@ import jax.numpy as jnp
 from jax.typing import ArrayLike
 
 from mixed_signals.diagnostics.modes import MODE_SEPARATION
-from mixed_signals.sigma.significance import Tail, empirical_p_value, sigma_sig
+from mixed_signals.sigma.significance import Tail, null_significance, sigma_sig
 
-SIGNIFICANCE_LEVEL: Final = 2.0
-"""σ_sig that a row with a null or a p-value of its own must reach to flag."""
+# * The alias keeps the name a public export of this module.
+from mixed_signals.sigma.thresholds import SIGNIFICANCE_LEVEL as SIGNIFICANCE_LEVEL
 
 
 class Side(StrEnum):
@@ -118,6 +124,9 @@ class Evaluation(NamedTuple):
     """The p-value as a Gaussian significance; NaN without a p-value."""
     flagged: bool
     """Whether the effect passes the threshold and σ_sig the level."""
+    extrapolated: bool
+    """Whether the p-value comes from the tail fit, which interpolates between the
+    last draws and extrapolates beyond them; false for rows without draws."""
 
 
 def evaluate(
@@ -141,28 +150,39 @@ def evaluate(
         level: σ_sig that a row with a null or a p-value must reach.
 
     Returns:
-        The effect size, the p-value, σ_sig and whether the row flags. A NaN
-        effect never flags.
+        The effect size, the p-value, σ_sig, whether the row flags and
+        whether its p-value is extrapolated. A NaN effect never flags.
 
     Raises:
         KeyError: If the metric has no threshold.
 
+    Warns:
+        ExtrapolationWarning: As
+            :func:`~mixed_signals.sigma.significance.null_significance`, if
+            the p-value of a row with null draws comes from the tail fit.
+
     References:
-        :cite:t:`phipson2010permutation`; :cite:t:`cowan2011asymptotic`.
+        :cite:t:`phipson2010permutation`; :cite:t:`cowan2011asymptotic`;
+        :cite:t:`knijnenburg2009fewer`.
     """
     threshold = thresholds[metric]
     tail = threshold.tail if threshold.tail is not None else Tail.UPPER
     effect = float(value)
     probability = math.nan
+    significance = math.nan
+    extrapolated = False
     if null_draws is not None:
         draws = jnp.asarray(null_draws, dtype=jnp.float64)
         finite = draws[jnp.isfinite(draws)]
         effect = float(value) - float(jnp.mean(finite)) if finite.size else math.nan
-        probability = float(empirical_p_value(value, draws, tail))
+        result = null_significance(value, draws, tail)
+        probability = float(result.p_value)
+        significance = float(result.sigma_sig)
+        extrapolated = bool(result.extrapolated)
     elif p_value is not None:
         probability = float(p_value)
+        significance = float(sigma_sig(probability, tail))
     tested = null_draws is not None or p_value is not None
-    significance = float(sigma_sig(probability, tail)) if tested else math.nan
     if threshold.side is Side.ABOVE:
         passes = effect >= threshold.value
     elif threshold.side is Side.BOTH:
@@ -176,4 +196,5 @@ def evaluate(
         p_value=probability,
         sigma_sig=significance,
         flagged=bool(passes and resolved and not math.isnan(effect)),
+        extrapolated=extrapolated,
     )
