@@ -22,7 +22,7 @@ Weights
     both sets to equal weights before permuting gave 16.6, 33.7 and 16.6%.
     Equal-weight sets of 4 000 and 1 000 samples rejected in 5.2, 5.4 and 4.9%
     of the replicates with equal sides, and in 1.0, 0.3 and 1.0% with the
-    original side sizes.
+    original side sizes (see :ref:`validation-permutation-weights`).
 Correlation
     Chains stay thinned by the autocorrelation time τ. The observed value uses
     all samples, and the sides of the null carry the effective sample size.
@@ -30,12 +30,17 @@ Correlation
     :func:`~mixed_signals.mcmc.reduce.reduce_chains`, keep τ_k = 1.37
     (N = 2 944, effective sample size 2 116). Over 2 000 pairs of identical
     runs, a permutation of all samples rejected at the 5% level in 8.0, 7.3 and
-    5.3% of the pairs (mean shift, KS, width), cutting both sets to the
-    effective sample size at random first gave 7.7, 6.6 and 4.7%, and null
-    sides of the effective sample size 3.6, 1.8 and 1.5%. The last form is the
-    conservative one that the developers chose. One effective sample size, that
-    of the slowest parameter's mean, over-corrects other parameters and
-    statistics.
+    5.3% of the pairs (mean shift, KS, width), and cutting both sets to the
+    effective sample size at random first gave 7.7, 6.6 and 4.7%. The
+    developers chose null sides of the effective sample size. On runs of 100τ,
+    1 000 pairs rejected 7.7, 4.0 and 2.2% with these sides, and over 4 000
+    pairs the mean shift scattered 1.07 times the variance of its null, about
+    5.7% at the 5% level: τ_k reads 1.37 where the thinning factors give 1.43,
+    because each walker is centred on its own mean. The null is therefore
+    slightly narrow for the mean of the slowest parameter and conservative for
+    other parameters and statistics, which one effective sample size, that of
+    the slowest parameter's mean, over-corrects (see
+    :ref:`validation-permutation-thinned-chains`).
 Side size
     With N_i samples, Kish sizes K_i of the weights and effective sample sizes
     n_i (the given ones, else K_i), each side holds

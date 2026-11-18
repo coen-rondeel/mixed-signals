@@ -50,7 +50,8 @@ Circles and spheres
     modes at ±π/2, which differ only in even harmonics, arc lengths gave an
     energy distance within its null and an MMD² far below it, while the
     embedding resolved both. Chords are shorter than arcs, so the σ_eff of a
-    2σ shift on a whitened circle read 2 to 9% low. Whitening divides each
+    2σ shift on a whitened circle read 2 to 9% low (see
+    :ref:`validation-chords-and-arcs`). Whitening divides each
     circle by its circular standard deviation and gives each sphere the
     radius 1/s for its angular width s, which sets their weight against the
     Euclidean block.

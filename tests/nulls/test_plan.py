@@ -20,6 +20,7 @@ from mixed_signals.metrics.marginal import (
 from mixed_signals.metrics.moments import mean_shift
 from mixed_signals.metrics.ot.sinkhorn import sinkhorn_divergence
 from mixed_signals.metrics.ot.sliced import (
+    gaussian_sliced_wasserstein_distance,
     sliced_directions,
     sliced_sinkhorn_divergence,
     sliced_wasserstein_distance,
@@ -305,6 +306,19 @@ METRICS: list[tuple[str, Statistic]] = [
         "sliced_wasserstein_distance",
         lambda first, first_weights, second, second_weights: (
             sliced_wasserstein_distance(
+                first,
+                first_weights,
+                second,
+                second_weights,
+                SPACE,
+                directions=DIRECTIONS,
+            )
+        ),
+    ),
+    (
+        "gaussian_sliced_wasserstein_distance",
+        lambda first, first_weights, second, second_weights: (
+            gaussian_sliced_wasserstein_distance(
                 first,
                 first_weights,
                 second,

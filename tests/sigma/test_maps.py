@@ -9,9 +9,20 @@ import numpy as np
 import pytest
 from scipy import integrate, special, stats
 
+from mixed_signals.core.space import ParamSpace
+from mixed_signals.errors import ValidityWarning
 from mixed_signals.metrics.moments import gaussian_hellinger, gaussian_kl, gaussian_w2
+from mixed_signals.metrics.ot.sliced import (
+    SLICED_DIRECTIONS,
+    sliced_directions,
+    sliced_wasserstein_of_gaussians,
+)
+from mixed_signals.prng import derive_key
 from mixed_signals.sigma.calibration import CalibrationCurve
 from mixed_signals.sigma.maps import (
+    CHORDAL_CIRCLE_WIDTH,
+    CHORDAL_METRICS,
+    CHORDAL_SPHERE_WIDTH,
     KERNEL_METRICS,
     QUADRATURE_METRICS,
     SIGMA_EFF_MAPS,
@@ -21,8 +32,10 @@ from mixed_signals.sigma.maps import (
     null_subtract,
     r_eff,
     sigma_eff,
+    warn_wide_chordal_axes,
 )
-from mixed_signals.zoo import closed_forms
+from mixed_signals.transforms.whiten import Whitening
+from mixed_signals.zoo import ZooCase, closed_forms, von_mises_fisher, wrapped_gaussians
 
 SHIFTS = [0.0, 1e-6, 0.3, 1.0, 3.0]
 RATIOS = [0.2, 0.7, 1.0, 1.5, 4.0]
@@ -293,6 +306,42 @@ def test_transport_maps_check_their_arguments() -> None:
         with pytest.raises(ValueError, match="dimension must be a positive integer"):
             sigma_eff("sliced_w2", 0.1, dimension=dimension)
     assert SLICED_METRICS == ("sliced_sinkhorn", "sliced_w2")
+
+
+def test_default_bases_remove_the_direction_scatter_of_a_shift() -> None:
+    """σ_eff of a 1σ shift is 1 on complete bases and scatters on independent ones."""
+    size = 8
+    space = ParamSpace.model_validate(
+        {"parameters": [{"name": f"x{index}"} for index in range(size)]}
+    )
+    shift = np.zeros(size)
+    shift[0] = 1.0
+    root = jax.random.key(11)
+    effects = {}
+    for orthonormal in (True, False):
+        values = [
+            float(
+                sliced_wasserstein_of_gaussians(
+                    np.zeros(size),
+                    np.eye(size),
+                    shift,
+                    np.eye(size),
+                    directions=sliced_directions(
+                        space,
+                        SLICED_DIRECTIONS,
+                        key=derive_key(root, "directions", index),
+                        orthonormal=orthonormal,
+                    ),
+                )
+            )
+            for index in range(20)
+        ]
+        effects[orthonormal] = np.asarray(
+            sigma_eff("sliced_w2", np.asarray(values), dimension=size)
+        )
+    np.testing.assert_allclose(effects[True], 1.0, atol=1e-9)
+    # * Independent directions give a relative scatter of about 2.6% in σ_eff here.
+    assert np.std(effects[False], ddof=1) > 0.01
 
 
 # * JS and Anderson-Darling, by bisection on the zoo quadratures
@@ -579,3 +628,144 @@ def test_null_subtraction_names_its_metrics() -> None:
     assert dict(SUBTRACTION_SPACES) == expected
     mapped = {*SIGMA_EFF_MAPS, *KERNEL_METRICS, *SLICED_METRICS, *QUADRATURE_METRICS}
     assert mapped <= set(SUBTRACTION_SPACES)
+
+
+# * Wide circles and spheres
+
+WIDTH_SAMPLE_COUNT = 20_000
+WIDTH_KEY = jax.random.key(12)
+
+
+def whitening_of(case: ZooCase) -> Whitening:
+    """Return the pooled whitening of the two posteriors of a zoo case."""
+    draws = case.sample(WIDTH_KEY, WIDTH_SAMPLE_COUNT)
+    return Whitening.from_samples(draws.samples[0], None, case.space)
+
+
+def test_chordal_metrics_and_limits_are_the_agreed_ones() -> None:
+    """The five chordal metrics, 0.3 rad on a circle and 0.2 rad on a sphere."""
+    assert CHORDAL_METRICS == (
+        "energy",
+        "mmd",
+        "sinkhorn",
+        "sliced_sinkhorn",
+        "sliced_w2",
+    )
+    assert CHORDAL_CIRCLE_WIDTH == 0.3
+    assert CHORDAL_SPHERE_WIDTH == 0.2
+
+
+@pytest.mark.parametrize("metric", CHORDAL_METRICS)
+def test_narrow_circles_and_spheres_give_no_width_warning(metric: str) -> None:
+    """Widths of 0.1 rad on a circle and 0.05 rad on a sphere stay below the limits."""
+    circle_case = wrapped_gaussians(1.0, width=0.1, param_count=2)
+    sphere_case = von_mises_fisher(1.0, width=0.05, euclidean_count=1)
+    for case in (circle_case, sphere_case):
+        warn_wide_chordal_axes(metric, whitening_of(case), case.space)
+
+
+@pytest.mark.parametrize(
+    "metric", ["w1", "kl", "mean_shift", "ks", "kuiper_ks", "hellinger", "js", "ad"]
+)
+def test_other_metrics_give_no_width_warning(metric: str) -> None:
+    """A circle of 1 rad and a sphere of 0.5 rad matter to the chordal metrics only."""
+    circle_case = wrapped_gaussians(1.0, width=1.0)
+    sphere_case = von_mises_fisher(1.0, width=0.5)
+    for case in (circle_case, sphere_case):
+        warn_wide_chordal_axes(metric, whitening_of(case), case.space)
+
+
+@pytest.mark.parametrize("metric", CHORDAL_METRICS)
+def test_a_wide_circle_gives_one_warning_that_names_it(metric: str) -> None:
+    """A circular standard deviation of 0.5 rad is named with its width."""
+    case = wrapped_gaussians(1.0, width=0.5, param_count=2)
+    with pytest.warns(ValidityWarning) as record:
+        warn_wide_chordal_axes(metric, whitening_of(case), case.space)
+    assert len(record) == 1
+    message = str(record[0].message)
+    assert message.startswith(f"{metric}: ")
+    assert "circle 'x0' (0.50 rad)" in message
+    assert "x1" not in message
+
+
+def test_a_wide_sphere_gives_one_warning_that_names_it() -> None:
+    """An angular width of 0.3 rad on a sphere is named with its two axes."""
+    case = von_mises_fisher(1.0, width=0.3, euclidean_count=1)
+    with pytest.warns(ValidityWarning) as record:
+        warn_wide_chordal_axes("sliced_w2", whitening_of(case), case.space)
+    assert len(record) == 1
+    assert "sphere ('azimuth', 'polar') (0.30 rad)" in str(record[0].message)
+
+
+def test_wide_circles_and_spheres_share_one_warning() -> None:
+    """A space with a wide circle, a wide sphere and a narrow circle warns once."""
+    circle_case = wrapped_gaussians(1.0, width=0.5)
+    sphere_case = von_mises_fisher(1.0, width=0.3)
+    narrow_case = wrapped_gaussians(1.0, width=0.1)
+    narrow_parameter = narrow_case.space.parameters[0].model_copy(
+        update={"name": "phase"}
+    )
+    space = ParamSpace(
+        parameters=(
+            *circle_case.space.parameters,
+            *sphere_case.space.parameters,
+            narrow_parameter,
+        ),
+        spheres=sphere_case.space.spheres,
+    )
+    samples = jnp.concatenate(
+        [
+            case.sample(WIDTH_KEY, WIDTH_SAMPLE_COUNT).samples[0]
+            for case in (circle_case, sphere_case, narrow_case)
+        ],
+        axis=-1,
+    )
+    whitening = Whitening.from_samples(samples, None, space)
+    with pytest.warns(ValidityWarning) as record:
+        warn_wide_chordal_axes("energy", whitening, space)
+    assert len(record) == 1
+    message = str(record[0].message)
+    assert "circle 'x0' (0.50 rad)" in message
+    assert "sphere ('azimuth', 'polar') (0.30 rad)" in message
+    assert "phase" not in message
+
+
+def test_a_circle_converts_its_width_to_radians_with_its_period() -> None:
+    """A width of 0.2 in period 3 is 0.42 rad, and 0.4 in period 10 is 0.25 rad."""
+    wide_in_radians = wrapped_gaussians(1.0, width=0.2, period=3.0, lower=-1.0)
+    with pytest.warns(ValidityWarning, match=r"circle 'x0' \(0\.42 rad\)"):
+        warn_wide_chordal_axes(
+            "mmd", whitening_of(wide_in_radians), wide_in_radians.space
+        )
+    narrow_in_radians = wrapped_gaussians(1.0, width=0.4, period=10.0)
+    warn_wide_chordal_axes(
+        "mmd", whitening_of(narrow_in_radians), narrow_in_radians.space
+    )
+
+
+def test_a_fisher_whitening_gives_the_same_widths() -> None:
+    """The scale of a circle is the root of its diagonal entry of the inverse Fisher."""
+    space = ParamSpace.model_validate(
+        {
+            "parameters": [
+                {"name": "phase", "topology": "circle", "bounds": [0.0, 2 * math.pi]},
+                {"name": "amplitude"},
+            ]
+        }
+    )
+    centre = np.zeros(2)
+    narrow = Whitening.from_fisher(np.diag([1 / 0.1**2, 1.0]), centre, space)
+    warn_wide_chordal_axes("sliced_sinkhorn", narrow, space)
+    wide = Whitening.from_fisher(np.diag([1 / 0.6**2, 1.0]), centre, space)
+    with pytest.warns(ValidityWarning, match=r"circle 'phase' \(0\.60 rad\)"):
+        warn_wide_chordal_axes("sliced_sinkhorn", wide, space)
+
+
+def test_the_width_warning_needs_the_space_of_the_whitening() -> None:
+    """A space with other axis blocks than the whitening raises ValueError."""
+    circle_case = wrapped_gaussians(1.0, width=0.5)
+    sphere_case = von_mises_fisher(1.0, width=0.1)
+    with pytest.raises(ValueError, match="whitening was built for"):
+        warn_wide_chordal_axes("energy", whitening_of(circle_case), sphere_case.space)
+    # * Other metrics return before the check, as the row has nothing to warn about.
+    warn_wide_chordal_axes("w1", whitening_of(circle_case), sphere_case.space)

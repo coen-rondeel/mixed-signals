@@ -43,7 +43,8 @@ Zoo check
     read 0.75 of the true KL at a shift of 1, where the average over 24
     replicates is 0.83. With such a curve, the calibrated σ_eff of six
     comparisons was 1.028 ± 0.044 and 2.071 ± 0.028 at shifts of 1 and 2,
-    against 0.920 ± 0.039 and 1.772 ± 0.023 for √(2 KL).
+    against 0.920 ± 0.039 and 1.772 ± 0.023 for √(2 KL) (see
+    :ref:`validation-knn-kl-calibration`).
 
 References:
     :cite:t:`wang2009divergence`.

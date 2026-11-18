@@ -11,5 +11,6 @@ are being implemented one by one.
 :maxdepth: 2
 
 api
+validation
 references
 :::

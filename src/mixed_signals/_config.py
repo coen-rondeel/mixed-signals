@@ -32,8 +32,8 @@ random subsample of this many samples per posterior, drawn without
 replacement. One energy distance in 16 parameters, three sums over all N²
 pairwise distances, took 0.06 s at N = 5 000, 0.48 s at N = 10 000 and 2.0 s
 at N = 20 000 on one Apple M4 Pro CPU (JAX 0.11.2, float64): about 1.6 min
-per row with 200 null draws at this cap. A keyword of each metric overrides
-it.
+per row with 200 null draws at this cap (see :ref:`validation-costs`). A
+keyword of each metric overrides it.
 """
 
 PRNG_IMPLEMENTATION: Final = "threefry2x32"

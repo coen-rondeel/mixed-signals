@@ -23,7 +23,8 @@ Intervals in one dimension
     with both bounds at once. Reflection (Schuster 1985) has a bias of order
     h at a bound wherever the slope there is not zero; this correction, of
     order h², recovers the zoo's railing scores within a few per cent where
-    reflection is high by 10 to 30 per cent. The formula follows the
+    reflection is high by 10 to 30 per cent (see
+    :ref:`validation-kde-railing`). The formula follows the
     ``jf96`` correction of evmix (Hu and Scarrott 2018). The estimate is
     renormalised to integrate to one: Gauss-Legendre quadrature (Davis and
     Rabinowitz 1984) covers :data:`~mixed_signals.estimators.base.IMAGE_REACH`

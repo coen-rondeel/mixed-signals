@@ -34,9 +34,30 @@ Optimal transport
     directions in n dimensions, the mean squared projection of a shift is
     Δ²/n, so the sliced rows ``sliced_w2``, which hold SW2², and
     ``sliced_sinkhorn`` give σ_eff = √(n · value). n counts the coordinates
-    that the directions span, E + 2C + 3S in the chordal embedding. Circles
-    and spheres enter along chords, shorter than arcs, so their shifts read
-    low until the calibration on the zoo.
+    that the directions span, E + 2C + 3S in the chordal embedding. The
+    ``sliced_w2`` rows of the ``gaussian`` estimator, the sliced W2 between
+    Gaussian fits, take the same map. Circles and spheres enter along chords,
+    shorter than arcs, so wide ones read a shift low, as the next paragraph
+    describes.
+Wide circles and spheres
+    The chordal metrics, :data:`CHORDAL_METRICS`, measure circles and spheres
+    along chords, so they read a shift low where a circle or a sphere is wide.
+    :func:`warn_wide_chordal_axes` gives a row of such a metric a
+    :class:`~mixed_signals.errors.ValidityWarning` above a circular standard
+    deviation of :data:`CHORDAL_CIRCLE_WIDTH` = 0.3 rad or a sphere width of
+    :data:`CHORDAL_SPHERE_WIDTH` = 0.2 rad. In a zoo check with pooled
+    whitening, 6 replicates of 2 000 samples and shifts of 0.5, 1 and 2σ,
+    σ_eff over the true shift for sliced W2, the Sinkhorn divergence and the
+    energy distance was, for wrapped Gaussians of width 0.1 rad, 0.97 to 1.02,
+    0.97 to 1.10 and 0.99 to 1.01; at 0.3 rad, 0.96 to 1.02, 0.98 to 1.07 and
+    0.96 to 1.01; at 0.5 rad, 0.88 to 0.95, 0.91 to 1.01 and 0.89 to 0.95; at
+    1.0 rad, 0.53 to 0.73, 0.55 to 0.85 and 0.60 to 0.77. For von
+    Mises-Fisher distributions of width 0.05 rad it was 1.00 to 1.01, 0.99 and
+    0.99 to 1.00; at 0.2 rad, 0.95 to 0.96, 0.98 and 0.96 to 0.97; at 0.5 rad,
+    0.73 to 0.78, 0.77 to 0.87 and 0.78 to 0.82. The chord of the shift alone,
+    (2/(wδ)) sin(wδ/2) for a width w and a shift of δ widths, gives 0.84 to
+    0.99 at 1 rad, which falls short of the measured loss, so no closed-form
+    correction applies (see :ref:`validation-chordal-widths`).
 JS and Anderson-Darling
     The shift δ ≥ 0 for which the JS divergence (Lin 1991) or the
     Anderson-Darling distance (Pettitt 1976; Scholz and Stephens 1987) of
@@ -54,7 +75,8 @@ Kernel density estimates
 kNN KL
     The kNN estimate of the KL divergence (Wang, Kulkarni and Verdú 2009)
     reads low from four dimensions on in the zoo check of
-    :mod:`mixed_signals.sigma.calibration`, by a ratio that depends on the
+    :mod:`mixed_signals.sigma.calibration` (see
+    :ref:`validation-knn-kl-calibration`), by a ratio that depends on the
     dimension, the sample counts and the shift. With ``estimator="knn"``,
     :func:`sigma_eff` inverts a curve that
     :func:`~mixed_signals.sigma.calibration.knn_kl_curve` measures on unit
@@ -103,7 +125,8 @@ Zoo check
     0.203 / 0.505 / 1.010. For identical inputs 46 to 57% of the subtracted
     values were negative. At zero shift (N = 1 000) the signed map gave a mean
     σ_eff of +0.007 for the energy distance (scatter 0.069) and 0.000 for W1
-    (scatter 0.046), and clipping at zero gave +0.035 and +0.021.
+    (scatter 0.046), and clipping at zero gave +0.035 and +0.021 (see
+    :ref:`validation-effect-recovery` and :ref:`validation-signed-maps`).
 Domains
     Each map is the inverse of its metric for that pair, so a value outside
     the metric's range, such as a KS statistic above one, gives NaN: KS and
@@ -137,7 +160,10 @@ from jax.scipy.special import gammaln, ndtri
 from jax.typing import ArrayLike
 from jaxtyping import Array, Float
 
+from mixed_signals.core.space import ParamSpace
+from mixed_signals.estimators.base import _warn
 from mixed_signals.sigma.calibration import CalibrationCurve
+from mixed_signals.transforms.whiten import Whitening
 from mixed_signals.zoo.closed_forms import normal_anderson_darling, normal_js
 
 _NEWTON_STEPS: Final = 64
@@ -271,7 +297,8 @@ def null_subtract(
         KeyError: If the metric has no subtraction space.
 
     References:
-        See the zoo check in the module description.
+        See the zoo check in the module description and
+        :ref:`validation-effect-recovery`.
     """
     try:
         space = SUBTRACTION_SPACES[metric]
@@ -375,6 +402,39 @@ KERNEL_METRICS: Final = ("energy", "mmd")
 
 SLICED_METRICS: Final = ("sliced_sinkhorn", "sliced_w2")
 """Metrics whose σ_eff map needs the number of coordinates the directions span."""
+
+CHORDAL_METRICS: Final = ("energy", "mmd", "sinkhorn", "sliced_sinkhorn", "sliced_w2")
+"""Metrics that measure circles and spheres along chords and read wide ones low.
+
+In a zoo check with pooled whitening, 6 replicates of 2 000 samples and shifts
+of 0.5, 1 and 2σ, σ_eff over the true shift for sliced W2, the Sinkhorn
+divergence and the energy distance fell with the width of wrapped Gaussians
+from 0.96 to 1.07 at 0.3 rad to 0.88 to 1.01 at 0.5 rad and 0.53 to 0.85 at
+1.0 rad, and with the width of von Mises-Fisher distributions from 0.95 to
+0.98 at 0.2 rad to 0.73 to 0.87 at 0.5 rad (see
+:ref:`validation-chordal-widths`).
+"""
+
+CHORDAL_CIRCLE_WIDTH: Final = 0.3
+"""Circular standard deviation in radians above which a chordal metric warns.
+
+At 0.1 and 0.3 rad, σ_eff over the true shift of wrapped Gaussians was 0.97 to
+1.02 and 0.96 to 1.02 for sliced W2, 0.97 to 1.10 and 0.98 to 1.07 for the
+Sinkhorn divergence, and 0.99 to 1.01 and 0.96 to 1.01 for the energy
+distance; at 0.5 rad it was 0.88 to 0.95, 0.91 to 1.01 and 0.89 to 0.95, and
+at 1.0 rad 0.53 to 0.73, 0.55 to 0.85 and 0.60 to 0.77. The chord of the shift
+alone explains only part of the loss at 1 rad, so no closed-form correction
+applies.
+"""
+
+CHORDAL_SPHERE_WIDTH: Final = 0.2
+"""Angular width in radians above which a chordal metric warns about a sphere.
+
+At 0.05 and 0.2 rad, σ_eff over the true shift of von Mises-Fisher
+distributions was 1.00 to 1.01 and 0.95 to 0.96 for sliced W2, 0.99 and 0.98
+for the Sinkhorn divergence, and 0.99 to 1.00 and 0.96 to 0.97 for the energy
+distance; at 0.5 rad it was 0.73 to 0.78, 0.77 to 0.87 and 0.78 to 0.82.
+"""
 
 QUADRATURE_METRICS: Final = ("ad", "js")
 """Metrics whose σ_eff map inverts a quadrature of the zoo by bisection."""
@@ -521,6 +581,69 @@ def _check_dimension(
         raise ValueError(f"the sigma_eff of {metric!r} needs its {needs}")
     if isinstance(dimension, bool) or dimension < 1:
         raise ValueError(f"dimension must be a positive integer, got {dimension!r}")
+
+
+def warn_wide_chordal_axes(
+    metric: str, whitening: Whitening, space: ParamSpace
+) -> None:
+    """Warn if a circle or sphere is too wide for a chordal metric to read shifts well.
+
+    Does nothing for a metric outside :data:`CHORDAL_METRICS`. Otherwise it
+    raises one :class:`~mixed_signals.errors.ValidityWarning` that names every
+    circle whose circular standard deviation exceeds
+    :data:`CHORDAL_CIRCLE_WIDTH` and every sphere whose angular width exceeds
+    :data:`CHORDAL_SPHERE_WIDTH`, each with its width in radians. The widths
+    are the scales that the whitening stores: for a circle of period P and
+    scale s, in the units of the circle, the width is 2π s/P rad, and a
+    sphere's scale is its width in radians already. The function reads
+    concrete values, so it runs outside ``jax.jit``, once per row after
+    :meth:`~mixed_signals.transforms.whiten.Whitening.from_samples` or
+    :meth:`~mixed_signals.transforms.whiten.Whitening.from_fisher`.
+
+    Args:
+        metric: Name of the metric of the row.
+        whitening: Whitening of the comparison.
+        space: Space of the original coordinates, before the whitening, whose
+            circle bounds give the periods.
+
+    Warns:
+        ValidityWarning: If a circle or a sphere is wider than its limit.
+
+    Raises:
+        ValueError: If the space has other axis blocks than the whitening.
+
+    References:
+        See the zoo check of the wide circles and spheres in the module
+        description and :ref:`validation-chordal-widths`.
+    """
+    if metric not in CHORDAL_METRICS:
+        return
+    if space.axis_blocks != whitening.blocks:
+        raise ValueError(
+            f"the space has the axis blocks {space.axis_blocks}, but the"
+            f" whitening was built for {whitening.blocks}"
+        )
+    wide: list[str] = []
+    for position, scale in zip(
+        whitening.blocks.circles, whitening.circle_scales, strict=True
+    ):
+        parameter = space.parameters[position]
+        lower, upper = parameter.bounds
+        width = 2 * math.pi * float(scale) / (upper - lower)
+        if width > CHORDAL_CIRCLE_WIDTH:
+            wide.append(f"circle {parameter.name!r} ({width:.2f} rad)")
+    for sphere, scale in zip(space.spheres, whitening.sphere_scales, strict=True):
+        width = float(scale)
+        if width > CHORDAL_SPHERE_WIDTH:
+            wide.append(
+                f"sphere ({sphere.azimuth!r}, {sphere.polar!r}) ({width:.2f} rad)"
+            )
+    if wide:
+        _warn(
+            f"{metric}: chordal distances read shifts low on wide circles and"
+            f" spheres, above {CHORDAL_CIRCLE_WIDTH} rad for a circle and"
+            f" {CHORDAL_SPHERE_WIDTH} rad for a sphere; wide here: {', '.join(wide)}"
+        )
 
 
 def r_eff(

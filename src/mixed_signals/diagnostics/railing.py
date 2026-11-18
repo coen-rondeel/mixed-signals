@@ -7,7 +7,8 @@ at the bound divided by its largest value. The estimate takes the
 non-negative boundary correction of Jones and Foster (1996), whose bias at a
 bound is of order h², so the score of a normal whose peak lies z widths inside
 the bound, exp(−z²/2), is recovered within a few per cent down to z = 2.5,
-where reflection read 10 to 30 per cent high (zoo check). No paper defines a
+where reflection read 10 to 30 per cent high (zoo check, see
+:ref:`validation-kde-railing`). No paper defines a
 railing diagnostic. The LVK tool pe-configurator reports railing of the chirp
 mass, the mass ratio and the distance when the edge bin of a 50-bin histogram
 of the samples exceeds 2% of the highest bin, and the default flag threshold

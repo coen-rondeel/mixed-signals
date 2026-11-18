@@ -2,9 +2,9 @@
 
 Each builder returns a case: posteriors whose divergences, shifts, width
 ratios and other properties are known in closed form or by one-dimensional
-quadrature. The cases serve as the package's test data, as the source of its
-σ_eff and r_eff calibration tables and as the content of its validation page,
-and users can test their own metrics against them::
+quadrature. The cases serve as the package's test data, as the truths against
+which its σ_eff and r_eff maps are checked and as the content of its
+validation page, and users can test their own metrics against them::
 
     import jax
     from mixed_signals import zoo

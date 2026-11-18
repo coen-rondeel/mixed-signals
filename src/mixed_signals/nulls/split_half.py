@@ -25,7 +25,7 @@ Zoo check
     1 500 replicates, rejected at the 5% level in 4.6, 4.7 and 5.7% of the
     replicates for the mean shift, the KS statistic and the log width ratio
     with these sides, against 0.5, 0.2 and 0.3% with sides of the
-    approximation's size.
+    approximation's size (see :ref:`validation-split-half`).
 
 References:
     :cite:t:`good2005permutation`; :cite:t:`kish1965survey`.

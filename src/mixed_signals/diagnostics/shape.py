@@ -48,7 +48,8 @@ Wide circles
     calibrated surrogate null up to a circular standard deviation of
     :data:`~mixed_signals.diagnostics._common.CIRCLE_WIDTH_LIMIT` rad; wider
     circles raise a :class:`~mixed_signals.errors.ValidityWarning` for the
-    Anderson-Darling and Mardia rows. The circular moments need no limit.
+    Anderson-Darling and Mardia rows. The circular moments need no limit (see
+    :ref:`validation-circle-drift`).
 Validity
     A parameter without spread gives NaN, as does a singular covariance for
     Mardia's moments, with a :class:`~mixed_signals.errors.ValidityWarning`.

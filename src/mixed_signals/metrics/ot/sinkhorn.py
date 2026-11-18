@@ -91,7 +91,7 @@ kept the most resolution of a width ratio of 1.3 on one axis in 2, 8 and
 16 dimensions, and 72 to 85% of the best resolution of a 0.5σ shift in 8
 and 16 dimensions, where a factor of 1 gained 20 to 30% on the shift but
 lost most of the width and 0.05 lost half the shift at 16 dimensions with
-6 to 20 times the iterations.
+6 to 20 times the iterations (see :ref:`validation-sinkhorn-epsilon`).
 """
 
 SINKHORN_THRESHOLD: Final = 1e-6

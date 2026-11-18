@@ -40,7 +40,7 @@ Zoo check
     draws gave 3.0, 4.05 and 4.7 to 4.9. The unconstrained maximum likelihood
     fit returned p = 0 in 18 to 31%, 40 to 64% and 51 to 79% of the cases at
     200 draws. A support margin between 1.001 and 1.05 changed the medians by
-    at most 0.05.
+    at most 0.05 (see :ref:`validation-tail-fit`).
 
 References:
     :cite:t:`phipson2010permutation`; :cite:t:`cowan2011asymptotic`;

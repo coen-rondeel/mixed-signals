@@ -10,13 +10,15 @@ GMM-BIC
     information grows, and Jones (2011) replaces n by an effective sample
     size for correlated data. On draws repeated five times, n = N inflated
     ΔBIC tenfold and chose too many components, while n_eff gave the result
-    of the independent draws (zoo check). ΔBIC = BIC(1) − min BIC measures
+    of the independent draws (zoo check, see :ref:`validation-bic-neff`).
+    ΔBIC = BIC(1) − min BIC measures
     how strongly a mixture beats one Gaussian, on the scale of Kass and
     Raftery (1995), which Fraley and Raftery (2002) use for mixtures. A
     mixture fits any non-Gaussian shape, a banana or a railed posterior as
     well as separate modes, so ΔBIC flags structure, not modes: on the zoo,
     the fixed-point iteration of Carreira-Perpiñán (2000) found five modes
-    in the five-component mixtures that BIC chose for bananas, which have one.
+    in the five-component mixtures that BIC chose for bananas, which have one
+    (see :ref:`validation-mode-counting`).
 Modes of 1D estimates
     :func:`marginal_modes` and :func:`projection_modes` count the modes of
     the bounded one-dimensional
@@ -29,7 +31,8 @@ Modes of 1D estimates
     projects a pair of components to test whether they form one mode. A mode
     that every marginal hides shows there. A curve cannot create a mode in
     one dimension, so bananas and railed posteriors stay unimodal (zoo
-    check). A local maximum of the estimate on a grid counts as a peak when
+    check, see :ref:`validation-mode-counting`). A local maximum of the
+    estimate on a grid counts as a peak when
     it reaches :data:`MODE_FLOOR` of the highest peak, which keeps single
     samples in long tails from counting. Scanning the grid, the depth of each
     valley, 1 − valley/lower peak, compares a peak with the mode before it;
@@ -95,7 +98,7 @@ MODE_FLOOR: Final = 0.05
 With a floor of 1%, single samples in long tails counted as modes in 8 to
 25% of Student-t and banana marginals and 5% of Gaussian ones, and true modes
 at a separation of 3 resolved less often; with 5% no unimodal case counted a
-second mode (zoo check).
+second mode (zoo check, see :ref:`validation-mode-counting`).
 """
 
 MODE_SEPARATION: Final = 0.1
@@ -103,8 +106,11 @@ MODE_SEPARATION: Final = 0.1
 
 Shallower valleys merge their peaks into one mode for the mode count; the
 deepest valley is reported as the dip either way. It equals the default flag
-threshold of the dip: on the zoo, noise bumps stayed below 0.05, and mixtures
-from a separation of 2.5 reached 0.10 to 0.17.
+threshold of the dip: on the zoo, noise bumps stayed below 0.05, and equal
+mixtures reached 0.24 from a separation of 3 at 2 000 samples. At a separation
+of 2.5, whose true dip is 0.13, the bandwidth of the estimate fills the valley
+to about 0.07 at 2 000 samples, so two modes need about 20 000 samples (see
+:ref:`validation-mode-counting`).
 """
 
 GRID_POINTS: Final = 2_048

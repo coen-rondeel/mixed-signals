@@ -52,7 +52,8 @@ Zoo check
     D = 16 with k = 3. The bias-reduced form of Wang, Kulkarni and Verdú (2009),
     with neighbour counts chosen per sample as kldest implements it
     (Hartung 2024), did not remove it, so the σ_eff of kNN KL rows needs a
-    zoo calibration.
+    zoo calibration (see :ref:`validation-knn-ranks` and
+    :ref:`validation-knn-kl-calibration`).
 Weights
     The estimators assume equally weighted, independent draws (Wang,
     Kulkarni and Verdú 2009). Samples of zero weight leave every search;
@@ -92,21 +93,24 @@ from mixed_signals.prng import derive_key
 KL_NEIGHBOURS: Final = 3
 """Default rank k of :func:`knn_kl_divergence`.
 
-In the zoo check of the module description, k = 3 resolved a shift about
-twice as well as k = 1, for 1 to 6 percentage points more bias.
+In the zoo check of the module description (see
+:ref:`validation-knn-ranks`), k = 3 resolved a shift about twice as well as
+k = 1, for 1 to 6 percentage points more bias.
 """
 
 JS_NEIGHBOURS: Final = 10
 """Default rank k of :func:`knn_js_divergence`.
 
-In the zoo check of the module description, k = 10 resolved a shift 1.9
-times as well as k = 3, for at most 3 percentage points more bias.
+In the zoo check of the module description (see
+:ref:`validation-knn-ranks`), k = 10 resolved a shift 1.9 times as well as
+k = 3, for at most 3 percentage points more bias.
 """
 
 HELLINGER_NEIGHBOURS: Final = 5
 """Default rank k of :func:`knn_hellinger_distance`.
 
-In the zoo check of the module description, k = 5 resolved a shift 1.4 times
+In the zoo check of the module description (see
+:ref:`validation-knn-ranks`), k = 5 resolved a shift 1.4 times
 as well as k = 3, the smallest k with proven L2 consistency at α = ½
 (Póczos and Schneider 2011), for at most 2 percentage points more bias;
 k = 1 resolved it about six times worse.

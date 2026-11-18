@@ -36,7 +36,8 @@ Zoo check
     case, 0.675¹⁸. The winning mean log-likelihood still lies below the
     optimum: by a median of 2.6 to 2.8 nats in total for 4 000 samples in
     the harder cases, and by up to 19 nats, so BIC differences of a few
-    units do not resolve the number of components.
+    units do not resolve the number of components (see
+    :ref:`validation-gmm-starts`).
 Circles
     Each circle is unwrapped about its circular mean before the fit, and the
     density sums every component over windings. A circle whose mean
@@ -97,7 +98,8 @@ DEFAULT_STARTS: Final = 18
 
 With the stopping rule of scikit-learn, 67.5 per cent of single starts missed
 a mode in the hardest zoo mixture checked, so 18 starts all miss with
-probability 0.675¹⁸ < 1e-3; see the zoo check in the module description.
+probability 0.675¹⁸ < 1e-3; see the zoo check in the module description
+and :ref:`validation-gmm-starts`.
 """
 
 _HALF_LOG_TWO_PI: Final = 0.5 * math.log(2 * math.pi)

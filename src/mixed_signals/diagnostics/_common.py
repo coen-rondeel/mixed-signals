@@ -19,11 +19,13 @@ CIRCLE_WIDTH_LIMIT: Final = 1.0
 """Circular standard deviation, in radians of the circle, above which the
 surrogate null of a linear statistic on unwrapped values is approximate.
 
-On wrapped normals correlated with a real parameter, linear statistics of
-values unwrapped about the circular mean kept their calibration against the
-Gaussian surrogates up to a circular standard deviation of 1 rad and drifted
-from 1.25 rad, where wrapping changes the dependence that the surrogates
-reproduce (zoo check of the validation page).
+On wrapped normals correlated with a real parameter, the linear statistics that
+can flag (the excess of Spearman's ρ_s and the skewness and kurtosis of values
+unwrapped about the circular mean) kept their calibration against the Gaussian
+surrogates up to a circular standard deviation of 1 rad and drifted from 1.25
+rad, where wrapping changes the dependence that the surrogates reproduce.
+Pearson's r, which has no flag threshold, already read 0.9 surrogate widths
+high at 1 rad (zoo check, see :ref:`validation-circle-drift`).
 """
 
 _PACKAGE_DIRECTORY: Final = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))

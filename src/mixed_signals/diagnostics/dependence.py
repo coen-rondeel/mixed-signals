@@ -8,7 +8,8 @@ samples, so a banana, whose curved dependence Pearson misses, shows up as an
 excess. The surrogate null of :mod:`mixed_signals.nulls.surrogates` then
 carries the finite-sample bias of each estimator. A raw statistic would sit
 at the centre of its surrogate null, because the surrogates are drawn at the
-sample's own correlation; its excess is calibrated against them (zoo check).
+sample's own correlation; its excess is calibrated against them (zoo check,
+see :ref:`validation-surrogate-calibration`).
 
 Pearson's r
     The correlation of the weighted covariance, informational: the
@@ -43,7 +44,8 @@ Mutual information
 Rank and cap
     The default rank :data:`MUTUAL_INFORMATION_NEIGHBOURS` and the cap
     :data:`PAIR_CAP` come from a zoo check on bananas whose mutual
-    information is known by quadrature; see the constants.
+    information is known by quadrature; see the constants,
+    :ref:`validation-ksg-bananas` and :ref:`validation-costs`.
 Circles
     Pearson's r, Spearman's ρ_s and the r of the Gaussian values use values
     unwrapped about the circular mean. Pairs that involve a circle wider than
@@ -93,7 +95,8 @@ MUTUAL_INFORMATION_NEIGHBOURS: Final = 10
 On the zoo's bananas, whose mutual information is known by quadrature,
 k = 10 resolved a banana of 0.08 nats with 1.7 times the null widths of
 k = 3 and read within −9 to +4% of the truth at 2 000 samples (−26% at
-1 000 for the faint banana, within ±5% for strong ones).
+1 000 for the faint banana, within ±5% for strong ones; see
+:ref:`validation-ksg-bananas`).
 """
 
 PAIR_CAP: Final = 2_000
@@ -102,7 +105,7 @@ PAIR_CAP: Final = 2_000
 The distance correlation and the mutual information run over D(D − 1)/2
 pairs and every surrogate set, so they subsample above this cap: with 201
 sets, 16 parameters take about 20 minutes on one CPU at the cap, against
-about an hour at 4 000 samples.
+about an hour at 4 000 samples (see :ref:`validation-costs`).
 """
 
 _DCOR_NORMALISER: Final = 1 + math.pi / 3 - math.sqrt(3)

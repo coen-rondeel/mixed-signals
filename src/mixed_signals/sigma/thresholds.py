@@ -25,7 +25,8 @@ Basis of the defaults
     2021, Appendix A) deems a JS divergence of 0.007 bit significant, "which
     for a Gaussian corresponds to a 20% shift in the mean, measured in units of
     one standard deviation". By the zoo quadrature a shift of 0.2σ has a JS
-    divergence of 0.0072 bit. Cohen (1988) calls 0.2 a small effect.
+    divergence of 0.0072 bit (see :ref:`validation-threshold-basis`). Cohen
+    (1988) calls 0.2 a small effect.
     :data:`LOG_R_EFF_THRESHOLD` is 0.14: the width ratio of two Gaussians with
     that JS divergence is 1.153 or 0.867, so abs(ln r) = 0.142, rounded to
     0.14.
@@ -59,7 +60,8 @@ SIGMA_EFF_THRESHOLD: Final = 0.2
 The GWTC-2 catalogue (Abbott et al. 2021, Appendix A) deems a JS divergence of
 0.007 bit significant, "which for a Gaussian corresponds to a 20% shift in the
 mean, measured in units of one standard deviation"; by the zoo quadrature a
-0.2σ shift has a JS divergence of 0.0072 bit. Cohen (1988) calls 0.2 a small
+0.2σ shift has a JS divergence of 0.0072 bit (see
+:ref:`validation-threshold-basis`). Cohen (1988) calls 0.2 a small
 effect.
 
 References:

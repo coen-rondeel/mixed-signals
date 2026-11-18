@@ -1,10 +1,15 @@
 """Shared helpers for the tests of the zoo and the estimators."""
 
 import functools
+import sys
 from collections.abc import Callable
+from pathlib import Path
 
 import numpy as np
 import pytest
+
+# * The validation build lives in scripts/, which is not an installed package.
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
 
 type Density = Callable[[np.ndarray], np.ndarray]
 """Maps grid points shaped (..., D) to density values shaped (...)."""
