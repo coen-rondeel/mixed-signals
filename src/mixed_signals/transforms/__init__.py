@@ -18,7 +18,12 @@ expresses a space in units of a posterior width::
     whitened = whitening.map_sample_set(sample_set)
 """
 
-from mixed_signals.transforms.base import COMPOSITION_SEPARATOR, Compose, Transform
+from mixed_signals.transforms.base import (
+    COMPOSITION_SEPARATOR,
+    IDENTITY_DESCRIPTION,
+    Compose,
+    Transform,
+)
 from mixed_signals.transforms.whiten import (
     CONDITION_NUMBER_LIMIT,
     Whitening,
@@ -28,6 +33,7 @@ from mixed_signals.transforms.whiten import (
 __all__ = [
     "COMPOSITION_SEPARATOR",
     "CONDITION_NUMBER_LIMIT",
+    "IDENTITY_DESCRIPTION",
     "Compose",
     "Transform",
     "Whitening",

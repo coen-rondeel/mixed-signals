@@ -12,7 +12,12 @@ from scipy import stats
 
 from mixed_signals.core.samples import SampleSet
 from mixed_signals.core.space import ParamSpace
-from mixed_signals.transforms import COMPOSITION_SEPARATOR, Compose, Transform
+from mixed_signals.transforms import (
+    COMPOSITION_SEPARATOR,
+    IDENTITY_DESCRIPTION,
+    Compose,
+    Transform,
+)
 
 PARAM_COUNT = 3
 # * An invertible, non-symmetric matrix, so that row and column conventions matter.
@@ -129,6 +134,12 @@ def test_compose_applies_its_members_from_left_to_right(
     )
     assert composed.description == f"shear{COMPOSITION_SEPARATOR}sinh"
     assert Compose([Sinh(), shear]).description == "sinh | shear"
+
+
+def test_the_identity_description_is_not_a_transform_description(shear: Shear) -> None:
+    """The text for coordinates without a transform differs from any description."""
+    assert IDENTITY_DESCRIPTION == "identity"
+    assert shear.description != IDENTITY_DESCRIPTION
 
 
 def test_compose_log_det_and_jacobian_match_jacfwd(shear: Shear, points: Array) -> None:

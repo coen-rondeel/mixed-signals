@@ -79,7 +79,12 @@ class ExtrapolationWarning(MixedSignalsWarning):
 
 
 class ImportanceWeightWarning(MixedSignalsWarning):
-    """Importance weights are too uneven for reliable estimates."""
+    """Importance weights are too uneven for reliable estimates.
+
+    Reweighting raises it when the Pareto shape k̂ of a weight set passes its
+    threshold, when too few samples keep a positive weight to estimate k̂, or
+    when the fit of the tail fails, so that k̂ is undefined.
+    """
 
 
 class ConvergenceWarning(MixedSignalsWarning):

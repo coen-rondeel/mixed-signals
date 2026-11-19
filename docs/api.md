@@ -192,6 +192,28 @@
    :members:
 ```
 
+## Reweighting
+
+```{eval-rst}
+.. automodule:: mixed_signals.reweight
+
+.. automodule:: mixed_signals.reweight.psis
+   :members:
+
+.. automodule:: mixed_signals.reweight.importance
+   :members:
+```
+
+## Engines
+
+```{eval-rst}
+.. automodule:: mixed_signals.engines
+
+.. automodule:: mixed_signals.engines.reweight
+   :members:
+   :show-inheritance:
+```
+
 ## Validation zoo
 
 ```{eval-rst}

@@ -47,6 +47,7 @@ TOPICS: Final = (
     ("divergences", "Divergences"),
     ("estimators", "Estimators"),
     ("diagnostics", "Diagnostics"),
+    ("reweighting", "Reweighting"),
     ("costs", "Costs"),
 )
 """The topic modules in page order, with the heading of each.

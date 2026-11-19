@@ -138,6 +138,68 @@ def test_a_non_positive_first_quartile_gives_nan() -> None:
     assert math.isnan(float(fit.scale))
 
 
+# * The shape prior
+
+
+@pytest.mark.parametrize("shape", SHAPES)
+def test_the_shape_prior_shrinks_the_shape_and_keeps_the_scale(shape: float) -> None:
+    """The prior gives (L k + 5)/(L + 10) of the plain shape and the same scale."""
+    excesses = genpareto_sample(shape, 200, seed=13)
+    plain = generalized_pareto_fit(excesses)
+    shrunk = generalized_pareto_fit(excesses, shape_prior=True)
+    expected = (200 * float(plain.shape) + 5) / (200 + 10)
+    np.testing.assert_allclose(shrunk.shape, expected, rtol=1e-14)
+    np.testing.assert_array_equal(shrunk.scale, plain.scale)
+
+
+def test_the_shape_prior_counts_only_the_valid_excesses_and_keeps_the_bound() -> None:
+    """With a mask, L is the valid count; with a bound, the grid is the bounded one."""
+    excesses = genpareto_sample(-0.2, 120, seed=14)
+    valid = np.ones(120, dtype=bool)
+    valid[::6] = False
+    bound = 1.5 * SCALE / 0.2
+    plain = generalized_pareto_fit(excesses, valid, bound=bound)
+    shrunk = generalized_pareto_fit(excesses, valid, bound=bound, shape_prior=True)
+    count = int(valid.sum())
+    np.testing.assert_allclose(
+        shrunk.shape, (count * float(plain.shape) + 5) / (count + 10), rtol=1e-14
+    )
+    np.testing.assert_array_equal(shrunk.scale, plain.scale)
+
+
+def test_the_default_is_the_plain_fit() -> None:
+    """Leaving the prior out and switching it off give the same fit."""
+    excesses = genpareto_sample(0.2, 150, seed=15)
+    default = generalized_pareto_fit(excesses)
+    plain = generalized_pareto_fit(excesses, shape_prior=False)
+    np.testing.assert_array_equal(default.shape, plain.shape)
+    np.testing.assert_array_equal(default.scale, plain.scale)
+
+
+def test_the_shape_prior_leaves_undefined_fits_undefined() -> None:
+    """Too few excesses and a zero quartile stay NaN with the prior."""
+    excesses = genpareto_sample(0.0, 30, seed=16)
+    few = generalized_pareto_fit(excesses[:4], shape_prior=True)
+    assert math.isnan(float(few.shape))
+    assert math.isnan(float(few.scale))
+    tied = np.concatenate([np.zeros(30), excesses[:10]])
+    zero_quartile = generalized_pareto_fit(tied, shape_prior=True)
+    assert math.isnan(float(zero_quartile.shape))
+    assert math.isnan(float(zero_quartile.scale))
+
+
+def test_the_shape_prior_runs_under_jit_and_vmap() -> None:
+    """The prior is a static option: it compiles, and vmap matches a loop."""
+    rows = np.stack([genpareto_sample(0.1, 80, seed=seed) for seed in range(17, 20)])
+    mapped = jax.vmap(lambda row: generalized_pareto_fit(row, shape_prior=True))(rows)
+    jitted = jax.jit(generalized_pareto_fit, static_argnames="shape_prior")
+    for index in range(3):
+        single = jitted(rows[index], shape_prior=True)
+        np.testing.assert_allclose(mapped.shape[index], single.shape, rtol=1e-12)
+        np.testing.assert_allclose(mapped.scale[index], single.scale, rtol=1e-12)
+    assert isinstance(single, ParetoFit)
+
+
 # * The survival function
 
 

@@ -152,13 +152,21 @@ class UncertaintyMethod(StrEnum):
         The spread of the metric over half-samples drawn without replacement
         (Politis, Romano and Wolf 1999), so that no estimator sees duplicate
         points.
+    ``delta_method``
+        The standard error of the logarithm of an importance-sampling
+        estimate, from the variance of the weighted mean of the ratios
+        (Vehtari et al. 2024, Eq. 5 and 6) and the delta method for the
+        logarithm, as used for the evidence ratio of reweighting (Dax et al.
+        2023).
 
     References:
-        :cite:t:`politis1999subsampling`.
+        :cite:t:`politis1999subsampling`; :cite:t:`vehtari2024pareto`;
+        :cite:t:`dax2023neural`.
     """
 
     NULL_STD = "null_std"
     SUBSAMPLING_BOOTSTRAP = "subsampling_bootstrap"
+    DELTA_METHOD = "delta_method"
 
 
 class Provenance(BaseModel):

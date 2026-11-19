@@ -44,6 +44,12 @@ from mixed_signals.core.space import ParamSpace
 COMPOSITION_SEPARATOR: Final = " | "
 """Text between the descriptions of composed transforms, in the order they act."""
 
+IDENTITY_DESCRIPTION: Final = "identity"
+"""Description of the coordinates of the input in the ``space`` column of result rows.
+
+Engines that take an optional transform write it when no transform applies.
+"""
+
 _DENSITY_FIELDS: Final = ("log_prior", "log_q")
 _JACOBIAN_SIGNATURE: Final = "(param)->(param,param)"
 

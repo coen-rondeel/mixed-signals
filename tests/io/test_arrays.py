@@ -10,8 +10,8 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 
-from mixed_signals.errors import MissingDependencyError
-from mixed_signals.io.arrays import from_jax, to_jax
+from mixed_signals.errors import MissingDependencyError, PrecisionWarning
+from mixed_signals.io.arrays import call_in_chunks, from_jax, to_jax
 
 
 class HostArray:
@@ -177,3 +177,139 @@ def test_non_contiguous_tensors_convert() -> None:
     torch = pytest.importorskip("torch")
     tensor = torch.arange(6, dtype=torch.float64).reshape(2, 3).T
     np.testing.assert_array_equal(to_jax(tensor), tensor.numpy())
+
+
+# * Calling user code in chunks
+
+
+class RowSum:
+    """A function of the caller that records the type and size of every call."""
+
+    def __init__(self) -> None:
+        """Start without calls."""
+        self.types: list[type] = []
+        self.sizes: list[int] = []
+
+    def __call__(self, points: Any) -> Any:
+        """Return the row sums, as the array library of the points."""
+        self.types.append(type(points))
+        self.sizes.append(len(points))
+        return points.sum(axis=-1)
+
+
+def test_chunks_cover_every_row_in_order() -> None:
+    """Ten rows in chunks of three give calls of 3, 3, 3 and 1 rows, order kept."""
+    points = np.arange(30.0).reshape(10, 3)
+    function = RowSum()
+    values = call_in_chunks(function, points, chunk_size=3)
+    assert function.sizes == [3, 3, 3, 1]
+    np.testing.assert_array_equal(values, points.sum(axis=-1))
+    assert values.dtype == jnp.float64
+
+
+def test_without_a_chunk_size_one_call_gets_every_row() -> None:
+    """The default sends all rows at once; a chunk larger than N does the same."""
+    points = np.arange(12.0).reshape(6, 2)
+    function = RowSum()
+    call_in_chunks(function, points)
+    call_in_chunks(function, points, chunk_size=100)
+    assert function.sizes == [6, 6]
+
+
+@pytest.mark.parametrize("backend", ["numpy", "jax"])
+def test_functions_receive_arrays_of_the_backend(backend: str) -> None:
+    """NumPy and JAX backends hand over arrays of their own type."""
+    function = RowSum()
+    values = call_in_chunks(
+        function,
+        jnp.arange(8.0).reshape(4, 2),
+        backend=backend,  # type: ignore[arg-type]
+        chunk_size=2,
+    )
+    expected_type = np.ndarray if backend == "numpy" else jax.Array
+    assert all(issubclass(received, expected_type) for received in function.types)
+    np.testing.assert_array_equal(values, [1.0, 5.0, 9.0, 13.0])
+
+
+def test_torch_functions_receive_tensors() -> None:
+    """The torch backend hands over tensors, and their results convert back."""
+    torch = pytest.importorskip("torch")
+    function = RowSum()
+    values = call_in_chunks(function, np.arange(8.0).reshape(4, 2), backend="torch")
+    assert function.types == [torch.Tensor]
+    np.testing.assert_array_equal(values, [1.0, 5.0, 9.0, 13.0])
+
+
+def test_results_of_any_real_type_come_back_as_float64() -> None:
+    """Integer and boolean results cast silently to float64."""
+    points = np.arange(6.0).reshape(3, 2)
+    integers = call_in_chunks(lambda chunk: np.arange(len(chunk)), points)
+    booleans = call_in_chunks(lambda chunk: np.ones(len(chunk), dtype=bool), points)
+    assert integers.dtype == booleans.dtype == jnp.float64
+    np.testing.assert_array_equal(integers, [0.0, 1.0, 2.0])
+    np.testing.assert_array_equal(booleans, np.ones(3))
+
+
+def test_a_narrow_float_result_warns_once_per_call() -> None:
+    """Float32 results of several chunks give one warning and float64 values."""
+    points = np.arange(10.0).reshape(5, 2)
+    with pytest.warns(PrecisionWarning, match=r"results \(float32\)") as records:
+        values = call_in_chunks(
+            lambda chunk: chunk.sum(axis=-1).astype(np.float32), points, chunk_size=2
+        )
+    assert len(records) == 1
+    assert values.dtype == jnp.float64
+    np.testing.assert_array_equal(values, points.sum(axis=-1))
+
+
+def test_results_must_have_one_value_per_point() -> None:
+    """A result of another shape raises, naming the shapes."""
+    points = np.arange(10.0).reshape(5, 2)
+    with pytest.raises(ValueError, match=r"returned shape \(2, 2\) for a chunk of 2"):
+        call_in_chunks(lambda chunk: np.zeros((len(chunk), 2)), points, chunk_size=2)
+    with pytest.raises(ValueError, match=r"returned shape \(\) for a chunk of 5"):
+        call_in_chunks(lambda chunk: np.float64(0.0), points)
+    with pytest.raises(ValueError, match=r"returned shape \(4,\) for a chunk of 5"):
+        call_in_chunks(lambda chunk: np.zeros(4), points)
+
+
+def test_results_must_be_real() -> None:
+    """Complex and string results raise TypeError."""
+    points = np.arange(4.0).reshape(2, 2)
+    with pytest.raises(TypeError, match="real numbers, got dtype complex128"):
+        call_in_chunks(lambda chunk: np.zeros(len(chunk), dtype=complex), points)
+
+
+def test_unknown_backends_and_bad_chunk_sizes_are_rejected() -> None:
+    """The arguments are checked before the function is called.
+
+    The test session checks the annotations first, so the test calls the
+    unwrapped function, as runs without runtime type checks do.
+    """
+    unchecked = inspect.unwrap(call_in_chunks)
+    points = np.zeros((3, 2))
+    calls: list[int] = []
+
+    def function(chunk: Any) -> Any:
+        calls.append(len(chunk))
+        return np.zeros(len(chunk))
+
+    with pytest.raises(ValueError, match="unknown array backend 'tensorflow'"):
+        unchecked(function, points, backend="tensorflow")
+    with pytest.raises(ValueError, match="chunk_size must be at least 1, got 0"):
+        unchecked(function, points, chunk_size=0)
+    with pytest.raises(
+        TypeError, match="chunk_size must be an integer or None, got str"
+    ):
+        unchecked(function, points, chunk_size="3")
+    with pytest.raises(
+        TypeError, match="chunk_size must be an integer or None, got bool"
+    ):
+        unchecked(function, points, chunk_size=True)
+    assert calls == []
+
+
+def test_at_least_one_point_is_needed() -> None:
+    """An empty set of points raises instead of returning nothing."""
+    with pytest.raises(ValueError, match="at least one point"):
+        call_in_chunks(lambda chunk: np.zeros(len(chunk)), np.zeros((0, 2)))

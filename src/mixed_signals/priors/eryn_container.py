@@ -39,8 +39,14 @@ Physical parameters
     1946).
 Prior densities
     :class:`ErynPrior` makes a container meet
-    :class:`~mixed_signals.priors.protocol.PriorDistribution` in the sampling
-    coordinates, those of eryn's stored ``log_prior``.
+    :class:`~mixed_signals.priors.protocol.PriorDistribution`. By default it
+    works in the sampling coordinates u, those of eryn's stored ``log_prior``.
+    With ``coordinates="physical"`` it gives the density of the physical
+    parameters x = g(u) and draws them, with eryn's ``logpdf_physical`` and
+    ``rvs_physical``: eryn's density at g⁻¹(x) plus ln|det ∂u/∂x|, because a
+    density moves with the Jacobian of the map (Papamakarios et al. 2021).
+    Two priors whose sampling coordinates differ, such as a log-uniform and a
+    uniform amplitude, then compare in their shared physical coordinates.
 
 eryn is optional (the ``eryn`` extra), so this module imports it inside
 functions.
@@ -54,7 +60,7 @@ import importlib
 import math
 from collections.abc import Mapping, Sequence
 from types import MappingProxyType, ModuleType
-from typing import Any, Final, NamedTuple
+from typing import Any, Final, Literal, NamedTuple
 
 import equinox as eqx
 import jax.numpy as jnp
@@ -76,6 +82,11 @@ rounding in the last digits pass, such as 2π written to fewer digits.
 
 PHYSICAL_DESCRIPTION: Final = "physical(eryn)"
 """Description of :class:`ErynPhysical` in the ``space`` column of result rows."""
+
+type PriorCoordinates = Literal["sampling", "physical"]
+"""Coordinates of the densities and draws of :class:`ErynPrior`."""
+
+_PRIOR_COORDINATES: Final = ("sampling", "physical")
 
 _INSTALL_HINT: Final = (
     "install it with the eryn extra: pip install 'mixed-signals[eryn]'"
@@ -322,68 +333,105 @@ class ErynPhysical(Transform):
 
 
 class ErynPrior(eqx.Module):
-    """An eryn container as a ``PriorDistribution`` of the sampling coordinates.
+    """An eryn container as a ``PriorDistribution`` in sampling or physical coordinates.
 
-    :meth:`logpdf` is eryn's ``logpdf``, the density of the sampled
-    coordinates that eryn stores as ``log_prior``, and :meth:`rvs` passes the
-    package's ``key`` on to eryn's ``rng_key``. As for :class:`ErynPhysical`,
-    samples hold the parameters without a ``DeltaFunction`` prior, whose
-    values return only for eryn's calls.
+    In the default ``"sampling"`` coordinates, :meth:`logpdf` is eryn's
+    ``logpdf``, the density of the sampled coordinates that eryn stores as
+    ``log_prior``, and :meth:`rvs` passes the package's ``key`` on to eryn's
+    ``rng_key``. With ``"physical"`` coordinates they are eryn's
+    ``logpdf_physical`` and ``rvs_physical``: the density of the physical
+    parameters x = g(u), which is eryn's density at g⁻¹(x) plus
+    ln|det ∂u/∂x| (Papamakarios et al. 2021), and draws mapped to x. Priors
+    with different sampling coordinates compare in the physical ones. As for
+    :class:`ErynPhysical`, samples hold the parameters without a
+    ``DeltaFunction`` prior, whose values return only for eryn's calls; a
+    ``DeltaFunction`` has no transform, so it adds nothing to the Jacobian.
 
     Args:
         priors: eryn ``ProbDistContainer``, on any backend; the adapter keeps
             a JAX copy and leaves it unchanged.
+        coordinates: ``"sampling"`` for the coordinates of eryn's chains and
+            stored ``log_prior``, or ``"physical"`` for the physical
+            parameters.
 
     Attributes:
         priors: JAX copy of the container.
         free: Container positions of the parameters that samples hold.
         fixed: Container positions and values of the fixed parameters.
+        coordinates: The coordinates of the densities and draws.
 
     Raises:
         TypeError: If ``priors`` is not a ``ProbDistContainer``.
-        ValueError: If a prior is discrete or every parameter is fixed.
+        ValueError: If a prior is discrete or every parameter is fixed, or
+            ``coordinates`` is neither ``"sampling"`` nor ``"physical"``.
         MissingDependencyError: If eryn is not installed or has no JAX
-            backend for its priors.
+            backend for its priors, or, for physical coordinates, no
+            ``logpdf_physical`` and ``rvs_physical``.
 
     References:
-        :cite:t:`karnesis2023eryn`.
+        :cite:t:`karnesis2023eryn`; :cite:t:`papamakarios2021normalizing`.
     """
 
     priors: Any = eqx.field(static=True)
     free: tuple[int, ...] = eqx.field(static=True)
     fixed: tuple[tuple[int, float], ...] = eqx.field(static=True)
+    coordinates: PriorCoordinates = eqx.field(static=True)
 
-    def __init__(self, priors: object) -> None:
-        """Describe the container and keep its JAX copy."""
+    def __init__(
+        self, priors: object, *, coordinates: PriorCoordinates = "sampling"
+    ) -> None:
+        """Describe the container, keep its JAX copy and check the coordinates."""
+        if coordinates not in _PRIOR_COORDINATES:
+            raise ValueError(
+                f"coordinates must be one of {_PRIOR_COORDINATES}, got {coordinates!r}"
+            )
         self.priors, self.free, self.fixed, _ = _prepare(priors)
+        if coordinates == "physical" and not (
+            hasattr(self.priors, "logpdf_physical")
+            and hasattr(self.priors, "rvs_physical")
+        ):
+            raise MissingDependencyError(
+                "this eryn has no densities of physical parameters (ProbDistContainer"
+                f" has no logpdf_physical or rvs_physical); {_INSTALL_HINT}"
+            )
+        self.coordinates = coordinates
 
     def logpdf(self, samples: ArrayLike) -> Float[Array, " *leading"]:
         """Return the log prior density at samples shaped (..., D).
 
         Args:
-            samples: Sampling coordinates of the free parameters.
+            samples: Coordinates of the free parameters, sampling or physical
+                as chosen at construction.
 
         Returns:
             The log densities, shaped like ``samples`` without its last axis.
         """
         points = jnp.asarray(samples, dtype=jnp.float64)
         full = _with_fixed(points, self.free, self.fixed)
-        values = self.priors.logpdf(full.reshape(-1, full.shape[-1]))
+        flat = full.reshape(-1, full.shape[-1])
+        if self.coordinates == "physical":
+            values = self.priors.logpdf_physical(flat)
+        else:
+            values = self.priors.logpdf(flat)
         return jnp.reshape(jnp.asarray(values), points.shape[:-1])
 
     def rvs(
         self, size: int | tuple[int, ...], *, key: PRNGKeyArray
     ) -> Float[Array, "*size param"]:
-        """Draw sampling coordinates of the free parameters from the priors.
+        """Draw coordinates of the free parameters from the priors.
 
         Args:
             size: Shape of the draws without the parameter axis.
             key: JAX PRNG key.
 
         Returns:
-            The draws, shaped ``size + (D,)``.
+            The draws, shaped ``size + (D,)``, in the sampling or the physical
+            coordinates as chosen at construction.
         """
-        draws = jnp.asarray(self.priors.rvs(size=size, rng_key=key))
+        if self.coordinates == "physical":
+            draws = jnp.asarray(self.priors.rvs_physical(size=size, rng_key=key))
+        else:
+            draws = jnp.asarray(self.priors.rvs(size=size, rng_key=key))
         return _free_columns(draws, self.free, self.fixed)
 
 

@@ -17,6 +17,12 @@ arrays on devices that it does not use, such as Apple MPS tensors, or CUDA
 arrays in a process whose JAX has no CUDA support; move those to the host
 first.
 
+User code
+    :func:`call_in_chunks` calls a function of the caller, such as a
+    log-likelihood or a prior, at this boundary and outside ``jax.jit``: it
+    hands the function arrays of the chosen library in chunks of rows, checks
+    what comes back and returns one JAX array of float64.
+
 torch and CuPy are imported inside :func:`from_jax`, so the package imports
 without them. The ``torch`` extra installs torch, and the ``cuda12`` and
 ``cuda13`` extras install CuPy together with the matching JAX CUDA plugin.
@@ -26,19 +32,26 @@ References:
 """
 
 import importlib
+import os
+import warnings
+from collections.abc import Callable
 from types import ModuleType
-from typing import Any, Literal, get_args
+from typing import Any, Final, Literal, get_args
 
 import jax
 import jax.dlpack
 import jax.numpy as jnp
 import numpy as np
-from jaxtyping import Array
+from jax.typing import ArrayLike
+from jaxtyping import Array, Float
 
-from mixed_signals.errors import MissingDependencyError
+from mixed_signals.errors import MissingDependencyError, PrecisionWarning
 
 type ArrayBackend = Literal["numpy", "jax", "torch", "cupy"]
 """Array libraries that :func:`from_jax` converts to."""
+
+# * Frames in the package are skipped, so a warning points at the caller's line.
+_PACKAGE_DIRECTORY: Final = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 _INSTALL_HINTS = {
     "torch": "install it with the torch extra: pip install 'mixed-signals[torch]'",
@@ -132,6 +145,101 @@ def from_jax(array: Array, backend: ArrayBackend, *, copy: bool = False) -> Any:
         return tensor.clone() if copy else tensor
     cupy_array = _import_backend("cupy").from_dlpack(array)
     return cupy_array.copy() if copy else cupy_array
+
+
+def call_in_chunks(
+    function: Callable[[Any], object],
+    points: Float[ArrayLike, "sample param"],
+    *,
+    backend: ArrayBackend = "numpy",
+    chunk_size: int | None = None,
+) -> Float[Array, " sample"]:
+    """Call a function of the caller on rows of points and gather one value per row.
+
+    The function may belong to any array library, such as a NumPy
+    log-likelihood or a torch prior. For consecutive chunks of at most
+    ``chunk_size`` rows, the function gets the chunk as an array of
+    ``backend``, and what it returns converts with :func:`to_jax`. The call
+    runs on the host, outside ``jax.jit``, because the function is not JAX
+    code. Values are not checked here, so callers check them, for example for
+    NaN.
+
+    Args:
+        function: Maps points shaped (M, D), as arrays of ``backend``, to M
+            real values.
+        points: The points, shaped (N, D), with at least one row.
+        backend: ``"numpy"``, ``"jax"``, ``"torch"`` or ``"cupy"``: the library
+            of the arrays that the function receives.
+        chunk_size: The most rows in one call; all rows in one call when
+            ``None``. A smaller chunk bounds the memory of the function.
+
+    Returns:
+        The values, one per point, in the order of the points, as float64.
+
+    Raises:
+        ValueError: If the backend is unknown, ``chunk_size`` is below one,
+            there are no points, or a result is not shaped (M,) for its chunk
+            of M rows.
+        TypeError: If ``chunk_size`` is not an integer or a result is not real.
+        MissingDependencyError: If torch or CuPy is not installed.
+
+    Warns:
+        PrecisionWarning: Once per call, if a result is a float narrower than
+            float64, which is cast to float64.
+
+    References:
+        :cite:t:`dataapis2021python`.
+    """
+    known_backends = get_args(ArrayBackend.__value__)
+    if backend not in known_backends:
+        raise ValueError(
+            f"unknown array backend {backend!r}; choose one of {known_backends}"
+        )
+    if chunk_size is not None:
+        if isinstance(chunk_size, bool) or not isinstance(chunk_size, int | np.integer):
+            raise TypeError(
+                "chunk_size must be an integer or None, got"
+                f" {type(chunk_size).__name__}"
+            )
+        if chunk_size < 1:
+            raise ValueError(f"chunk_size must be at least 1, got {chunk_size}")
+    rows = to_jax(points)
+    row_count = rows.shape[0]
+    if row_count == 0:
+        raise ValueError("call the function on at least one point, got none")
+    step = row_count if chunk_size is None else int(chunk_size)
+    values: list[Array] = []
+    narrow_dtypes: set[str] = set()
+    for start in range(0, row_count, step):
+        chunk = rows[start : start + step]
+        result = to_jax(function(from_jax(chunk, backend)))
+        dtype = result.dtype
+        if not (
+            jnp.issubdtype(dtype, jnp.floating)
+            or jnp.issubdtype(dtype, jnp.integer)
+            or jnp.issubdtype(dtype, jnp.bool_)
+        ):
+            raise TypeError(f"the function must return real numbers, got dtype {dtype}")
+        if result.shape != (chunk.shape[0],):
+            raise ValueError(
+                f"the function returned shape {result.shape} for a chunk of"
+                f" {chunk.shape[0]} points; it must return shape"
+                f" ({chunk.shape[0]},), one value per point"
+            )
+        if jnp.issubdtype(dtype, jnp.floating) and dtype.itemsize < 8:
+            narrow_dtypes.add(str(dtype))
+        values.append(jnp.asarray(result, dtype=jnp.float64))
+    if narrow_dtypes:
+        warnings.warn(
+            PrecisionWarning(
+                f"cast the function results ({', '.join(sorted(narrow_dtypes))}) to"
+                " float64; the cast cannot restore precision lost before it:"
+                " neighbouring float32 values differ by up to 1.2e-7 of their"
+                " magnitude, and narrower types by more"
+            ),
+            skip_file_prefixes=(_PACKAGE_DIRECTORY,),
+        )
+    return jnp.concatenate(values)
 
 
 def _import_backend(module_name: str) -> ModuleType:

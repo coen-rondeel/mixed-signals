@@ -132,6 +132,14 @@ def test_rows_keep_their_values() -> None:
     assert stored["r_eff"] is None
 
 
+def test_the_delta_method_is_an_uncertainty_method() -> None:
+    """The delta method of the evidence ratio is stored as its text."""
+    assert UncertaintyMethod("delta_method") is UncertaintyMethod.DELTA_METHOD
+    row = comparison_row(uncertainty_method=UncertaintyMethod.DELTA_METHOD)
+    (stored,) = Result.from_rows([row]).table.to_dicts()
+    assert stored["uncertainty_method"] == "delta_method"
+
+
 def test_parquet_round_trips(tmp_path: Path) -> None:
     """A result written to parquet reads back with the same rows and schema."""
     result = Result.from_rows(

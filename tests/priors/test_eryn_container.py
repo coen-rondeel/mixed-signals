@@ -1,5 +1,6 @@
 """Tests for the eryn adapters: spaces, physical transforms and prior densities."""
 
+import inspect
 import math
 import sys
 import textwrap
@@ -702,3 +703,115 @@ def test_prior_meets_the_protocol() -> None:
     prior: PriorDistribution = ErynPrior(sky_priors())
     assert isinstance(prior, PriorDistribution)
     assert prior.rvs(1, key=jax.random.key(0)).shape == (1, 6)
+
+
+# * Prior densities of the physical parameters
+
+AMPLITUDE_RANGE = (1e-23, 1e-21)
+
+
+def amplitude_priors(with_fixed_value: bool = False) -> Any:
+    """Return a log-uniform amplitude and a uniform phase, and maybe a fixed value."""
+    entries: dict[str, Any] = {
+        "ln_amplitude": eryn_priors.LogUniform(
+            *AMPLITUDE_RANGE, name="ln_amplitude", name_phys="amplitude"
+        ),
+        "phase": eryn_priors.UniformDistribution(0.0, TWO_PI),
+    }
+    if with_fixed_value:
+        entries["fixed"] = eryn_priors.DeltaFunction(FIXED_VALUE)
+    return eryn_priors.ProbDistContainer(entries)
+
+
+def test_physical_and_sampling_densities_have_their_closed_forms() -> None:
+    """A log-uniform amplitude has density 1/(A ln(b/a)) in A and 1/ln(b/a) in ln A."""
+    priors = amplitude_priors()
+    amplitude = np.array([3e-23, 2e-22, 8e-22])
+    phase = np.array([0.5, 3.0, 6.0])
+    log_range = math.log(AMPLITUDE_RANGE[1] / AMPLITUDE_RANGE[0])
+    physical = ErynPrior(priors, coordinates="physical").logpdf(
+        np.stack([amplitude, phase], -1)
+    )
+    np.testing.assert_allclose(
+        physical,
+        -np.log(amplitude) - math.log(log_range) - math.log(TWO_PI),
+        rtol=1e-12,
+    )
+    sampling = ErynPrior(priors).logpdf(np.stack([np.log(amplitude), phase], -1))
+    np.testing.assert_allclose(
+        sampling, -math.log(log_range) - math.log(TWO_PI), rtol=1e-12
+    )
+
+
+def test_the_physical_density_moves_with_the_jacobian() -> None:
+    """Physical logpdf is the sampling one minus the transform log-determinant."""
+    priors = sky_priors()
+    transform = ErynPhysical(priors)
+    sampling = jnp.asarray(free_draws(priors).reshape(8, 8, 6))
+    physical = transform.forward(sampling)
+    expected = ErynPrior(priors).logpdf(sampling) - transform.log_abs_det_jacobian(
+        sampling
+    )
+    np.testing.assert_allclose(
+        ErynPrior(priors, coordinates="physical").logpdf(physical),
+        expected,
+        rtol=1e-10,
+    )
+
+
+def test_physical_draws_are_the_physical_map_of_the_sampling_draws() -> None:
+    """With one key, the physical draws equal the transform of the sampling draws."""
+    priors = sky_priors()
+    key = jax.random.key(11)
+    sampling = ErynPrior(priors).rvs((4, 5), key=key)
+    physical = ErynPrior(priors, coordinates="physical").rvs((4, 5), key=key)
+    assert physical.shape == (4, 5, 6)
+    np.testing.assert_allclose(
+        physical, ErynPhysical(priors).forward(sampling), rtol=1e-12
+    )
+
+
+def test_fixed_parameters_stay_out_of_the_physical_densities() -> None:
+    """A DeltaFunction adds no Jacobian term, and its value does not enter samples."""
+    plain, with_fixed_value = amplitude_priors(), amplitude_priors(True)
+    points = jnp.array([[3e-23, 0.5], [8e-22, 6.0]])
+    expected = ErynPrior(plain, coordinates="physical").logpdf(points)
+    prior = ErynPrior(with_fixed_value, coordinates="physical")
+    np.testing.assert_allclose(prior.logpdf(points), expected, rtol=1e-12)
+    draws = prior.rvs(7, key=jax.random.key(2))
+    assert draws.shape == (7, 2)
+    assert bool(jnp.all(jnp.isfinite(prior.logpdf(draws))))
+
+
+def test_the_physical_density_runs_under_jit() -> None:
+    """The adapter's methods compile in both coordinates."""
+    priors = amplitude_priors()
+    points = jnp.array([[3e-23, 0.5], [8e-22, 6.0]])
+    for coordinates in ("sampling", "physical"):
+        prior = ErynPrior(priors, coordinates=coordinates)
+        np.testing.assert_allclose(
+            jax.jit(prior.logpdf)(points), prior.logpdf(points), rtol=1e-12
+        )
+
+
+def test_unknown_coordinates_raise() -> None:
+    """Only the sampling and physical coordinates exist.
+
+    The test session checks the annotation first, so the test calls the
+    unwrapped constructor, as runs without runtime type checks do.
+    """
+    unchecked_init = inspect.unwrap(ErynPrior.__init__)
+    prior = object.__new__(ErynPrior)
+    with pytest.raises(ValueError, match="coordinates must be one of"):
+        unchecked_init(prior, amplitude_priors(), coordinates="cartesian")
+
+
+def test_eryn_without_physical_densities_raises(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An eryn without logpdf_physical cannot give physical densities."""
+    priors = amplitude_priors()
+    monkeypatch.delattr(eryn_priors.ProbDistContainer, "logpdf_physical")
+    with pytest.raises(MissingDependencyError, match="no densities of physical"):
+        ErynPrior(priors, coordinates="physical")
+    assert ErynPrior(priors).coordinates == "sampling"

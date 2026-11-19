@@ -7,7 +7,8 @@ containers, :meth:`ParamSpace.from_eryn_priors
 sampling coordinates, :class:`~mixed_signals.priors.eryn_container.ErynPhysical`
 maps them to physical parameters, and
 :class:`~mixed_signals.priors.eryn_container.ErynPrior` makes a container meet
-the protocol::
+the protocol, in the sampling coordinates or, with ``coordinates="physical"``,
+in the physical ones::
 
     import numpy as np
     from eryn.priors import LogUniform, ProbDistContainer, UniformDistribution
@@ -28,7 +29,11 @@ the protocol::
     physical.map_space(space).names  # ('amplitude', 'phase')
 """
 
-from mixed_signals.priors.eryn_container import ErynPhysical, ErynPrior
+from mixed_signals.priors.eryn_container import (
+    ErynPhysical,
+    ErynPrior,
+    PriorCoordinates,
+)
 from mixed_signals.priors.protocol import PriorDistribution
 
-__all__ = ["ErynPhysical", "ErynPrior", "PriorDistribution"]
+__all__ = ["ErynPhysical", "ErynPrior", "PriorCoordinates", "PriorDistribution"]

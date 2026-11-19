@@ -20,7 +20,7 @@ The implementation is split into twenty focused sessions, numbered 0 to 19. They
 | 10 | Optimal transport | C | 3, 4 | Done (2026-10-25) |
 | 11 | Diagnostics | C | 5, 6 | Done (2026-10-25) |
 | 12 | Nulls and σ | D | 8 | Done (2026-11-18) |
-| 13 | Reweighting | D | 7 | Open |
+| 13 | Reweighting | D | 7 | Done (2026-11-19) |
 | 14 | Engines | E | 8 to 12 | Open |
 | 15 | Data space | E | 4, 9 | Open |
 | 16 | Pipeline and CLI | F | 14 | Open |
@@ -243,6 +243,8 @@ Scope: `reweight/` and its engine function.
 - New priors are `PriorDistribution` objects; eryn containers enter through `ErynPrior`, whose densities are those of eryn's sampling coordinates, the coordinates of the stored `log_prior`. Add densities of the physical parameters, eryn's `logpdf_physical`, when a reweighting needs them.
 - Done when reweighting between zoo Gaussians recovers the analytic target and k̂ flags heavy-tailed weights.
 
+Outcome (2026-11-19): the developers decided eighteen items, now in `DESIGN.md`. `reweight/psis.py` has `pareto_tail_length`, M = ⌊min(0.2S, 3√(S/R))⌋ with R = n_eff/Kish of the input set (Vehtari et al. 2024, Algorithm 1 and Appendix H), `pareto_tail`, the generalized Pareto fit of the M largest weights with the weakly informative shape prior of their Appendix G, which became the keyword `shape_prior` of `sigma.pareto.generalized_pareto_fit`, `pareto_k_threshold`, min(1 − 1/log₁₀ S, 0.7), and `pareto_smooth`, the opt-in smoothing; S counts the samples that keep a positive weight, a flat tail gives k̂ = −∞, and fewer than 25 kept samples give NaN. `reweight/importance.py` has `log_evidence_ratio`, ln Z_new/Z_old with the squared error Σ(ṽ − w̃)²/R, `relative_efficiency` and `reweighted_effective_sample_size`, R times the Kish size of the new weights. `engines/reweight.py` has `reweight`, which takes a new prior as a `PriorDistribution`, new likelihoods as one callable per problem, both called at the boundary in chunks by the new `io.arrays.call_in_chunks`, `proposal="posterior"` or `"approximation"` for draws from q, an optional `transform` and opt-in smoothing, and returns `Reweighting(sample_set, result)` with the rows `pareto_k`, `importance_ess` and `log_evidence_ratio`, whose pair is (source, target) and whose space reads `identity` without a transform; every row of a weight set whose k̂ passes its threshold, or whose fit leaves k̂ undefined, carries an `ImportanceWeightWarning`. `ErynPrior(coordinates="physical")` takes eryn's `logpdf_physical` and `rvs_physical`, `UncertaintyMethod` gained `delta_method` and `transforms.base` the constant `IDENTITY_DESCRIPTION`. Zoo checks found that Gaussian proposals narrower on two axes give exactly Pareto weights with k = 1 − r², on which k̂ recovered the truth within 0.013 at S = 10 000; that one narrowed axis reads low, eight read high and shifts, whose true shape is 0, flag from about 2.5 widths; that the error of ln Z is calibrated up to k ≈ 0.5 and too small above; and that on τ-thinned chains R calibrates it for estimates linear in a parameter and over-corrects for functions of squares. Six checks in `scripts/zoo_validation/reweighting.py` run in the quick test; at the developers' choice the committed page gains them only at its next full build. Later sessions call user code through `io.arrays.call_in_chunks`, write `identity` into the space column of rows without a transform, and compare reweighted sets with the n_eff they carry.
+
 ### 14. Engines
 
 Scope: `engines/` (`compare` and `diagnose`) and the public API in `__init__.py`.
@@ -254,7 +256,9 @@ Scope: `engines/` (`compare` and `diagnose`) and the public API in `__init__.py`
 - Rows of a comparison (session 12a): one `nulls.permutation_null` per comparison, with the `n_eff` of both sets, shared by every metric; `nulls.null_draws` of each statistic; `sigma.significance.null_significance` with `sigma.thresholds.comparison_tail(metric)`; `sigma.maps.null_subtract`, then `sigma_eff` with the row's estimator, or `r_eff`; `sigma.thresholds.verdict` for pass or fail; `NullPlan.recipe()` fills `null_recipe`, and `errors.capture_warnings` puts an `ExtrapolationWarning` into the row. The split-half alternative of mode A takes the approximation's `n_eff`. Take the two-sided p-value of `width_ratio` rows on ln r.
 - kNN rows and the null: the two sides of a draw mix both sets with weights that sum to one per set, so sets of unequal size give sides of unequal weights, which the kNN estimators reject; cut the larger set to the size of the smaller first, as kNN JS does. Resample a weighted set to equal weights inside every null draw, side by side, not before the permutation, which rejected 3 to 7 times too often (session 12a).
 - kNN KL rows need one `sigma.calibration.knn_kl_curve` per comparison and direction, at the row's dimension E + C + 2S, sample counts and k, from a key ending in `"calibration"`; its 28 evaluations belong in the dry run.
-- Re-exports in `__init__.py` go below the float64 switch.
+- Re-exports in `__init__.py` go below the float64 switch; `reweight` and `Reweighting` from `mixed_signals.engines` join the public API.
+- Remove the dead `mean_shift` entry of `sigma.maps.SIGMA_EFF_MAPS` (the developers' choice in session 13): `sigma_eff` returns the value of a mean shift before it reads the maps, so `_shift` never runs. The branch of `nulls.plan._read_set` inside a staging trace is not dead but untested; a plan built inside `jax.jit` takes it.
+- Rows computed without a transform, such as those of `diagnose` on raw samples, read `identity` in the space column (`transforms.base.IDENTITY_DESCRIPTION`, session 13). A reweighted set carries n_eff = R times the Kish size of its weights, so the side size of the null keeps the chain correlation.
 - One whitening per problem through `jax.vmap` of `Whitening.from_samples` (the reference posterior in mode A, the two posteriors of each pair in mode B) or `from_fisher`, with its `description` in the space column. Traced whitenings do not warn, so rebuild a NaN one concretely to capture its `ValidityWarning` in the rows of its problem.
 - Per-parameter rows run on both inputs z-scored by their shared whitening (`decorrelate=False`), joint rows in the decorrelated whitening: the session 8 kernels compute in the coordinates they receive. Fit the marginal KDEs with one `shared_bandwidth_factor` per comparison, reuse it in every null draw, and write `KernelDensitySettings(bandwidth=factor).to_json()` into the rows; the factor is a static setting, so the null draws of one comparison map with `jax.vmap`, while problems with different factors run one by one. `ks_metric_names` names each KS or Kuiper row.
 - Build the space of each problem with `Whitening.map_space`: circles carry their period P/s and spheres their radius 1/s, which every distance-based metric reads.
@@ -267,7 +271,7 @@ Scope: `engines/` (`compare` and `diagnose`) and the public API in `__init__.py`
 Scope: `generators/`, `dataspace/` and the data-space engine function.
 
 - The minimal generator protocol that data space needs (`generate_template` and a noise model), with capability checks. The full generator contract stays deferred.
-- User code is called at the boundary in chunks, with DLPack hand-off on GPU; it may be CuPy or PyTorch.
+- User code is called at the boundary in chunks, with DLPack hand-off on GPU; it may be CuPy or PyTorch. Session 13 built `io.arrays.call_in_chunks` for this: it hands chunks of rows to a function as arrays of a chosen library, checks the shape of each result and casts it to float64.
 - Energy distance with a noise-weighted inner product supplied by the caller, through the weighted V-statistic of `metrics/kernel.py` (session 9), and Fisher-whitened parameter distances when a Fisher matrix is available, through `Whitening.from_fisher`, which needs a positive-definite Γ (rank truncation is deferred); σ_eff from the energy-distance curve, valid at linear order.
 - Reference only: `estimate_distances.py` in catpylisa's `common_tools.utils` module (waveform distances with JaxGB). The catpylisa team wrote it, so read it rather than port it.
 - Done when a toy generator gives distances in noise-σ units that match the linear-order Fisher prediction.
@@ -289,6 +293,7 @@ Scope: `report/`.
 - A generated marimo notebook that runs as a script and exports to HTML.
 - Contents: the σ_eff, r_eff and σ_sig summary table, cantuccio corner overlays with contours from the metric estimators, null histograms from the stored null draws, and diagnostics, with their flags from `diagnostics.flags.evaluate`.
 - A plot of the Sinkhorn divergence against ε, from the curve that `sinkhorn_divergence` returns for a vector of ε, with the null band per ε of session 12.
+- Reweighting rows flag through the `ImportanceWeightWarning` in their warnings column, since the k̂ threshold depends on the number of draws; the `pareto_k` row stores S, M and R in its settings, and `importance_ess` rows are informational.
 - Pass `KernelDensity.resolved_settings().bandwidth` to cantuccio as its `bandwidth`, which reproduces the estimate away from bounds (tested in session 6). cantuccio neither reflects nor corrects at bounds, so near an interval bound draw the contours from `KernelDensity.log_density` on a grid.
 - Done when the example pipeline produces a report that renders.
 
@@ -302,7 +307,8 @@ Scope: `gw/`, with a `gw` extra if it needs new dependencies.
 ### 19. Release readiness
 
 - A Sphinx user guide and API pages, the validation page, and marimo examples in `examples/`.
-- The GPU suite on the cluster with a single GPU, and a performance check.
+- The next full build of the validation page, whichever session runs it, adds the six reweighting checks of session 13; then link the docstrings that name `scripts/zoo_validation/reweighting.py` to their sections instead.
+- The GPU suite on the cluster with a single GPU, and a performance check. It includes `reweight`, whose `pareto_tail` compiles once per distinct tail length, so a batch of MCMC sets with different relative efficiencies compiles once per set; the developers accepted this in session 13.
 - Benchmark `SAMPLE_CAP` per metric. At the cap, one kNN JS evaluation took 9.5 s and one MMD² evaluation 0.3 s on one CPU (session 9); the developers kept one cap for now, because it is easy to tune.
 - Release blockers: reserve `mixed-signals` on PyPI, wait for eryn to release its JAX-compatible prior setup, now on its `feat-jaxpriors` branch, and wait for an ott-jax release with the fix of its online mode (ott-jax pull request 701), now pinned at a commit of its main branch, because a published package cannot depend on git sources.
 - Done when version 0.1.0 can be published.

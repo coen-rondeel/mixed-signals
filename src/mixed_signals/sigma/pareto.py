@@ -21,10 +21,14 @@ Support bound
     of Peschel et al. 2026). A tail p-value at a value beyond the largest
     excess then never falls to zero.
 Prior
-    No weakly informative prior on the shape is added. Pareto smoothed
-    importance sampling adds one, which shrinks ξ towards 0.5 when few
-    excesses are available (Vehtari et al. 2024). The fit here is the plain
-    estimator, so a caller that wants the shrinkage has to add it.
+    The estimator is plain by default. With ``shape_prior=True``, the fit adds
+    the weakly informative prior of Pareto smoothed importance sampling
+    (Vehtari et al. 2024, Appendix G), which shrinks ξ towards 0.5 when few
+    excesses are available: ξ ← (L ξ + 10 · 0.5)/(L + 10) for L valid excesses.
+    The scale comes from the plain shape, before the shrinkage, as in
+    ``gpdfit`` of the posterior R package (Bürkner et al. 2026). The tail fit
+    of the nulls in :mod:`mixed_signals.sigma.significance` uses the plain
+    estimator; importance weights use the prior.
 Masks
     A mask of valid excesses lets a function fit tails of different sizes at
     one static array length, under :func:`jax.jit` and :func:`jax.vmap`. The
@@ -33,7 +37,7 @@ Masks
 References:
     :cite:t:`zhang2009new`; :cite:t:`pickands1975statistical`;
     :cite:t:`knijnenburg2009fewer`; :cite:t:`peschel2026permapprox`;
-    :cite:t:`vehtari2024pareto`.
+    :cite:t:`vehtari2024pareto`; :cite:t:`burkner2026posterior`.
 """
 
 import math
@@ -55,14 +59,28 @@ _GRID_BASE: Final = 30
 _QUARTILE_SCALE: Final = 3
 """Width of the θ grid in units of the first quartile; the estimator's own constant."""
 
+# * Weight and centre of the weakly informative prior on ξ, from Vehtari et al. (2024).
+_PRIOR_WEIGHT: Final = 10
+"""Number of pseudo-excesses that the shape prior carries."""
+
+_PRIOR_CENTRE: Final = 0.5
+"""Value of ξ that the shape prior shrinks towards."""
+
 
 def _jit[**Parameters, Result](
-    function: Callable[Parameters, Result], *static_names: str
-) -> Callable[Parameters, Result]:
+    *static_names: str,
+) -> Callable[[Callable[Parameters, Result]], Callable[Parameters, Result]]:
     """Compile a kernel with :func:`jax.jit` and keep its signature for type checks."""
-    return cast(
-        Callable[Parameters, Result], jax.jit(function, static_argnames=static_names)
-    )
+
+    def decorate(
+        function: Callable[Parameters, Result],
+    ) -> Callable[Parameters, Result]:
+        return cast(
+            Callable[Parameters, Result],
+            jax.jit(function, static_argnames=static_names),
+        )
+
+    return decorate
 
 
 class ParetoFit(NamedTuple):
@@ -74,12 +92,13 @@ class ParetoFit(NamedTuple):
     """The scale σ, in the units of the excesses."""
 
 
-@_jit
+@_jit("shape_prior")
 def generalized_pareto_fit(
     excesses: Float[ArrayLike, " draw"],
     valid: Bool[ArrayLike, " draw"] | None = None,
     *,
     bound: Float[ArrayLike, ""] | None = None,
+    shape_prior: bool = False,
 ) -> ParetoFit:
     """Fit a generalized Pareto distribution to excesses over a threshold.
 
@@ -93,14 +112,19 @@ def generalized_pareto_fit(
         bound: A value that the end point of the fitted support must exceed,
             in the units of the excesses; ``None`` for no constraint. It may
             be traced.
+        shape_prior: Whether to shrink ξ towards 0.5 with the weakly
+            informative prior of Pareto smoothed importance sampling, ξ ←
+            (L ξ + 5)/(L + 10) for L valid excesses, after the scale has been
+            computed from the plain shape. Static under :func:`jax.jit`.
 
     Returns:
         The shape ξ and scale σ; both NaN if fewer than five excesses are
         valid, the quartile excess is not positive, or the profile likelihood
-        is not finite on the whole grid.
+        is not finite on the whole grid, with or without the prior.
 
     References:
-        :cite:t:`zhang2009new`; :cite:t:`peschel2026permapprox`.
+        :cite:t:`zhang2009new`; :cite:t:`peschel2026permapprox`;
+        :cite:t:`vehtari2024pareto`; :cite:t:`burkner2026posterior`.
     """
     values = jnp.asarray(excesses, dtype=jnp.float64)
     length = values.shape[0]
@@ -130,6 +154,12 @@ def generalized_pareto_fit(
     theta_mean = jnp.sum(jnp.where(finite, weights * theta, 0.0))
     shape = jnp.sum(jnp.log1p(-theta_mean * kept)) / count
     scale = -shape / theta_mean
+    if shape_prior:
+        # * The scale above used the plain shape, as gpdfit of the posterior R
+        # * package does.
+        shape = (count * shape + _PRIOR_WEIGHT * _PRIOR_CENTRE) / (
+            count + _PRIOR_WEIGHT
+        )
     usable = (count >= _MINIMUM_EXCESSES) & (quartile > 0) & jnp.any(finite)
     return ParetoFit(
         shape=jnp.where(usable, shape, jnp.nan),
@@ -137,7 +167,7 @@ def generalized_pareto_fit(
     )
 
 
-@_jit
+@_jit()
 def generalized_pareto_log_survival(
     excess: Float[ArrayLike, "..."],
     shape: Float[ArrayLike, "..."],
