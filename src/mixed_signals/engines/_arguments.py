@@ -1,21 +1,21 @@
-"""Argument reading of the engines ``compare`` and ``diagnose``, and the recipe table.
+"""Argument reading of the engines ``compare``, ``diagnose`` and ``compare_signals``.
 
 The engines and their dry-run estimates read and check the same arguments, so
 the code lives here: the recipes of ``compare`` with their families and
 settings (:data:`RECIPES`, :data:`DEFAULT_METRICS`), the checks of the
-arguments of ``compare`` (:func:`read_compare_arguments`) and of ``diagnose``
-(:func:`read_diagnose_arguments`, with :data:`DIAGNOSTIC_FAMILIES`), and the
-shared checks of counts and numbers. The module imports no engine, so that the
-dry-run estimates import it without a cycle. It is private: its names may
-change with the engines, and the public constants are re-exported by the
-engine modules.
+arguments of ``compare`` (:func:`read_compare_arguments`), of ``diagnose``
+(:func:`read_diagnose_arguments`, with :data:`DIAGNOSTIC_FAMILIES`) and of
+``compare_signals`` (:func:`read_signal_arguments`), and the shared checks of
+counts and numbers. The module imports no engine, so that the dry-run
+estimates import it without a cycle. It is private: its names may change with
+the engines, and the public constants are re-exported by the engine modules.
 """
 
 import math
 from collections.abc import Mapping, Sequence
 from enum import StrEnum
 from types import MappingProxyType
-from typing import Final, NamedTuple
+from typing import Any, Final, NamedTuple
 
 import jax.numpy as jnp
 from jaxtyping import Array, PRNGKeyArray
@@ -35,6 +35,8 @@ from mixed_signals.engines._common import (
     read_key,
     unique_names,
 )
+from mixed_signals.generators.capabilities import Capability, require_capabilities
+from mixed_signals.io.arrays import ArrayBackend
 from mixed_signals.metrics.classifier import _DEFERRED
 from mixed_signals.metrics.marginal import ks_metric_names
 from mixed_signals.nulls.plan import Construction
@@ -227,16 +229,7 @@ def read_compare_arguments(
     half_sample_count = read_count("half_samples", half_samples, 1)
     cap_count = read_count("cap", cap, 2)
     factors = _read_factors(sinkhorn_epsilon_factors)
-    if not isinstance(uncertainty, str):
-        raise TypeError(
-            f"uncertainty must be a string, got {type(uncertainty).__name__}"
-        )
-    method = UncertaintyMethod(uncertainty)
-    if method is UncertaintyMethod.DELTA_METHOD:
-        raise ValueError(
-            "uncertainty must be 'null_std' or 'subsampling_bootstrap'; the delta"
-            " method is the error of the evidence ratio of reweighting"
-        )
+    method = _read_uncertainty(uncertainty)
     row_space = space if transform is None else transform.map_space(space)
     _check_thresholds(thresholds, recipes, row_space)
     level_value = read_number("level", level)
@@ -269,6 +262,132 @@ def read_compare_arguments(
         thresholds=thresholds,
         level=level_value,
         budget=budget_value,
+        root=root,
+        seed=seed,
+        config_hash=config_hash,
+    )
+
+
+class SignalArguments(NamedTuple):
+    """The arguments of ``compare_signals`` after their checks, as the engine reads."""
+
+    posteriors: tuple[Posterior, ...]
+    space: ParamSpace
+    """The space of the rows: mapped by the transform."""
+    transform_text: str | None
+    reference: int | None
+    construction: Construction
+    generators: tuple[Any, ...]
+    """One signal generator per problem."""
+    noises: tuple[Any, ...]
+    """One noise model per problem."""
+    fisher: Array | None
+    """Fisher matrices shaped (B, D, D) in the row coordinates, from the arrays."""
+    centre: Array | None
+    """Centres shaped (B, D) in the row coordinates; ``None`` without Fisher rows."""
+    fisher_source: str | None
+    """``"array"``, ``"information_matrix"`` or ``None`` for no Fisher rows."""
+    draws: int
+    cap: int
+    uncertainty: UncertaintyMethod
+    half_samples: int
+    thresholds: Mapping[str, float]
+    level: float
+    budget: float
+    backend: ArrayBackend
+    chunk_size: int | None
+    root: PRNGKeyArray
+    seed: int | None
+    config_hash: str | None
+
+
+def read_signal_arguments(
+    sample_sets: object,
+    names: object,
+    space: ParamSpace,
+    *,
+    generator: object,
+    noise: object,
+    key: object,
+    reference: object,
+    fisher: object,
+    centre: object,
+    transform: Transform | None,
+    null: object,
+    draws: object,
+    cap: object,
+    uncertainty: object,
+    half_samples: object,
+    thresholds: object,
+    level: object,
+    budget: object,
+    backend: ArrayBackend,
+    chunk_size: int | None,
+    config_hash: str | None,
+) -> SignalArguments:
+    """Check every argument of ``compare_signals`` and return them for the engine."""
+    posteriors = gather_posteriors(sample_sets, names, space, transform=transform)
+    if len(posteriors) < 2:
+        raise ValueError(
+            f"a comparison needs at least two posteriors, got {len(posteriors)}"
+        )
+    posterior_names = [posterior.name for posterior in posteriors]
+    reference_index = _read_reference(reference, posterior_names)
+    construction = _read_null(null, reference_index)
+    draw_count = read_count("draws", draws, 1)
+    half_sample_count = read_count("half_samples", half_samples, 1)
+    cap_count = read_count("cap", cap, 2)
+    method = _read_uncertainty(uncertainty)
+    row_space = space if transform is None else transform.map_space(space)
+    _check_thresholds(thresholds, ("energy:empirical",), row_space)
+    level_value = read_number("level", level)
+    if not math.isfinite(level_value):
+        raise ValueError(f"level must be finite, got {level_value}")
+    budget_value = read_number("budget", budget)
+    if not budget_value > 0:
+        raise ValueError(f"budget must be positive, got {budget_value}")
+    batch_count = posteriors[0].samples.shape[0]
+    generators = _read_per_problem("generator", generator, batch_count)
+    noises = _read_per_problem("noise", noise, batch_count)
+    for each_generator in generators:
+        require_capabilities(
+            each_generator,
+            [Capability.TEMPLATES],
+            engine="compare_signals",
+            role="generator",
+        )
+    for each_noise in noises:
+        require_capabilities(
+            each_noise,
+            [Capability.WHITEN],
+            engine="compare_signals",
+            role="noise model",
+        )
+    fisher_array, centre_array, fisher_source = _read_signal_fisher(
+        fisher, centre, batch_count, len(space), transform, generators
+    )
+    root, seed = read_key(key)
+    assert isinstance(thresholds, Mapping)
+    return SignalArguments(
+        posteriors=posteriors,
+        space=row_space,
+        transform_text=None if transform is None else transform.description,
+        reference=reference_index,
+        construction=construction,
+        generators=generators,
+        noises=noises,
+        fisher=fisher_array,
+        centre=centre_array,
+        fisher_source=fisher_source,
+        draws=draw_count,
+        cap=cap_count,
+        uncertainty=method,
+        half_samples=half_sample_count,
+        thresholds=thresholds,
+        level=level_value,
+        budget=budget_value,
+        backend=backend,
+        chunk_size=chunk_size,
         root=root,
         seed=seed,
         config_hash=config_hash,
@@ -354,6 +473,21 @@ def read_number(name: str, value: object) -> float:
     return float(value)
 
 
+def _read_uncertainty(uncertainty: object) -> UncertaintyMethod:
+    """Return the method of the uncertainty column: the null spread or the bootstrap."""
+    if not isinstance(uncertainty, str):
+        raise TypeError(
+            f"uncertainty must be a string, got {type(uncertainty).__name__}"
+        )
+    method = UncertaintyMethod(uncertainty)
+    if method is UncertaintyMethod.DELTA_METHOD:
+        raise ValueError(
+            "uncertainty must be 'null_std' or 'subsampling_bootstrap'; the delta"
+            " method is the error of the evidence ratio of reweighting"
+        )
+    return method
+
+
 def _read_factors(factors: object) -> tuple[float, ...]:
     """Return the Sinkhorn ε factors: distinct, positive and finite numbers."""
     if isinstance(factors, str) or not isinstance(factors, Sequence) or not factors:
@@ -382,28 +516,82 @@ def _read_fisher(
     if fisher is None or centre is None:
         return None, None
     fisher_array = jnp.asarray(fisher, dtype=jnp.float64)
-    centre_array = jnp.asarray(centre, dtype=jnp.float64)
     if batch_count == 1 and fisher_array.shape == (param_count, param_count):
         fisher_array = fisher_array[None]
-    if batch_count == 1 and centre_array.shape == (param_count,):
-        centre_array = centre_array[None]
     if fisher_array.shape != (batch_count, param_count, param_count):
         raise ValueError(
             f"fisher must be shaped ({batch_count}, {param_count}, {param_count}),"
             f" or ({param_count}, {param_count}) for one problem, got shape"
             f" {fisher_array.shape}"
         )
-    if centre_array.shape != (batch_count, param_count):
-        raise ValueError(
-            f"centre must be shaped ({batch_count}, {param_count}), or"
-            f" ({param_count},) for one problem, got shape {centre_array.shape}"
-        )
+    centre_array = _read_centres(centre, batch_count, param_count)
     if transform is None:
         return fisher_array, centre_array
     # * The Jacobian is taken at the centre in the input coordinates.
     return transform.map_fisher(fisher_array, centre_array), transform.forward(
         centre_array
     )
+
+
+def _read_centres(centre: object, batch_count: int, param_count: int) -> Array:
+    """Return the centres shaped (B, D), in the coordinates of the input."""
+    centre_array = jnp.asarray(centre, dtype=jnp.float64)
+    if batch_count == 1 and centre_array.shape == (param_count,):
+        centre_array = centre_array[None]
+    if centre_array.shape != (batch_count, param_count):
+        raise ValueError(
+            f"centre must be shaped ({batch_count}, {param_count}), or"
+            f" ({param_count},) for one problem, got shape {centre_array.shape}"
+        )
+    return centre_array
+
+
+def _read_per_problem(
+    argument: str, value: object, batch_count: int
+) -> tuple[Any, ...]:
+    """Return one object for every problem: the one given, or one of a sequence of B."""
+    if isinstance(value, Sequence) and not isinstance(value, str):
+        if len(value) != batch_count:
+            raise ValueError(
+                f"{argument} holds {len(value)} objects for {batch_count} problems;"
+                " pass one object for every problem, or one per problem"
+            )
+        return tuple(value)
+    return (value,) * batch_count
+
+
+def _read_signal_fisher(
+    fisher: object,
+    centre: object,
+    batch_count: int,
+    param_count: int,
+    transform: Transform | None,
+    generators: Sequence[object],
+) -> tuple[Array | None, Array | None, str | None]:
+    """Return the Fisher matrices, the centres and where the matrices come from.
+
+    The matrices come from ``fisher`` with ``centre``, or from the generators
+    with ``centre`` alone; no centre gives no Fisher rows.
+    """
+    if centre is None:
+        if fisher is not None:
+            raise ValueError("fisher needs centre=")
+        return None, None, None
+    if fisher is not None:
+        fisher_array, centre_array = _read_fisher(
+            fisher, centre, batch_count, param_count, transform
+        )
+        return fisher_array, centre_array, "array"
+    centre_array = _read_centres(centre, batch_count, param_count)
+    for each_generator in generators:
+        require_capabilities(
+            each_generator,
+            [Capability.FISHER],
+            engine="compare_signals",
+            role="generator",
+        )
+    mapped = centre_array if transform is None else transform.forward(centre_array)
+    return None, mapped, "information_matrix"
 
 
 def select_recipes(metrics: object) -> tuple[str, ...]:

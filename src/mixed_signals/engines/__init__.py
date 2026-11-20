@@ -1,8 +1,8 @@
-"""SampleSet-level engines: ``compare``, ``diagnose``, ``reweight`` and their dry run.
+"""SampleSet-level engines: ``compare``, ``diagnose``, ``reweight`` and data space.
 
 The engines are plain functions that take samples and a parameter space and
-return a result table, alone or with the objects it describes; ``compare`` and
-``diagnose`` also take a PRNG key or an integer seed.
+return a result table, alone or with the objects it describes; ``compare``,
+``diagnose`` and ``compare_signals`` also take a PRNG key or an integer seed.
 
 :func:`~mixed_signals.engines.compare.compare`
     Compares pairs of posteriors, from one set or several, in mode A (the
@@ -21,11 +21,18 @@ return a result table, alone or with the objects it describes; ``compare`` and
     Reweights samples to a new prior, a new likelihood or the target of an
     approximation, with the rows ``pareto_k``, ``importance_ess`` and
     ``log_evidence_ratio``.
+:func:`~mixed_signals.engines.dataspace.compare_signals`
+    Compares pairs of posteriors through the signals that they imply: the
+    energy distance of the templates of a generator, whitened by a noise model,
+    exact through one distance matrix per pair, with a null, σ_sig and σ_eff,
+    and, with a Fisher matrix, the energy distance in the joint Fisher chart.
 Dry run
-    :func:`~mixed_signals.engines.cost.estimate_compare_cost` and
-    :func:`~mixed_signals.engines.cost.estimate_diagnose_cost` give the estimated
-    evaluations and seconds of a call, from counts and shapes only. ``compare``
-    and ``diagnose`` call the estimate first and raise a
+    :func:`~mixed_signals.engines.cost.estimate_compare_cost`,
+    :func:`~mixed_signals.engines.cost.estimate_diagnose_cost` and
+    :func:`~mixed_signals.engines.cost.estimate_compare_signals_cost` give the
+    estimated evaluations and seconds of a call, from counts and shapes only; the
+    data-space estimate also probes the generator on one sample. ``compare``,
+    ``diagnose`` and ``compare_signals`` call the estimate first and raise a
     :class:`~mixed_signals.errors.CostWarning` above their ``budget``,
     :data:`COST_BUDGET` by default.
 """
@@ -35,8 +42,10 @@ from mixed_signals.engines.compare import DEFAULT_METRICS, RECIPES, compare
 from mixed_signals.engines.cost import (
     CostEstimate,
     estimate_compare_cost,
+    estimate_compare_signals_cost,
     estimate_diagnose_cost,
 )
+from mixed_signals.engines.dataspace import compare_signals
 from mixed_signals.engines.diagnose import DIAGNOSTIC_FAMILIES, Diagnosis, diagnose
 from mixed_signals.engines.reweight import (
     TARGET_SUFFIX,
@@ -56,8 +65,10 @@ __all__ = [
     "Proposal",
     "Reweighting",
     "compare",
+    "compare_signals",
     "diagnose",
     "estimate_compare_cost",
+    "estimate_compare_signals_cost",
     "estimate_diagnose_cost",
     "reweight",
 ]

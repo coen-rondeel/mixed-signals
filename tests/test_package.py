@@ -16,7 +16,7 @@ from mixed_signals.core.chains import Chains
 from mixed_signals.core.result import Result
 from mixed_signals.core.samples import SampleSet
 from mixed_signals.core.space import ParamSpace
-from mixed_signals.engines import compare, diagnose, reweight
+from mixed_signals.engines import compare, compare_signals, diagnose, reweight
 from mixed_signals.engines.reweight import Reweighting
 from mixed_signals.mcmc.reduce import reduce_chains
 from mixed_signals.prng import root_key
@@ -66,6 +66,7 @@ def test_the_main_objects_are_exported_at_the_top_level() -> None:
         "reduce_chains": reduce_chains,
         "diagnose": diagnose,
         "compare": compare,
+        "compare_signals": compare_signals,
         "reweight": reweight,
         "Reweighting": Reweighting,
         "root_key": root_key,
@@ -78,15 +79,17 @@ def test_the_main_objects_are_exported_at_the_top_level() -> None:
 
 
 def test_the_engines_package_exports_the_engines_and_their_constants() -> None:
-    """compare, diagnose, reweight, their constants and the dry run."""
+    """compare, compare_signals, diagnose, reweight, their constants and the dry run."""
     names = {
         "compare",
+        "compare_signals",
         "DEFAULT_METRICS",
         "RECIPES",
         "diagnose",
         "Diagnosis",
         "DIAGNOSTIC_FAMILIES",
         "estimate_compare_cost",
+        "estimate_compare_signals_cost",
         "estimate_diagnose_cost",
         "CostEstimate",
         "COST_BUDGET",

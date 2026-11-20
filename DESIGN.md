@@ -49,7 +49,7 @@ In v1:
 
 ## Decisions so far
 
-The developers have agreed 289 decisions: 88 from rounds 1–8, the repository setup and the design close-out, 7 from roadmap session 1 (Foundations), 7 from roadmap session 2 (Sample containers) and 14 from roadmap session 3 (Validation zoo), all on 2026-10-13, and 14 from roadmap session 4 (Transforms and whitening), 12 from roadmap session 5 (MCMC tools) and 16 from roadmap session 6 (Estimators), all three on 2026-10-14, 14 from roadmap session 7 (eryn adapters and priors), taken on 2026-10-14 and 2026-10-24, 14 from roadmap session 8 (Metrics I: moments and marginals), on 2026-10-24, and 10 from roadmap session 9 (Metrics II: divergences, kernels and classifiers), 14 from roadmap session 10 (Optimal transport) and 16 from roadmap session 11 (Diagnostics), all three on 2026-10-25, 12 from the first part of roadmap session 12 (Nulls and σ), on 2026-11-16, 5 from its second part, on 2026-11-17, 18 from roadmap session 13 (Reweighting), on 2026-11-18, and 28 from roadmap session 14 (Engines), on 2026-11-19 and 2026-11-20.
+The developers have agreed 304 decisions: 88 from rounds 1–8, the repository setup and the design close-out, 7 from roadmap session 1 (Foundations), 7 from roadmap session 2 (Sample containers) and 14 from roadmap session 3 (Validation zoo), all on 2026-10-13, and 14 from roadmap session 4 (Transforms and whitening), 12 from roadmap session 5 (MCMC tools) and 16 from roadmap session 6 (Estimators), all three on 2026-10-14, 14 from roadmap session 7 (eryn adapters and priors), taken on 2026-10-14 and 2026-10-24, 14 from roadmap session 8 (Metrics I: moments and marginals), on 2026-10-24, and 10 from roadmap session 9 (Metrics II: divergences, kernels and classifiers), 14 from roadmap session 10 (Optimal transport) and 16 from roadmap session 11 (Diagnostics), all three on 2026-10-25, 12 from the first part of roadmap session 12 (Nulls and σ), on 2026-11-16, 5 from its second part, on 2026-11-17, 18 from roadmap session 13 (Reweighting), on 2026-11-18, 28 from roadmap session 14 (Engines), on 2026-11-19 and 2026-11-20, and 15 from roadmap session 15 (Data space), on 2026-11-20.
 
 | Topic | Decision |
 | --- | --- |
@@ -69,10 +69,10 @@ The developers have agreed 289 decisions: 88 from rounds 1–8, the repository s
 | Backend | JAX is a hard dependency; converters to and from NumPy, CuPy and PyTorch |
 | Precision | float64 by default, enabled at import |
 | Randomness | Every stochastic function takes an explicit JAX PRNG key; pipelines derive all keys from one config seed |
-| Generators | Batched, backend-agnostic interfaces wrapping user code; full contract benched |
+| Generators | Batched, backend-agnostic interfaces wrapping user code; full contract benched. Data space defines `generate_template`, the optional `information_matrix(θ, noise=)` and a noise model with `whiten` (session 15) |
 | Gradients | JAX generators use `jax.grad` of `get_ll`; CuPy or PyTorch generators supply `get_ll_grad` |
-| Fisher matrix | `information_matrix` returns (N, D, D) |
-| Noise | Set at generator initialization, or passed as a kwarg |
+| Fisher matrix | `information_matrix(θ, noise=)` returns (N, D, D) for the noise model it receives |
+| Noise | Set at generator initialization, or passed as a kwarg; data space takes a `NoiseModel` with `whiten(signals)` and passes it to `information_matrix` as `noise=` |
 | `get_swap_ll` | Dropped |
 | Priors | Separate objects, using eryn's JAX-compatible prior setup from its feat-jaxpriors branch |
 | eryn release | eryn's JAX-compatible prior setup is headed for release; until then, development pins the uv git source lisa-analysis-tools/Eryn at feat-jaxpriors, pushed on 2026-11-20 and locked at commit aae1549 (see Open questions) |
@@ -323,7 +323,7 @@ The developers have agreed 289 decisions: 88 from rounds 1–8, the repository s
 | Transforms in the engines | `compare` and `diagnose` take `transform=`; `compare` whitens after it, so the space column reads "physical(eryn) \| whiten(pooled)"; chain-health rows stay in the coordinates of the chains and read `identity` |
 | Verdict columns | The result gains `threshold` (Float64), the threshold that a row's effect size met, default or override, and `flag` (Boolean), whether a comparison row fails or a diagnostic row flags; both are null on rows without a threshold |
 | Recipe tail | `null_recipe` gains `tail`, `upper` or `two_sided`, the side of the row's p-value |
-| Public API | `import mixed_signals` re-exports `ParamSpace`, `SampleSet`, `Chains`, `Result`, `reduce_chains`, `diagnose`, `compare`, `reweight`, `Reweighting` and `root_key` |
+| Public API | `import mixed_signals` re-exports `ParamSpace`, `SampleSet`, `Chains`, `Result`, `reduce_chains`, `diagnose`, `compare`, `reweight`, `Reweighting` and `root_key`, and since session 15 `compare_signals` |
 | Sphere axes in per-parameter rows | The z-score of per-parameter rows treats a sphere's azimuth as a circle and its polar axis as an interval, so their mean shifts and W1 come in widths, not radians; joint rows keep the sphere with radius 1/s |
 | Whitening construction | Eager, per problem and comparison, so the warning of a singular whitening lands in its rows directly; those rows read NaN and the other problems go on. Replaces a `jax.vmap` over problems |
 | Seeds | `key=` takes a PRNG key or an integer seed; a seed becomes `root_key(seed)` and fills the provenance seed; `config_hash=` serves the pipeline |
@@ -342,6 +342,21 @@ The developers have agreed 289 decisions: 88 from rounds 1–8, the repository s
 | W2 shape in a pooled frame | The W2 shape term is the only shape term that depends on the frame. In a pooled whitening the whitened covariances sum to 2I, so a width ratio r along one axis gives g = √2 · \|r − 1\|/√(1 + r²), and `sigma.maps.r_eff(..., pooled=True)` returns its root, (1 + g√(1 − g²/4))/(1 − g²/2) or the reciprocal; `compare` sets it from the whitening source. The reference map had read 1.21 in mode B for a true 1.25. A Fisher whitening keeps the reference map |
 | Cost claim | The costs check times every statistic of the model at (3 000, 16), (10 000, 2), (10 000, 8) and (10 000, 16) samples per set and parameters, and claims a factor of at most 1.5 for those that run per null draw or surrogate and take at least 10 ms (worst 1.33, the Sinkhorn divergence). The Anderson-Darling distance, whose 2 to 5 ms are mostly a fixed cost (factor 2.14), and the GMM-BIC fit, once per posterior (1.52), stay in the table unchecked |
 | Stub deprecations | Pre-commit and CI run ty's `deprecated` rule alone (`ty check --ignore all --error deprecated`, with ty ≥ 0.0.107 in the lint group), because mypy reverts some typeshed deprecations in its own stubs, such as `contextmanager` on a function annotated `-> Iterator[...]`. Strict mypy stays the type checker, and the rule selection stays on the command line, so an editor keeps all of ty's findings |
+| Data-space computation | Exact: one pooled Euclidean distance matrix of the whitened templates per pair, from the Gram matrix of the rows centred on their mean (Chan, Golub and LeVeque 1983); the observed energy distance, every null draw and every half-sample are weighted sums over it, evaluated as matrix products (`metrics.kernel.energy_distance_from_distances`). It matched the energy kernel to 3e-14. With M = 4 000 data entries one matrix took 0.3, 1.9 and 8.1 s at 2 000, 5 000 and 10 000 samples per posterior, and 200 null draws 0.03, 0.2 and 0.75 s, where the energy kernel on full templates takes about 60 s per evaluation at the cap. The matrix needs 8P² bytes for P pooled samples, 3.2 GB at the cap, and is filled in place block by block: a call at P = 20 000 added 3.2 GB to the peak memory of the process, against 6.4 GB for a stack of padded blocks. A projection onto principal components, within 1e-4 to 1e-9 of the full value from rank 6 to 10 on a toy sinusoid, was not adopted |
+| Data-space cap | `cap=`, `SAMPLE_CAP` by default: each posterior of a problem drops its zero-weight samples and is capped once, uniformly without replacement, before its templates are generated; its pairs reuse the templates, and both rows of a pair share the capped samples, the null plan and the half-samples |
+| Capped effective size | The null sides of a capped set take n_m = K_m/(1 + (K_m − 1)ρ̄) with ρ̄ = (K/n − 1)/(K − 1), Kish's design effect of a random subsample of a correlated set (`core.samples.subsample_effective_size`), in data space only; a subset whose Kish size exceeds that of the set, as when it leaves out a heavy sample, takes K_m = K. On AR(1) chains with φ of 0.135 and 0.3 (n_eff/N of 0.76 and 0.54, N = 12 000, caps 2 000 to 12 000, 20 000 replicates) it rejected 4.69 to 5.34% at the 5% level (binomial error 0.15%), against 1.15 to 4.56% where the cap acts when the sides kept the ratio m·n_eff/N, and 5.75 to 15.11% when they ignored the correlation |
+| Noise model | `generators.NoiseModel.whiten(signals)` returns real vectors (n, M) whose dot products are the noise-weighted inner products, whiten(a)·whiten(b) = ⟨a\|b⟩ (Finn 1992; Cutler and Flanagan 1994); templates are whitened in the caller's library chunk by chunk, so only real rows cross into JAX. An optional string attribute `description` names the model in the space column |
+| Generator protocol | `SignalGenerator.generate_template(θ)` returns signals (n, ...) in the data domain, real or complex, on one data grid per problem; the optional `FisherGenerator.information_matrix(θ, noise=)` returns (n, D, D) for the noise model that the engine passes; `generators.capabilities` and `require_capabilities` raise `CapabilityError` for a missing method before any call; `get_ll` and `get_ll_grad` stay benched |
+| Generators per problem | One generator and one noise model for every problem, or a sequence of B of each, for problems with their own signal models or noise |
+| Data-space rows | Per pair an `energy` row of the whitened templates, space `data(<description>)` or `data`, and with a Fisher matrix an `energy` row in the Fisher chart, space `chart(fisher)`; estimator `empirical`, every parameter, settings `{"data_size": M}` and `{"fisher": "array"}` or `"information_matrix"`; σ_eff from the energy curve with D parameters for both, in noise σ at linear order |
+| Fisher input of data space | `fisher=` with `centre=`, as `compare` takes them, or `centre=` alone with the generator's `information_matrix`, both mapped by the transform; neither gives no Fisher row |
+| Fisher chart | `dataspace.FisherChart` unwraps circles and sphere azimuths about the centre and whitens every axis jointly with the ZCA-cor form of Γ⁻¹ (Kessy, Lewin and Strimmer 2018), so chart distances are ΔθᵀΓΔθ, the linear-order data-space distance; it warns when the root mean square arc of a circle from the centre exceeds P/6, which puts the cut within three widths. `compare` keeps the block form of `Whitening.from_fisher`, which drops the correlations between circles and other axes |
+| Invalid Fisher matrices in data space | A Γ that is not finite, symmetric and positive definite gives NaN Fisher rows with a `ValidityWarning`, while the data rows and the other problems go on; wrong shapes raise |
+| Data-space engine | `compare_signals` in `engines/dataspace.py`, re-exported by `import mixed_signals`: modes A and B as in `compare`, the split-half null in mode A, the subsampling bootstrap, `transform=`, `backend=` and `chunk_size=` |
+| Data-space dry run | `estimate_compare_signals_cost` probes each problem's generator on one sample for M, counts generator calls without seconds, reports the memory of templates and matrices, and models the package's seconds with fits timed on the developers' machine (within 1.32 for the matrix and 1.03 for the evaluations); the cost table gains the nullable columns `space` and `memory`, and the budget warning names only statistics with an estimate |
+| Chunked user calls | `io.arrays.call_in_chunks(value_shape=)`: `()` for one value per row, a tuple for a fixed trailing shape, `None` for a shape that the first chunk fixes |
+| Toy signals | `zoo.linear_signal(fisher)`, whose Fisher matrix in white noise is exactly the one given, and `zoo.sinusoid_signal(snr)` (Rife and Boorstyn 1974), with `zoo.WhiteNoise`, as `SignalCase` objects with their Fisher matrix and `fisher_gaussians(shift)`; public, for tests, the validation page and users |
+| Validation of session 15 | Four checks in `scripts/zoo_validation/dataspace.py` join the quick test; their full-mode run took 89 s and held all 13 claims, and the committed page gains them at its next full build. The claims on capped chains test the kept ratio m·n_eff/N at caps up to N/2 and the Kish size from N/2 up, each away from the limit where it is exact |
 
 ## Design principles
 
@@ -430,7 +445,7 @@ Four engines share the data model and declare what they need. The menus below ar
 | `diagnose` | Chains (flat samples: shape checks only) | Chain health: τ, ESS, split-chain KS (Kuiper's V on circles), informational R̂ across walkers, and acceptance and swap rates for eryn backends. Shape: skewness, kurtosis (circular on circles), one-sample Anderson–Darling, Mardia's b₁ and b₂ of the Mahalanobis distances. Dependence: Pearson, and Spearman, distance correlation and mutual information against their Gaussian values (bananas). Modes: GMM-BIC structure and the modes of 1D kernel estimates along marginals and discriminant directions. Prior railing |
 | `compare` | Two or more SampleSets in one space | Moments: per-parameter mean shift and width ratio; Gaussian KL, W2 and Hellinger, split into location and shape. Marginals: KS, k-sample Anderson–Darling, 1D W1, and JS and Hellinger with a bounded KDE. Joint: kNN KL, JS and Hellinger, MMD, energy distance. OT: Sinkhorn divergence, sliced W2, sliced Sinkhorn divergence. C2ST as a placeholder |
 | `reweight` | Stored log π plus a new prior, stored log L plus a new likelihood (a callable per problem), or an approximation's density q | Importance weights; evidence ratio Z_new/Z_old = E_old[L_new/L_old] with its error; ESS and PSIS k̂ on every weight set, flagged above min(1 − 1/log₁₀ S, 0.7); weights stay raw, and Pareto smoothing is opt-in. Rows `pareto_k`, `importance_ess` and `log_evidence_ratio` |
-| Data space | A generator with `generate_template`, plus a noise model | Energy distance with the noise-weighted norm; Fisher-whitened parameter distances when a Fisher matrix is available |
+| Data space | A generator with `generate_template`, plus a noise model with `whiten` | `compare_signals`: the energy distance of the noise-whitened templates, exact through one distance matrix per pair, and the energy distance in the joint Fisher chart when a Fisher matrix is available |
 
 **Method details**
 
@@ -466,6 +481,8 @@ D_E = 2\,\mathbb{E}\lVert s_A - s_B\rVert - \mathbb{E}\lVert s_A - s_A'\rVert - 
 
 Distances are in noise-σ units, and ‖δh‖ ≲ 1 is indistinguishable in the data (Lindblom, Owen and Brown 2008). At linear order ‖δh‖² ≈ ΔθᵀΓΔθ, so Fisher whitening gives parameter distances the same meaning (Vallisneri 2008). The core takes any noise-weighted inner product; `gw/` supplies the PSD-weighted frequency-domain one (Finn 1992; Cutler and Flanagan 1994). With trans-dimensional support, comparing summed catalog signals this way avoids cross-matching.
 
+Session 15 built `compare_signals` (`engines/dataspace.py`). The caller's noise model whitens the templates in the caller's library, so that whiten(a)·whiten(b) = ⟨a|b⟩ and only real rows cross into JAX. Each pair gets one exact distance matrix of its pooled templates, from the Gram matrix of the centred rows (Chan, Golub and LeVeque 1983), and the observed energy distance, every null draw and every half-sample are weighted sums over it. The Fisher row measures the same pair in the joint local chart y = W·arc(θ − c) with WᵀW = Γ, which keeps the correlations between circles and other axes that the block form of `Whitening.from_fisher` drops. On a linear signal the two rows agreed to 2e-12 in every value and null draw, and σ_eff recovered Mahalanobis shifts of 0, 0.5 and 1 within 0.006 (50 replicates). On a sinusoid the data row read below the chart row where the template manifold curves over the posterior: the ratio of their values was 0.920 ± 0.002 at a signal-to-noise ratio of 5, 0.978 at 10, 0.998 at 30 and 1.0000 ± 0.0001 at 100. On identical posteriors both rows rejected at the 5% level in 6.5% (linear signal) and 3.0% (sinusoid) of 200 problems, within three binomial errors.
+
 ## Statistical reporting
 
 Every result row carries a value, its uncertainty, its null, σ_sig and an effect size: σ_eff, or r_eff for rows that measure only a difference in width. Thresholds act on the effect size, with per-metric defaults that the YAML config can override. Diagnostic rows measure one posterior, not a shift between two, so their effect size is their value minus the null mean, on the scale of their statistic, and σ_eff and r_eff stay null; `diagnostics/flags.py` holds their thresholds.
@@ -494,7 +511,7 @@ Every result row carries a value, its uncertainty, its null, σ_sig and an effec
 | Sliced Sinkhorn divergence | √(n · value) | Exact for shifts of the Euclidean block |
 | Sinkhorn divergence, squared chordal cost | √S_ε | Exact for shifts of the Euclidean block |
 | C2ST accuracy (placeholder) | 2Φ⁻¹(acc); a lower bound, since real classifiers are sub-optimal | Exact for the Bayes classifier |
-| Data-space energy distance | The energy-distance curve with D parameters, in noise σ | Linear order |
+| Data-space energy distance, and its Fisher chart row | The energy-distance curve with D parameters, in noise σ | Linear order |
 
 `sigma/maps.py` holds the closed-form maps, those of MMD² and the energy distance since session 9, with D the dimension E + C + 2S of the space, and those of the OT metrics since session 10, the sliced ones with n = E + 2C + 3S; since session 12 it also holds the null subtraction and the AD and JS maps, every map is signed, and a value above the range of its metric maps to NaN.
 
@@ -537,6 +554,7 @@ Distributions with known answers serve as the test suite, as the truths against 
 | `wrapped_gaussians` | A wrapped normal centred on the circle boundary, and a copy shifted by δσ | Circular mean and mean resultant length; the generating shift; Kuiper's V, W1 along the circle, AD after the pooled cut, JS and Hellinger |
 | `von_mises_fisher` | A von Mises-Fisher distribution near the north pole, and a copy rotated over it | Mean resultant length; KL and Hellinger; the angular shift |
 | `ar1_chains` | AR(1) `Chains` with one coefficient φ per parameter | τ = (1 + φ)/(1 − φ); stationary mean and width |
+| `linear_signal`, `sinusoid_signal` | A `SignalCase`: a generator, white noise, a space, a centre and its Fisher matrix Γ; `fisher_gaussians(δ)` gives `reference` and `shifted`, both of covariance Γ⁻¹ | As for `shifted_gaussians`; δ is the true σ_eff of data space at linear order |
 
 - **Cases (Decided).** A `ZooCase` holds K named posteriors, their `ParamSpace` and their reference table. `sample(key, N, batch_size=B)` draws a `SampleSet` shaped (B, K, N, D) with equal weights, and `log_prob` evaluates every posterior with respect to the Lebesgue measure of the coordinates. Posterior k draws from `derive_key(key, name)` and problem b folds in its index, so draws depend neither on the other posteriors nor on B, and posteriors of the same name share their random numbers across cases.
 - **Reference tables (Decided).** One polars table per case, with the result columns `pair`, `metric` and `parameters`, plus `value` and `basis`, so results join their truth. KL rows come in both directions; symmetric metrics have one row per pair. The effect-size truths are the rows `mean_shift`, `width_ratio`, `mahalanobis_shift` and `angular_shift`, in units of the first posterior of the pair.
@@ -548,21 +566,22 @@ Distributions with known answers serve as the test suite, as the truths against 
 
 **Importable zoo (Decided).** `mixed_signals.zoo` is public and documented, so users can test their own metrics against it.
 
-**Validation page (Decided).** A docs page generated from the zoo runs: null-uniformity checks, recovered shifts and width ratios, and the zoo checks behind every default, stamped with the package version, the JAX version and the seed. `scripts/build_validation.py` reruns them in about one hour on one CPU and writes `docs/validation.md`, its figures and the raw numbers as JSON, all committed; a quick mode of about two minutes runs as a test. An assumption that rests on an empirical finding cites its section.
+**Validation page (Decided).** A docs page generated from the zoo runs: null-uniformity checks, recovered shifts and width ratios, and the zoo checks behind every default, stamped with the package version, the JAX version and the seed. `scripts/build_validation.py` reruns them in about an hour and a half on one CPU and writes `docs/validation.md`, its figures and the raw numbers as JSON, all committed; a quick mode of about four minutes runs as a test. An assumption that rests on an empirical finding cites its section.
 
 ## Likelihood layer and generators
 
-Generators are batched, backend-agnostic interfaces that users implement around their own code; the full contract is benched for now.
+Generators are batched, backend-agnostic interfaces that users implement around their own code. Session 15 built the part that data space needs in `generators/`, as protocols with capability checks; the rest of the contract is benched for now.
 
 | Method | Returns |
 | --- | --- |
-| `generate_template(θ)` | Signals in the data domain, one per sample |
+| `generate_template(θ)` | Signals in the data domain, one per sample, shape (N, ...), real or complex, on one data grid per problem |
 | `get_ll(θ)` | Log-likelihoods, shape (N,) |
 | `get_ll_grad(θ)` | Gradients, shape (N, D); JAX generators default to `jax.grad` of `get_ll`, CuPy or PyTorch generators supply it |
-| `information_matrix(θ)` | Fisher matrices, shape (N, D, D) |
+| `information_matrix(θ, noise=)` | Fisher matrices, shape (N, D, D), for the noise model it receives |
+| `whiten(signals)`, of a noise model | Real vectors, shape (N, M), whose dot products are the noise-weighted inner products |
 
 - θ is batched, shape (N, D).
-- Noise is set at initialization, or passed as a kwarg to the methods that need it.
+- Noise is set at initialization, or passed as a kwarg to the methods that need it; data space passes its noise model to `information_matrix` as `noise=`.
 - The pipeline never assumes user code is JAX: it calls generators at the boundary, in chunks, with zero-copy DLPack hand-off on GPU. jit covers the metric kernels.
 - Which methods a generator implements decides which engines can run.
 - Priors are separate objects; see Priors and parameter space.
@@ -600,7 +619,7 @@ The pipeline runs in JAX with float64 switched on at import; arrays convert to a
 Three layers serve three uses (Decided): kernels for code, SampleSet functions for notebooks, and a config-driven CLI for pipelines.
 
 1. **Kernels:** pure JAX functions on arrays, public and importable one by one.
-2. **SampleSet API:** `diagnose`, `compare`, `reweight` and data-space functions that add nulls, both σ's, warnings and provenance. They are plain functions that return results.
+2. **SampleSet API:** `diagnose`, `compare`, `reweight` and `compare_signals`, which add nulls, both σ's, warnings and provenance. They are plain functions that return results.
 3. **Pipeline:** a pydantic-validated YAML config plus an argparse CLI that writes `results.parquet`, provenance and a generated marimo notebook, which runs as a script and exports to HTML.
 
 Plots use cantuccio, with contours drawn from the same estimator settings as the metrics, so plots and numbers agree. The report holds a σ_eff, r_eff and σ_sig summary table, corner overlays, null histograms drawn from the stored null draws, and diagnostics.
@@ -676,8 +695,8 @@ mixed-signals/
 │   ├── reweight/           # importance weights, evidence ratio, PSIS
 │   │   ├── importance.py   # evidence ratio and its error, relative efficiency, n_eff
 │   │   └── psis.py         # tail length, k̂ and its threshold, Pareto smoothing
-│   ├── dataspace/          # noise-weighted energy distance, Fisher
-│   ├── generators/         # benched: protocols, capability checks
+│   ├── dataspace/          # whitened templates, distance matrix, Fisher chart
+│   ├── generators/         # protocols of generators and noise models, capability checks
 │   ├── nulls/              # every null carries the effective sample size
 │   │   ├── plan.py         # NullPlan: a pool and the sides of every draw; null_draws
 │   │   ├── permutation.py  # pooled (sample, weight) pairs in two equal sides
@@ -695,8 +714,9 @@ mixed-signals/
 │   │   ├── compare.py      # the compare engine: recipes, nulls, rows
 │   │   ├── diagnose.py     # the diagnose engine: chain health, shape, dependence, modes, railing
 │   │   ├── cost.py         # the dry run: evaluations and estimated seconds
+│   │   ├── dataspace.py    # the data-space engine compare_signals
 │   │   └── reweight.py     # the reweight engine and its rows
-│   ├── zoo/                # cases with known answers: distributions, closed forms
+│   ├── zoo/                # cases with known answers: distributions, closed forms, toy signals
 │   ├── pipeline/           # YAML config models, runner, dry-run cost
 │   ├── report/             # marimo notebook, cantuccio plots
 │   ├── cli.py              # argparse: mixed-signals run config.yaml
@@ -721,7 +741,7 @@ Fourteen items wait until the v1 core is stable; replicate runs may never come.
 
 - **Trans-dimensional catalogs:** cross-matching and label switching, including multi-leaf eryn runs; comparing summed signals in data space avoids matching for the global check.
 - **Injection-ensemble calibration:** PP plots, SBC, TARP; needs an ensemble container with true parameters.
-- **Generator contract:** the full interface users implement around their waveform and likelihood code.
+- **Generator contract:** the rest of the interface users implement around their waveform and likelihood code, `get_ll` and `get_ll_grad`; session 15 built `generate_template`, `information_matrix` and the noise model of data space.
 - **Unequal N:** zero-weight padding in the existing `log_weights` field, so the API does not change.
 - **Multi-GPU:** sharding the batch axis B across devices.
 - **Replicate runs:** not at this stage, possibly never; they would add a replicate axis and run-to-run nulls.
@@ -730,7 +750,7 @@ Fourteen items wait until the v1 core is stable; replicate runs may never come.
 - **Nested-sampling weights:** converting the weights that nested samplers report into `log_weights` in `io/weights.py`; until then users pass the logarithm of those weights.
 - **Independent eryn samplers:** eryn runs with several independent samplers (`nsamplers` > 1), each of which can stop at its own step; v1 reads runs with one sampler.
 - **Weighted zoo draws:** draws from a wider proposal with `log_weights` = ln p − ln q, to test that every kernel honours weights; until then sessions 8 and 13 build weights in their tests.
-- **Rank-truncated Fisher projection:** catpylisa's projection onto the measurable directions of a singular Fisher matrix. It is not a bijection, so it has no inverse and no log-determinant; until data-space comparisons need it, Fisher whitening needs a positive-definite Γ.
+- **Rank-truncated Fisher projection:** catpylisa's projection onto the measurable directions of a singular Fisher matrix. It is not a bijection, so it has no inverse and no log-determinant; until data-space comparisons need it, Fisher whitening and the Fisher chart of data space need a positive-definite Γ, and a singular Γ gives NaN Fisher rows in data space.
 - **Independent-data tension:** the parameter-shift probability (Raveri and Hu 2019; Raveri and Doux 2021), for posteriors from independent data, such as multiband sources seen by LISA and by ground-based detectors. Modes A and B analyse the same data, where every shift is a systematic difference.
 - **Self-term de-biasing of sliced W2:** SW2²(p, q) − ¼[SW2²(p_a, p_b) + SW2²(q_a, q_b)] on random halves, as the Galactic-binary example uses it. On identical inputs it left +0.0001 ± 0.0003 of a raw 0.0061 (8 parameters, N = 1 000), where the null mean left −0.0003 ± 0.0003, and both agreed for a banana, a mixture and a 0.5σ shift; it costs six extra evaluations per row, and the factor ¼ is not exact, because the empirical W2² of a Gaussian converges as (log log n)/n (Bobkov and Ledoux 2019). Rows subtract the null mean.
 
@@ -801,6 +821,9 @@ Every method and assumption above cites the sources below. Each module cites the
 | PSIS k̂ | Vehtari et al. (2024); tail length of MCMC draws: their Appendix H, loo (Vehtari et al. 2026); shape prior: their Appendix G, posterior (Bürkner et al. 2026); Zhang and Stephens (2009); exact Pareto weights of narrower Gaussians: zoo check |
 | Noise-weighted inner product | Finn (1992); Cutler and Flanagan (1994) |
 | Indistinguishability, ‖δh‖ ≲ 1 | Lindblom, Owen and Brown (2008) |
+| Distances from a centred Gram matrix | Chan, Golub and LeVeque (1983) |
+| Design effect of a random subsample of a correlated set | Kish (1965); calibration: zoo check |
+| Single-tone estimation, the toy sinusoid of the zoo | Rife and Boorstyn (1974) |
 | Fisher matrix as the high-SNR covariance; conditioning of its inverse | Vallisneri (2008) |
 | Γ′ = JᵀΓJ, the invariance of the information form | Jeffreys (1946) |
 | Energy distance in a Hilbert space | Lyons (2013) |
@@ -947,6 +970,7 @@ Every method and assumption above cites the sources below. Each module cites the
 - Raveri, M. and Doux, C. (2021). Non-Gaussian estimates of tensions in cosmological parameters. *Physical Review D* 104(4), 043504.
 - Raveri, M. and Hu, W. (2019). Concordance and discordance in cosmology. *Physical Review D* 99(4), 043506.
 - Rényi, A. (1961). On measures of entropy and information. *Proceedings of the Fourth Berkeley Symposium on Mathematical Statistics and Probability*, Volume 1, 547–561.
+- Rife, D. C. and Boorstyn, R. R. (1974). Single-tone parameter estimation from discrete-time observations. *IEEE Transactions on Information Theory* 20(5), 591–598.
 - Rimoldini, L. (2014). Weighted skewness and kurtosis unbiased by sample size and Gaussian uncertainties. *Astronomy and Computing* 5, 1–8.
 - Romero-Shaw, I. M. et al. (2020). Bayesian inference for compact binary coalescences with BILBY: validation and application to the first LIGO–Virgo gravitational-wave transient catalogue. *Monthly Notices of the Royal Astronomical Society* 499(3), 3295–3319.
 - Rowland, M., Hron, J., Tang, Y., Choromanski, K., Sarlos, T. and Weller, A. (2019). Orthogonal estimation of Wasserstein distances. *Proceedings of AISTATS*, PMLR 89, 186–195.

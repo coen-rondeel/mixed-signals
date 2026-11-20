@@ -25,6 +25,7 @@ from mixed_signals.core.samples import (
     mean_resultant_length,
     rejection_subset,
     spherical_width,
+    subsample_effective_size,
     unwrap_about,
     weighted_covariance,
 )
@@ -1063,3 +1064,76 @@ def test_rejection_warns_about_float32_input() -> None:
         kept = rejection_subset(samples, log_weights, key=jax.random.key(0))
     assert kept.dtype == jnp.float64
     assert "log_weights (float32)" in str(records[0].message)
+
+
+# * The effective size of a random subsample of a correlated set
+
+
+def test_the_whole_set_as_a_subsample_keeps_its_effective_size() -> None:
+    """With K_m = K the design effect gives back the effective size n."""
+    for effective_size, kish_size in ((250.0, 1_000.0), (3.0, 40.0), (1.0, 12.0)):
+        size = subsample_effective_size(effective_size, kish_size, kish_size)
+        assert size == pytest.approx(effective_size, rel=1e-12)
+
+
+def test_independent_samples_keep_the_kish_size_of_the_subsample() -> None:
+    """An effective size at or above the Kish size has no positive correlation."""
+    assert subsample_effective_size(1_000.0, 1_000.0, 300.0) == 300.0
+    # * Anticorrelated samples (n above K) are not inflated beyond K_m.
+    assert subsample_effective_size(1_500.0, 1_000.0, 300.0) == 300.0
+
+
+def test_a_hand_computed_design_effect() -> None:
+    """K = 1000, n = 250 and K_m = 100 give ρ̄ = 3/999 and n_m = 100 · 333/432."""
+    expected = 100 / (1 + 99 * 3 / 999)
+    assert subsample_effective_size(250.0, 1_000.0, 100.0) == pytest.approx(
+        expected, rel=1e-14
+    )
+    assert expected == pytest.approx(100 * 333 / 432, rel=1e-14)
+
+
+def test_the_effective_size_rises_with_the_subsample_and_stays_in_range() -> None:
+    """n_m grows with K_m, from at least 1 up to at most K_m, and ends at n."""
+    kish_size, effective_size = 12_000.0, 6_480.0
+    subsample_sizes = [2.0, 50.0, 2_000.0, 6_000.0, 10_000.0, 12_000.0]
+    sizes = [
+        subsample_effective_size(effective_size, kish_size, size)
+        for size in subsample_sizes
+    ]
+    assert sizes == sorted(sizes)
+    assert all(
+        1.0 <= size <= kish for size, kish in zip(sizes, subsample_sizes, strict=True)
+    )
+    assert sizes[-1] == pytest.approx(effective_size, rel=1e-12)
+    # * A subsample much smaller than the set is nearly independent.
+    assert subsample_effective_size(effective_size, kish_size, 5.0) == pytest.approx(
+        5.0, rel=1e-3
+    )
+
+
+def test_the_edge_cases_of_the_design_effect() -> None:
+    """A set of Kish size one, a subsample of size one and n = 1 stay finite."""
+    assert subsample_effective_size(1.0, 1.0, 1.0) == 1.0
+    assert subsample_effective_size(1.0, 50.0, 1.0) == 1.0
+    # * Every sample fully correlated (n = 1): the subsample is worth one sample.
+    assert subsample_effective_size(1.0, 50.0, 20.0) == pytest.approx(1.0, rel=1e-12)
+
+
+@pytest.mark.parametrize("bad_value", [math.nan, math.inf, 0.5, -3.0])
+@pytest.mark.parametrize("name", ["effective_size", "kish_size", "subsample_kish_size"])
+def test_the_subsample_sizes_must_be_finite_and_at_least_one(
+    name: str, bad_value: float
+) -> None:
+    """Each size raises ValueError if it is NaN, infinite or below one."""
+    sizes = {"effective_size": 50.0, "kish_size": 100.0, "subsample_kish_size": 40.0}
+    sizes[name] = bad_value
+    with pytest.raises(ValueError, match=f"{name} must be finite and at least 1"):
+        subsample_effective_size(**sizes)
+
+
+def test_the_subsample_cannot_have_a_larger_kish_size_than_the_set() -> None:
+    """K_m above K raises, naming both."""
+    with pytest.raises(
+        ValueError, match=r"cannot exceed kish_size, got 101\.0 above 100\.0"
+    ):
+        subsample_effective_size(50.0, 100.0, 101.0)

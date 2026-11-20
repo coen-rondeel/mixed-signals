@@ -18,7 +18,13 @@ from mixed_signals.core.chains import Chains
 from mixed_signals.core.result import Result
 from mixed_signals.core.samples import SampleSet
 from mixed_signals.core.space import ParamSpace
-from mixed_signals.engines import Reweighting, compare, diagnose, reweight
+from mixed_signals.engines import (
+    Reweighting,
+    compare,
+    compare_signals,
+    diagnose,
+    reweight,
+)
 from mixed_signals.mcmc.reduce import reduce_chains
 from mixed_signals.prng import root_key
 
@@ -30,6 +36,7 @@ __all__ = [
     "SampleSet",
     "__version__",
     "compare",
+    "compare_signals",
     "diagnose",
     "reduce_chains",
     "reweight",

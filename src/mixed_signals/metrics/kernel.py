@@ -32,6 +32,10 @@ Energy distance
     of weighted samples, as Székely and Rizzo (2013) use throughout, so it is
     never negative. It is the MMD of the kernel that the distance induces
     (Sejdinovic et al. 2013), and its root is a metric.
+    :func:`energy_distance_from_distances` evaluates the same V-statistic from
+    one matrix of the distances between pooled samples, for any number of pairs
+    of sides given as rows of log weights over the pool, so that an observed
+    value, every null draw and every half-sample need a few matrix products.
 Circles and spheres
     Each circle of period P becomes a circle of circumference P in a plane,
     and each sphere a sphere of its radius in three dimensions, the unit
@@ -75,7 +79,7 @@ from typing import Final
 import jax
 import jax.numpy as jnp
 from jax.typing import ArrayLike
-from jaxtyping import Array, Float, PRNGKeyArray
+from jaxtyping import Array, Bool, Float, PRNGKeyArray
 
 from mixed_signals._config import SAMPLE_CAP
 from mixed_signals.core.samples import _is_concrete
@@ -282,6 +286,67 @@ def energy_distance(
     return _energy_distance(*arrays, space)
 
 
+def energy_distance_from_distances(
+    distances: Float[ArrayLike, "sample sample"],
+    first_log_weights: Float[ArrayLike, "*leading sample"],
+    second_log_weights: Float[ArrayLike, "*leading sample"],
+) -> Float[Array, " *leading"]:
+    """Return the energy distance of sides of a pool from the pooled distances.
+
+    The value is the weighted V-statistic of :func:`energy_distance`,
+    2 wᵀDv − wᵀDw − vᵀDv, for a matrix D of the distances between the samples
+    of a pool and the weights w and v of two sides over the pool positions.
+    Each row of log weights names one side: −∞ marks a position outside the
+    side, and the softmax of the row gives its weights. Every row of the two
+    weight arrays gives one value, evaluated with one matrix product of the
+    weights of all rows with D and then row-wise dot products, so the observed
+    value, the draws of a null and the half-samples of one comparison cost one
+    or a few products. D must be symmetric, as a matrix of distances is.
+
+    Args:
+        distances: The distances between the pooled samples, shaped (P, P),
+            for example from
+            :func:`~mixed_signals.dataspace.distances.distance_matrix`, or the
+            chords of the embedding of circles and spheres.
+        first_log_weights: Log weights of the first side over the pool,
+            shaped (..., P); −∞ outside the side.
+        second_log_weights: Log weights of the second side, in the same shape.
+
+    Returns:
+        The energy distance of every row, shaped (...), non-negative up to
+        rounding. A row of either weight array without a finite log weight
+        gives NaN.
+
+    Raises:
+        ValueError: If the matrix is not square, the last axis of the weights
+            does not fit it, the two weight arrays differ in shape, or concrete
+            distances are not finite.
+
+    References:
+        :cite:t:`baringhaus2004new`; :cite:t:`szekely2013energy`.
+    """
+    distance_array = jnp.asarray(distances, dtype=jnp.float64)
+    first_array = jnp.asarray(first_log_weights, dtype=jnp.float64)
+    second_array = jnp.asarray(second_log_weights, dtype=jnp.float64)
+    if distance_array.ndim != 2 or distance_array.shape[0] != distance_array.shape[1]:
+        raise ValueError(
+            f"distances must be a square matrix, got shape {distance_array.shape}"
+        )
+    if first_array.shape != second_array.shape:
+        raise ValueError(
+            "the two arrays of log weights must have the same shape, got"
+            f" {first_array.shape} and {second_array.shape}"
+        )
+    if first_array.ndim == 0 or first_array.shape[-1] != distance_array.shape[0]:
+        raise ValueError(
+            f"the log weights must end in the pool size {distance_array.shape[0]},"
+            f" got shape {first_array.shape}"
+        )
+    if _is_concrete(distance_array) and not bool(_all_finite(distance_array)):
+        raise ValueError("distances must be finite")
+    return _energy_distance_from_distances(distance_array, first_array, second_array)
+
+
 def _gaussian(squared: Array, bandwidth: Array) -> Array:
     return jnp.exp(-squared / (2 * bandwidth**2))
 
@@ -367,6 +432,31 @@ def _energy_distance_kernel(
     )
 
 
+def _all_finite_kernel(array: Float[Array, "sample sample"]) -> Bool[Array, ""]:
+    """Return whether every entry is finite, in one pass over the matrix."""
+    return jnp.all(jnp.isfinite(array))
+
+
+def _energy_distance_from_distances_kernel(
+    distances: Float[Array, "sample sample"],
+    first_log_weights: Float[Array, "*leading sample"],
+    second_log_weights: Float[Array, "*leading sample"],
+) -> Float[Array, " *leading"]:
+    """Return 2 wᵀDv − wᵀDw − vᵀDv for every pair of rows of weights."""
+    leading, size = first_log_weights.shape[:-1], distances.shape[0]
+    first_weights = jax.nn.softmax(first_log_weights, axis=-1).reshape(-1, size)
+    second_weights = jax.nn.softmax(second_log_weights, axis=-1).reshape(-1, size)
+    # * D is symmetric, so the rows of W @ D are the columns of D @ Wᵀ.
+    first_products = first_weights @ distances
+    second_products = second_weights @ distances
+    values = (
+        2 * jnp.sum(first_weights * second_products, axis=-1)
+        - jnp.sum(first_weights * first_products, axis=-1)
+        - jnp.sum(second_weights * second_products, axis=-1)
+    )
+    return values.reshape(leading)
+
+
 def _median_bandwidth_kernel(
     first: Float[Array, "sample param"],
     first_log_weights: Float[Array, " sample"],
@@ -409,4 +499,6 @@ def _weighted_median(
 
 _maximum_mean_discrepancy = _jit(_maximum_mean_discrepancy_kernel, "space")
 _energy_distance = _jit(_energy_distance_kernel, "space")
+_energy_distance_from_distances = _jit(_energy_distance_from_distances_kernel)
+_all_finite = _jit(_all_finite_kernel)
 _median_bandwidth = _jit(_median_bandwidth_kernel, "space")

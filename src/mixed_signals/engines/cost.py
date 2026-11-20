@@ -1,13 +1,17 @@
 """The dry run of the engines: an estimate of their run time before they start.
 
-:func:`estimate_compare_cost` and :func:`estimate_diagnose_cost` take the
-arguments of :func:`~mixed_signals.engines.compare.compare` and
-:func:`~mixed_signals.engines.diagnose.diagnose` that change the cost, read and
-check them with the code of the engines
+:func:`estimate_compare_cost`, :func:`estimate_diagnose_cost` and
+:func:`estimate_compare_signals_cost` take the arguments of
+:func:`~mixed_signals.engines.compare.compare`,
+:func:`~mixed_signals.engines.diagnose.diagnose` and
+:func:`~mixed_signals.engines.dataspace.compare_signals` that change the cost,
+read and check them with the code of the engines
 (:mod:`mixed_signals.engines._arguments`), and return a table of the
 evaluations of every statistic with their estimated seconds. They compute no
-metric and use only counts and shapes. A transform does not change counts, so
-the estimates do not rely on it. The engines call the same estimate first and
+metric and use only counts and shapes; the data-space estimate also probes the
+generator and the noise model on one sample to learn the number of data
+entries. A transform does not change counts, so the estimates do not rely on
+it. The engines call the same estimate first and
 raise one :class:`~mixed_signals.errors.CostWarning` when it exceeds their
 ``budget``, which defaults to :data:`COST_BUDGET`, one hour.
 
@@ -28,10 +32,15 @@ Grid and machine
     float64, each statistic jitted as in the null draws. The estimate is for
     one CPU of that machine; another machine, a GPU or a different JAX version
     changes the seconds, though the ratios between statistics are likely to
-    carry over. The costs check of ``scripts/zoo_validation/costs.py`` (see
-    :ref:`validation-costs`) times every statistic at four points, (3 000, 16),
-    (10 000, 2), (10 000, 8) and (10 000, 16), and checks the costly rows
-    against the model; the page gains it at its next full build.
+    carry over. The two statistics of data space were fitted on 2026-11-20 on
+    the same machine and mode to the timings at n of 1 000, 3 000 and 10 000
+    samples per set, with 2n pooled rows for the matrix at M of 16, 256 and
+    4 096 data entries, and for the evaluations in batches of 200 null draws,
+    as the engine runs them, divided by 200. The costs check of
+    ``scripts/zoo_validation/costs.py`` (see :ref:`validation-costs`) times
+    every statistic at four points, (3 000, 16), (10 000, 2), (10 000, 8) and
+    (10 000, 16), and checks the costly rows against the model; the page gains
+    it at its next full build.
 Misfits
     The worst misfit is the largest factor between the model and a measured
     time on the grid of the fit. The statistics that run per null draw or
@@ -43,7 +52,10 @@ Misfits
     (2.11) below 5 ms, whose cost the model takes as linear in D. The GMM-BIC
     fit, which runs once per posterior, fits within 1.55: its time does not
     follow a power law in N (0.73 s at 3 000 samples and 0.67 s at 10 000 in
-    16 parameters).
+    16 parameters). The distance matrix of data space fits within 1.32, worst
+    at 1 000 samples and 16 data entries (0.9 ms), and within 1.20 at the
+    other eight points; the evaluations of the energy distance from a matrix
+    fit within 1.03.
 Constants
     ::
 
@@ -70,6 +82,8 @@ Constants
         marginal_modes (per parameter)   0.0153 0.98 none D                   1.24
         projection_modes (per direction) 0.0159 0.96 27   directions          1.34
         gmm_bic (once per posterior)     0.69   0.32 0    1                   1.55
+        signal_matrix (one pair)         0.146  2.10 56   1                   1.32
+        signal_draw (one evaluation)     3.86e-3 2.00 none 1                  1.03
 
     In the column of the caps, ``cap`` and ``pair_cap`` are the arguments of the
     engines, and ``sliced`` is
@@ -109,11 +123,26 @@ Chains
     bound N = (steps − burn-in) · walkers and an effective sample size of N,
     so the estimate overstates the cost of the thinned samples that the
     engine reads.
+Data space
+    A pair of ``compare_signals`` costs one distance matrix of the pooled
+    whitened templates and 1 + ``draws`` evaluations of the energy distance from
+    it (and ``half_samples`` more with the bootstrap), once for the data row and
+    once for the Fisher row where a Fisher matrix is available. The fit
+    ``signal_matrix`` gives the seconds of one matrix, with n the larger count
+    of the pair and the dimension M of the templates or D of the chart, and
+    ``signal_draw`` the seconds of one evaluation for one pair of sides, with no
+    dimension factor, timed in batches of 200 as the engine runs them. The
+    generator and the noise model are user code, so their rows give the number
+    of generator calls and the memory of the templates, 8·m·M bytes, with no
+    seconds; the matrix of a pair needs 8·(m_p + m_q)² bytes.
 Table
     ``engine``, ``problem``, ``pair`` (the names of the posteriors), ``metric``,
     ``estimator``, ``samples`` (the samples of the null draws, after the cap),
-    ``dimension`` (D), ``evaluations`` (observed, null and half-sample
-    evaluations of the group) and ``seconds``.
+    ``dimension`` (D, or M in the data rows of data space), ``evaluations``
+    (observed, null and half-sample evaluations of the group), ``seconds``,
+    ``space`` and ``memory`` (bytes). The last two are null in the rows of
+    ``compare`` and ``diagnose``, ``seconds`` is null in the generator rows, and
+    the total sums the seconds that are not null.
 
 References:
     :cite:t:`phipson2010permutation`; :cite:t:`politis1999subsampling`.
@@ -127,12 +156,16 @@ from typing import Final, NamedTuple
 
 import jax.numpy as jnp
 import polars as pl
+from jax.typing import ArrayLike
 
+from mixed_signals import errors
 from mixed_signals._config import COST_BUDGET, NULL_DRAWS, SAMPLE_CAP
 from mixed_signals.core.chains import Chains
 from mixed_signals.core.result import UncertaintyMethod
 from mixed_signals.core.samples import SampleSet
 from mixed_signals.core.space import ParamSpace
+from mixed_signals.dataspace.chart import CHART_DESCRIPTION
+from mixed_signals.dataspace.templates import whitened_templates
 from mixed_signals.diagnostics import flags
 from mixed_signals.diagnostics.dependence import PAIR_CAP
 from mixed_signals.diagnostics.modes import MAX_COMPONENTS
@@ -142,12 +175,16 @@ from mixed_signals.engines._arguments import (
     CompareArguments,
     DiagnoseArguments,
     DiagnoseSource,
+    SignalArguments,
     comparison_pairs,
     read_compare_arguments,
     read_diagnose_arguments,
+    read_signal_arguments,
 )
-from mixed_signals.engines._common import Posterior
+from mixed_signals.engines._common import Posterior, data_space_text, space_text
 from mixed_signals.errors import CostWarning
+from mixed_signals.generators.protocol import NoiseModel, SignalGenerator
+from mixed_signals.io.arrays import ArrayBackend
 from mixed_signals.metrics._embedding import embedding_size
 from mixed_signals.metrics.ot.sinkhorn import SINKHORN_EPSILON_FACTOR
 from mixed_signals.metrics.ot.sliced import (
@@ -166,6 +203,7 @@ __all__ = [
     "COST_BUDGET",
     "CostEstimate",
     "estimate_compare_cost",
+    "estimate_compare_signals_cost",
     "estimate_diagnose_cost",
 ]
 
@@ -189,9 +227,15 @@ _TABLE_SCHEMA: Final = pl.Schema(
         "dimension": pl.Int64(),
         "evaluations": pl.Int64(),
         "seconds": pl.Float64(),
+        "space": pl.String(),
+        "memory": pl.Int64(),
     }
 )
-"""Columns and types of the table of an estimate."""
+"""Columns and types of the table of an estimate.
+
+The columns ``space`` and ``memory`` are null in the rows of ``compare`` and
+``diagnose``; ``seconds`` is null in the rows of user code.
+"""
 
 _PROJECTION_DIRECTIONS: Final = MAX_COMPONENTS * (MAX_COMPONENTS - 1) // 2
 """Upper bound of the directions of the mode projections: the pairs of components."""
@@ -202,9 +246,13 @@ class CostEstimate(NamedTuple):
 
     table: pl.DataFrame
     """One row per statistic of every pair or posterior, with the columns engine,
-    problem, pair, metric, estimator, samples, dimension, evaluations, seconds."""
+    problem, pair, metric, estimator, samples, dimension, evaluations, seconds,
+    space and memory."""
     seconds: float
-    """The estimated run time on one CPU of the developers' machine, in seconds."""
+    """The estimated run time on one CPU of the developers' machine, in seconds.
+
+    It sums the seconds of the rows that have them: the user code of data space has
+    none."""
 
 
 class _Fit(NamedTuple):
@@ -245,8 +293,12 @@ _FITS: Final = {
     "marginal_modes": _Fit(0.0153, 0.98, None, None, 1.24),
     "projection_modes": _Fit(0.0159, 0.96, 27.0, None, 1.34),
     "gmm_bic": _Fit(0.69, 0.32, 0.0, None, 1.55),
+    "signal_matrix": _Fit(0.146, 2.10, 56.0, None, 1.32),
+    "signal_draw": _Fit(3.86e-3, 2.00, None, None, 1.03),
 }
-"""The constants of the model of every statistic, fitted on 2026-11-19."""
+"""The constants of the model of every statistic.
+
+The first 22 were fitted on 2026-11-19, the two of data space on 2026-11-20."""
 
 
 class _Group(NamedTuple):
@@ -410,12 +462,103 @@ def estimate_diagnose_cost(
     return _diagnose_cost(arguments)
 
 
+def estimate_compare_signals_cost(
+    sample_sets: SampleSet | Sequence[SampleSet],
+    names: Sequence[str],
+    space: ParamSpace,
+    *,
+    generator: SignalGenerator | Sequence[SignalGenerator],
+    noise: NoiseModel | Sequence[NoiseModel],
+    reference: str | None = None,
+    fisher: ArrayLike | None = None,
+    centre: ArrayLike | None = None,
+    transform: Transform | None = None,
+    null: Construction | str = Construction.PERMUTATION,
+    draws: int = NULL_DRAWS,
+    cap: int = SAMPLE_CAP,
+    uncertainty: UncertaintyMethod | str = UncertaintyMethod.NULL_STD,
+    half_samples: int = HALF_SAMPLE_PAIRS,
+    backend: ArrayBackend = "numpy",
+    chunk_size: int | None = None,
+) -> CostEstimate:
+    """Estimate the run time of ``compare_signals``, the data-space comparison.
+
+    The arguments are those of
+    :func:`~mixed_signals.engines.dataspace.compare_signals` that change the
+    cost, read and checked by the same code. The estimate probes the generator and the
+    noise model of each problem on one sample, the first sample with a positive
+    weight of the first posterior after the transform, to learn the number M of
+    data entries, and computes nothing else. The module docstring gives the
+    model; the rows of user code have no seconds.
+
+    Args:
+        sample_sets: A :class:`~mixed_signals.core.samples.SampleSet`, or a
+            sequence of them, as ``compare_signals`` reads them.
+        names: One unique name per posterior.
+        space: The parameter space of the samples.
+        generator: A signal generator, or one per problem.
+        noise: A noise model, or one per problem.
+        reference: The name of the reference posterior, for mode A.
+        fisher: Fisher matrices, which switch on the Fisher rows with
+            ``centre``; only their presence changes the estimate.
+        centre: The points of the Fisher matrices, or of the matrices that the
+            generators give.
+        transform: A transform of the coordinates; it changes no count.
+        null: ``"permutation"`` or ``"split_half"``.
+        draws: Number of null draws per row.
+        cap: Largest number of samples of a posterior of a problem.
+        uncertainty: ``"null_std"`` or ``"subsampling_bootstrap"``.
+        half_samples: Number of half-sample pairs of the bootstrap.
+        backend: The array library of the arrays that the generator receives.
+        chunk_size: The most samples in one call of the generator.
+
+    Returns:
+        The table of groups and the total in seconds.
+
+    Raises:
+        ValueError: As :func:`~mixed_signals.engines.dataspace.compare_signals`,
+            for the arguments that the estimate takes, and if the templates of
+            a problem or the probe are not finite real vectors.
+        TypeError: As ``compare_signals``.
+        KeyError: As ``compare_signals``.
+        CapabilityError: As ``compare_signals``.
+
+    References:
+        :cite:t:`szekely2013energy`.
+    """
+    arguments = read_signal_arguments(
+        sample_sets,
+        names,
+        space,
+        generator=generator,
+        noise=noise,
+        key=0,
+        reference=reference,
+        fisher=fisher,
+        centre=centre,
+        transform=transform,
+        null=null,
+        draws=draws,
+        cap=cap,
+        uncertainty=uncertainty,
+        half_samples=half_samples,
+        thresholds=THRESHOLDS,
+        level=SIGNIFICANCE_LEVEL,
+        budget=COST_BUDGET,
+        backend=backend,
+        chunk_size=chunk_size,
+        config_hash=None,
+    )
+    return _compare_signals_cost(arguments)
+
+
 def warn_if_over_budget(engine: str, estimate: CostEstimate, budget: float) -> None:
     """Raise one cost warning if the estimate exceeds the budget.
 
     The warning names the estimate, the budget and the three costliest
-    statistics, with their seconds summed over problems and pairs. It goes to
-    the caller, not into the rows of a result.
+    statistics, with their seconds summed over problems and pairs. It names
+    only statistics with an estimate: the rows of user code, whose seconds are
+    null, are left out. It goes to the caller, not into the rows of a result.
 
     Args:
         engine: Name of the engine, for the message.
@@ -428,7 +571,8 @@ def warn_if_over_budget(engine: str, estimate: CostEstimate, budget: float) -> N
     if not estimate.seconds > budget:
         return
     costliest = (
-        estimate.table.group_by(["metric", "estimator"], maintain_order=True)
+        estimate.table.filter(pl.col("seconds").is_not_null())
+        .group_by(["metric", "estimator"], maintain_order=True)
         .agg(pl.col("seconds").sum())
         .sort("seconds", descending=True, maintain_order=True)
         .head(3)
@@ -677,6 +821,113 @@ def _knn_groups(
                 )
             )
     return groups
+
+
+# * The cost of a data-space comparison
+
+
+def _compare_signals_cost(arguments: SignalArguments) -> CostEstimate:
+    """Estimate the run time of a data-space comparison from its read arguments."""
+    rows: list[dict[str, object]] = []
+    prefix = [] if arguments.transform_text is None else [arguments.transform_text]
+    evaluations = 1 + arguments.draws
+    if arguments.uncertainty is UncertaintyMethod.SUBSAMPLING_BOOTSTRAP:
+        evaluations += arguments.half_samples
+    batch_count = arguments.posteriors[0].samples.shape[0]
+    for problem in range(batch_count):
+        generator, noise = arguments.generators[problem], arguments.noises[problem]
+        data_size = _probe_data_size(arguments, problem, generator, noise)
+        counts = [
+            min(_positive_count(posterior, problem), arguments.cap)
+            for posterior in arguments.posteriors
+        ]
+        for posterior, count in zip(arguments.posteriors, counts, strict=True):
+            calls = (
+                1
+                if arguments.chunk_size is None
+                else math.ceil(count / arguments.chunk_size)
+            )
+            rows.append(
+                {
+                    "engine": "compare_signals",
+                    "problem": problem,
+                    "pair": [posterior.name],
+                    "metric": "generate_template",
+                    "estimator": "user",
+                    "samples": count,
+                    "dimension": data_size,
+                    "evaluations": calls,
+                    "seconds": None,
+                    "space": None,
+                    "memory": 8 * count * data_size,
+                }
+            )
+        for first_index, second_index in comparison_pairs(
+            len(arguments.posteriors), arguments.reference
+        ):
+            pair = [
+                arguments.posteriors[first_index].name,
+                arguments.posteriors[second_index].name,
+            ]
+            sizes = (counts[first_index], counts[second_index])
+            spaces = [(space_text(*prefix, data_space_text(noise)), data_size)]
+            if arguments.centre is not None:
+                spaces.append(
+                    (space_text(*prefix, CHART_DESCRIPTION), len(arguments.space))
+                )
+            rows.extend(
+                _signal_row(problem, pair, sizes, evaluations, text, dimension)
+                for text, dimension in spaces
+            )
+    return _estimate(rows)
+
+
+def _probe_data_size(
+    arguments: SignalArguments,
+    problem: int,
+    generator: SignalGenerator,
+    noise: NoiseModel,
+) -> int:
+    """Return the number of data entries M, from one template of the first posterior."""
+    first = arguments.posteriors[0]
+    start = int(jnp.argmax(first.log_weights[problem] > -jnp.inf))
+    # * The estimate needs only M; the engine records the warnings of the templates.
+    with errors.capture_warnings():
+        probe = whitened_templates(
+            generator,
+            noise,
+            first.samples[problem][start : start + 1],
+            backend=arguments.backend,
+            chunk_size=arguments.chunk_size,
+        )
+    return int(probe.shape[1])
+
+
+def _signal_row(
+    problem: int,
+    pair: list[str],
+    sizes: tuple[int, int],
+    evaluations: int,
+    space: str,
+    dimension: int,
+) -> dict[str, object]:
+    """Return the row of the energy distances of one pair in one space of the data."""
+    larger = max(sizes)
+    matrix = _evaluation_seconds(_FITS["signal_matrix"], larger, dimension, 1.0, {})
+    draw = _evaluation_seconds(_FITS["signal_draw"], larger, dimension, 1.0, {})
+    return {
+        "engine": "compare_signals",
+        "problem": problem,
+        "pair": pair,
+        "metric": "energy",
+        "estimator": "empirical",
+        "samples": larger,
+        "dimension": dimension,
+        "evaluations": evaluations,
+        "seconds": matrix + evaluations * draw,
+        "space": space,
+        "memory": 8 * sum(sizes) ** 2,
+    }
 
 
 # * The cost of diagnostics

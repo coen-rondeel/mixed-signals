@@ -1239,17 +1239,20 @@ def _gaussian_case(
     means: list[Array],
     covariances: list[Array],
     sliced_w2: Array | None = None,
+    param_names: Sequence[str] | None = None,
 ) -> ZooCase:
     """Build a case of Gaussians with every closed-form reference value.
 
     ``sliced_w2`` is SW2² of the first pair when a case has it in closed form
-    for unequal covariances.
+    for unequal covariances. ``param_names`` names the parameters, ``x0``,
+    ``x1``, … when not given.
     """
     posteriors = tuple(
         Gaussian(mean, covariance)
         for mean, covariance in zip(means, covariances, strict=True)
     )
-    param_names = _parameter_names(posteriors[0].param_count)
+    if param_names is None:
+        param_names = _parameter_names(posteriors[0].param_count)
     _check_names(names)
     if len(names) != len(posteriors):
         raise ValueError(f"{len(names)} names for {len(posteriors)} posteriors")

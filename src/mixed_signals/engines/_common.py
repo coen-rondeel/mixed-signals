@@ -1,12 +1,13 @@
-"""Helpers shared by the engines ``compare``, ``diagnose`` and the dry run ``cost``.
+"""Helpers shared by the engines, their dry run and their argument readers.
 
 The engines read the same arguments, so their checks and conversions live here:
 the key of a call (:func:`read_key`), the names of the posteriors
 (:func:`unique_names`), the posteriors of one or several
 :class:`~mixed_signals.core.samples.SampleSet` objects
-(:func:`gather_posteriors`), the space text of a row (:func:`space_text`) and
-its provenance (:func:`provenance`). The module is private: its functions are
-not part of the public interface and may change with the engines.
+(:func:`gather_posteriors`), the space text of a row (:func:`space_text`, and
+:func:`data_space_text` for the rows of data space) and its provenance
+(:func:`provenance`). The module is private: its functions are not part of the
+public interface and may change with the engines.
 """
 
 import json
@@ -203,6 +204,18 @@ def null_moments(draws: Array) -> tuple[float, float]:
 def space_text(*descriptions: str) -> str:
     """Return descriptions of transforms joined as the ``space`` column writes them."""
     return COMPOSITION_SEPARATOR.join(descriptions)
+
+
+def data_space_text(noise: object) -> str:
+    """Return the ``space`` text of a data-space row: ``data(<description>)``.
+
+    The description is the string attribute ``description`` of the noise model;
+    a model without a non-empty one gives the text ``data``.
+    """
+    description = getattr(noise, "description", None)
+    if isinstance(description, str) and description:
+        return f"data({description})"
+    return "data"
 
 
 def provenance(

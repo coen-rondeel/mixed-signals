@@ -21,6 +21,15 @@ von Mises-Fisher distributions near a pole of a sphere, and AR(1) chains with a
 known autocorrelation time. :mod:`mixed_signals.zoo.cases` describes the cases
 and their reference tables, :mod:`mixed_signals.zoo.distributions` the
 distributions, and :mod:`mixed_signals.zoo.closed_forms` the formulas.
+
+Toy signals with known Fisher matrices serve the data-space engine: a linear
+signal whose Fisher matrix is a given one, a sinusoid at a given signal-to-noise
+ratio and white noise, each a generator or a noise model of
+:mod:`mixed_signals.generators`, together with the Gaussians that their Fisher
+matrix implies (:mod:`mixed_signals.zoo.signals`)::
+
+    case = zoo.linear_signal(fisher, data_size=64)
+    gaussians = case.fisher_gaussians(1.0)  # a shift of one noise standard deviation
 """
 
 from mixed_signals.zoo.cases import (
@@ -40,21 +49,35 @@ from mixed_signals.zoo.cases import (
     von_mises_fisher,
     wrapped_gaussians,
 )
+from mixed_signals.zoo.signals import (
+    LinearSignal,
+    SignalCase,
+    SinusoidSignal,
+    WhiteNoise,
+    linear_signal,
+    sinusoid_signal,
+)
 
 __all__ = [
     "DEFAULT_WALKER_COUNT",
     "REFERENCE_SCHEMA",
     "ChainCase",
+    "LinearSignal",
     "ReferenceBasis",
+    "SignalCase",
+    "SinusoidSignal",
+    "WhiteNoise",
     "ZooCase",
     "ar1_chains",
     "banana",
     "gaussian_mixture",
     "gaussians",
+    "linear_signal",
     "railed_gaussians",
     "rotated_gaussians",
     "scaled_gaussians",
     "shifted_gaussians",
+    "sinusoid_signal",
     "von_mises_fisher",
     "wrapped_gaussians",
 ]

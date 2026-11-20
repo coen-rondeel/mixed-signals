@@ -1,5 +1,6 @@
 """Tests for the maximum mean discrepancy, energy distance and median bandwidth."""
 
+import inspect
 import math
 from collections.abc import Callable
 
@@ -15,9 +16,11 @@ from mixed_signals._config import SAMPLE_CAP
 from mixed_signals.core.space import ParamSpace
 from mixed_signals.errors import SubsamplingWarning
 from mixed_signals.metrics._cap import _draw, cap_pair
+from mixed_signals.metrics._embedding import embed
 from mixed_signals.metrics.kernel import (
     BANDWIDTH_SAMPLE_SIZE,
     energy_distance,
+    energy_distance_from_distances,
     maximum_mean_discrepancy,
     median_bandwidth,
 )
@@ -468,3 +471,143 @@ def test_metrics_map_over_problems(rng: np.random.Generator) -> None:
         single = both(first[index], second[index])
         assert float(mapped[0][index]) == pytest.approx(float(single[0]), rel=1e-12)
         assert float(mapped[1][index]) == pytest.approx(float(single[1]), rel=1e-12)
+
+
+# * The energy distance from a matrix of pooled distances
+
+
+def pooled_sides(
+    first_count: int, second_count: int, first_weights: np.ndarray | None = None
+) -> tuple[np.ndarray, np.ndarray]:
+    """Return the log weights of the two blocks of a pool, -inf outside each block."""
+    pool_size = first_count + second_count
+    first = np.full(pool_size, -np.inf)
+    second = np.full(pool_size, -np.inf)
+    first[:first_count] = 0.0 if first_weights is None else np.log(first_weights)
+    second[first_count:] = 0.0
+    return first, second
+
+
+@pytest.mark.parametrize("weighted", [False, True])
+def test_the_energy_from_distances_equals_the_energy_distance(
+    rng: np.random.Generator, weighted: bool
+) -> None:
+    """With the cdist of the pool, the value equals the sample kernel to 1e-12."""
+    first = rng.normal(size=(300, 3))
+    second = rng.normal(0.4, 1.3, size=(220, 3))
+    first_weights = rng.uniform(0.1, 2.0, 300) if weighted else np.ones(300)
+    second_weights = rng.uniform(0.1, 2.0, 220) if weighted else np.ones(220)
+    pool = np.concatenate([first, second])
+    distances = spatial.distance.cdist(pool, pool)
+    first_log, second_log = pooled_sides(300, 220, first_weights)
+    second_log[300:] = np.log(second_weights)
+    value = energy_distance_from_distances(distances, first_log, second_log)
+    expected = energy_distance(
+        first,
+        np.log(first_weights),
+        second,
+        np.log(second_weights),
+        TRIPLE,
+        key=KEY,
+        cap=SAMPLE_CAP,
+    )
+    assert float(value) == pytest.approx(float(expected), rel=1e-12)
+
+
+def test_the_energy_from_distances_on_a_circle_uses_the_chords(
+    rng: np.random.Generator,
+) -> None:
+    """The chordal distances of the embedding give the circle's energy distance."""
+    first = jnp.asarray(rng.vonmises(0.0, 4.0, size=(200, 1)) % TWO_PI)
+    second = jnp.asarray(rng.vonmises(1.0, 3.0, size=(150, 1)) % TWO_PI)
+    pool = embed(jnp.concatenate([first, second]), CIRCLE)
+    distances = spatial.distance.cdist(np.asarray(pool), np.asarray(pool))
+    first_log, second_log = pooled_sides(200, 150)
+    value = energy_distance_from_distances(distances, first_log, second_log)
+    expected = energy_distance(first, None, second, None, CIRCLE, key=KEY)
+    assert float(value) == pytest.approx(float(expected), rel=1e-12)
+
+
+def test_the_energy_from_distances_evaluates_batched_rows(
+    rng: np.random.Generator,
+) -> None:
+    """Every leading axis of the weights gives its own value, as one call per row."""
+    pool = rng.normal(size=(40, 2))
+    distances = spatial.distance.cdist(pool, pool)
+    first_log = np.full((3, 2, 40), -np.inf)
+    second_log = np.full((3, 2, 40), -np.inf)
+    for row in range(3):
+        for column in range(2):
+            order = rng.permutation(40)
+            first_log[row, column, order[:12]] = rng.normal(size=12)
+            second_log[row, column, order[12:30]] = 0.0
+    batched = energy_distance_from_distances(distances, first_log, second_log)
+    assert batched.shape == (3, 2)
+    for row in range(3):
+        for column in range(2):
+            single = energy_distance_from_distances(
+                distances, first_log[row, column], second_log[row, column]
+            )
+            assert single.shape == ()
+            assert float(batched[row, column]) == pytest.approx(
+                float(single), rel=1e-12
+            )
+
+
+def test_a_side_without_a_finite_log_weight_gives_nan(
+    rng: np.random.Generator,
+) -> None:
+    """An empty side gives NaN in its row only, and the other rows stay finite."""
+    pool = rng.normal(size=(20, 2))
+    distances = spatial.distance.cdist(pool, pool)
+    first_log = np.zeros((3, 20))
+    second_log = np.zeros((3, 20))
+    first_log[1] = -np.inf
+    second_log[2] = -np.inf
+    values = np.asarray(
+        energy_distance_from_distances(distances, first_log, second_log)
+    )
+    assert np.isfinite(values[0])
+    assert np.isnan(values[1])
+    assert np.isnan(values[2])
+
+
+def test_the_energy_from_distances_rejects_bad_shapes_and_values() -> None:
+    """A rectangular matrix, misfit weights and non-finite distances raise.
+
+    The test session checks the shape annotations first, so the test calls the
+    unwrapped function, as runs without runtime type checks do.
+    """
+    unchecked = inspect.unwrap(energy_distance_from_distances)
+    ones = np.zeros(4)
+    with pytest.raises(ValueError, match=r"square matrix, got shape \(3, 4\)"):
+        unchecked(np.zeros((3, 4)), ones, ones)
+    with pytest.raises(ValueError, match=r"square matrix, got shape \(4,\)"):
+        unchecked(ones, ones, ones)
+    with pytest.raises(ValueError, match=r"same shape, got \(4,\) and \(2, 4\)"):
+        unchecked(np.zeros((4, 4)), ones, np.zeros((2, 4)))
+    with pytest.raises(ValueError, match=r"pool size 4, got shape \(5,\)"):
+        unchecked(np.zeros((4, 4)), np.zeros(5), np.zeros(5))
+    with pytest.raises(ValueError, match=r"pool size 4, got shape \(\)"):
+        unchecked(np.zeros((4, 4)), np.zeros(()), np.zeros(()))
+    distances = np.ones((4, 4))
+    distances[1, 2] = np.inf
+    with pytest.raises(ValueError, match="distances must be finite"):
+        unchecked(distances, ones, ones)
+    distances[1, 2] = np.nan
+    with pytest.raises(ValueError, match="distances must be finite"):
+        unchecked(distances, ones, ones)
+
+
+def test_the_energy_from_distances_runs_inside_a_trace(
+    rng: np.random.Generator,
+) -> None:
+    """Under jax.jit the values are unknown, so the finite check does not run."""
+    pool = rng.normal(size=(16, 2))
+    distances = jnp.asarray(spatial.distance.cdist(pool, pool))
+    first_log, second_log = pooled_sides(8, 8)
+    jitted = jax.jit(energy_distance_from_distances)
+    assert float(jitted(distances, first_log, second_log)) == pytest.approx(
+        float(energy_distance_from_distances(distances, first_log, second_log)),
+        rel=1e-12,
+    )

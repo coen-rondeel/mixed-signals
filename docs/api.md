@@ -207,12 +207,44 @@
    :members:
 ```
 
+## Generators
+
+```{eval-rst}
+.. automodule:: mixed_signals.generators
+
+.. automodule:: mixed_signals.generators.protocol
+   :members:
+
+.. automodule:: mixed_signals.generators.capabilities
+   :members:
+   :show-inheritance:
+```
+
+## Data space
+
+```{eval-rst}
+.. automodule:: mixed_signals.dataspace
+
+.. automodule:: mixed_signals.dataspace.templates
+   :members:
+
+.. automodule:: mixed_signals.dataspace.distances
+   :members:
+
+.. automodule:: mixed_signals.dataspace.chart
+   :members:
+   :show-inheritance:
+```
+
 ## Engines
 
 ```{eval-rst}
 .. automodule:: mixed_signals.engines
 
 .. automodule:: mixed_signals.engines.compare
+   :members:
+
+.. automodule:: mixed_signals.engines.dataspace
    :members:
 
 .. automodule:: mixed_signals.engines.diagnose
@@ -240,6 +272,9 @@
    :show-inheritance:
 
 .. automodule:: mixed_signals.zoo.closed_forms
+   :members:
+
+.. automodule:: mixed_signals.zoo.signals
    :members:
 ```
 

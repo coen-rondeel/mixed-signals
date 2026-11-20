@@ -13,6 +13,7 @@ from jaxtyping import Array, PRNGKeyArray
 from mixed_signals import zoo
 from mixed_signals._config import SAMPLE_CAP
 from mixed_signals.core.space import ParamSpace
+from mixed_signals.dataspace.distances import distance_matrix
 from mixed_signals.diagnostics import (
     PAIR_CAP,
     anderson_darling_normality,
@@ -24,6 +25,7 @@ from mixed_signals.diagnostics import (
     projection_modes,
 )
 from mixed_signals.engines.cost import _FITS, _evaluation_seconds
+from mixed_signals.engines.dataspace import _side_rows
 from mixed_signals.estimators.gaussian import GaussianDensity
 from mixed_signals.metrics.divergence import (
     knn_hellinger_distance,
@@ -32,6 +34,7 @@ from mixed_signals.metrics.divergence import (
 )
 from mixed_signals.metrics.kernel import (
     energy_distance,
+    energy_distance_from_distances,
     maximum_mean_discrepancy,
     median_bandwidth,
 )
@@ -57,6 +60,7 @@ from mixed_signals.metrics.ot.sliced import (
     sliced_sinkhorn_epsilon,
     sliced_wasserstein_distance,
 )
+from mixed_signals.nulls.plan import random_sides
 from mixed_signals.prng import derive_key
 from mixed_signals.sigma.calibration import (
     KNN_KL_REPLICATES,
@@ -85,6 +89,8 @@ GRID_SLOW_SECONDS = 3.0
 """A call of the grid slower than this is timed once, to keep the build short."""
 NULL_DRAWS = 200
 """Draws of the null that a comparison row runs, by default."""
+SIGNAL_BATCH = 200
+"""Rows of sides that the engine of data space evaluates against one matrix at once."""
 
 
 class _Sizes(NamedTuple):
@@ -155,13 +161,20 @@ QUICK_STATISTICS = (
     "energy",
     "sliced_w2",
     "marginal_moments",
+    "signal_matrix",
+    "signal_draw",
 )
 """The statistics of the quick run, which skips the slow ones."""
 MODEL_FACTOR = 1.5
 """The factor within which the model must predict each checked timing."""
 COSTLY_SECONDS = 0.01
 """A timing of at least this, of a per-draw or per-surrogate statistic, is checked."""
-ONCE_STATISTICS = ("median_bandwidth", "sliced_sinkhorn_epsilon", "gmm_bic")
+ONCE_STATISTICS = (
+    "median_bandwidth",
+    "sliced_sinkhorn_epsilon",
+    "gmm_bic",
+    "signal_matrix",
+)
 """Statistics that run once per comparison or posterior, not per draw or surrogate."""
 EXISTING_ROWS = (
     ("energy distance", "energy"),
@@ -189,6 +202,8 @@ class _Timed(NamedTuple):
     """Key of the constants in the model."""
     call: Callable[[], object]
     units: float
+    evaluations: int = 1
+    """Evaluations that one call makes; the model gives the seconds of one."""
 
 
 def _gaussian_terms(
@@ -223,6 +238,46 @@ def _moments(
         mean_shift(first, first_weights, second, second_weights, space),
         width_ratio(first, first_weights, second, second_weights, space),
     )
+
+
+def _pooled_matrix(first: Array, second: Array) -> Array:
+    """Return the distance matrix of the pooled rows of two sets, as data space does."""
+    return distance_matrix(jnp.concatenate([first, second]))
+
+
+def _signal_calls(first: Array, second: Array, key: PRNGKeyArray) -> list[_Timed]:
+    """Return the distance matrix of a pair and its batch of energy distances.
+
+    The rows of the sets stand in for whitened templates, one data entry per
+    parameter. The batch has the rows of sides that a null of the engine has.
+    """
+    count = int(first.shape[0])
+    pool = jnp.concatenate([first, second])
+    distances = distance_matrix(pool)
+    first_positions, second_positions = random_sides(
+        key, 2 * count, count, draws=SIGNAL_BATCH
+    )
+    first_rows = _side_rows(2 * count, first_positions, jnp.zeros(2 * count))
+    second_rows = _side_rows(2 * count, second_positions, jnp.zeros(2 * count))
+    _wait((distances, first_rows, second_rows))
+    return [
+        _Timed(
+            "signal_matrix",
+            functools.partial(jax.jit(_pooled_matrix), first, second),
+            1.0,
+        ),
+        _Timed(
+            "signal_draw",
+            functools.partial(
+                jax.jit(energy_distance_from_distances),
+                distances,
+                first_rows,
+                second_rows,
+            ),
+            1.0,
+            SIGNAL_BATCH,
+        ),
+    ]
 
 
 def _grid_calls(
@@ -391,6 +446,7 @@ def _grid_calls(
             1.0,
         )
     )
+    timed.extend(_signal_calls(first, second, derive_key(key, "signal")))
     return timed
 
 
@@ -442,7 +498,10 @@ def _grid_predictions(
                 continue
             seconds = reused.get(timed.statistic)
             if seconds is None:
-                seconds = _time_call(timed.call, GRID_SLOW_SECONDS).seconds
+                seconds = (
+                    _time_call(timed.call, GRID_SLOW_SECONDS).seconds
+                    / timed.evaluations
+                )
             predictions.append(
                 _Prediction(
                     timed.statistic,
@@ -799,8 +858,12 @@ def _costs(context: Context) -> Section:
         " the model; the faster rows, dominated by the cost of dispatch, and the"
         " statistics that run once per call (the median bandwidth, the ε of the"
         " sliced Sinkhorn divergence and the GMM-BIC fit) stay in the table"
-        " unchecked. A run of the quick counts times six cheap statistics at one"
-        " point."
+        " unchecked. The two statistics of data space enter no claim: the distance"
+        " matrix of the pooled rows of a pair, with one data entry per parameter,"
+        " runs once per pair, and one evaluation of the energy distance from it,"
+        f" timed in batches of {SIGNAL_BATCH} rows of sides and divided by"
+        f" {SIGNAL_BATCH}, takes under {COSTLY_SECONDS * 1e3:g} ms. A run of the quick"
+        " counts times eight cheap statistics at one point."
     )
     return Section(setup, (table, grid_table), (claim,))
 

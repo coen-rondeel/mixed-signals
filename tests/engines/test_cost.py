@@ -6,6 +6,7 @@ from typing import Any
 
 import jax
 import jax.numpy as jnp
+import numpy as np
 import polars as pl
 import pytest
 
@@ -18,16 +19,18 @@ from mixed_signals.engines.cost import (
     COST_BUDGET,
     CostEstimate,
     estimate_compare_cost,
+    estimate_compare_signals_cost,
     estimate_diagnose_cost,
     warn_if_over_budget,
 )
 from mixed_signals.engines.diagnose import diagnose
-from mixed_signals.errors import CostWarning
+from mixed_signals.errors import CapabilityError, CostWarning
 from mixed_signals.nulls.surrogates import surrogate_size
 from mixed_signals.transforms.whiten import Whitening
 
 unchecked_compare_cost = inspect.unwrap(estimate_compare_cost)
 unchecked_diagnose_cost = inspect.unwrap(estimate_diagnose_cost)
+unchecked_signals_cost = inspect.unwrap(estimate_compare_signals_cost)
 DRAWS = 9
 CAP = 100_000
 
@@ -55,6 +58,8 @@ TABLE: dict[str, tuple[float, float, float | None, str | None]] = {
     "marginal_modes": (0.0153, 0.98, None, None),
     "projection_modes": (0.0159, 0.96, 27.0, None),
     "gmm_bic": (0.69, 0.32, 0.0, None),
+    "signal_matrix": (0.146, 2.10, 56.0, None),
+    "signal_draw": (3.86e-3, 2.00, None, None),
 }
 MISFITS: dict[str, float] = {
     "moments": 2.87,
@@ -79,6 +84,8 @@ MISFITS: dict[str, float] = {
     "marginal_modes": 1.24,
     "projection_modes": 1.34,
     "gmm_bic": 1.55,
+    "signal_matrix": 1.32,
+    "signal_draw": 1.03,
 }
 
 
@@ -371,8 +378,13 @@ def test_the_table_has_the_columns_and_the_total_of_its_seconds() -> None:
             "dimension": pl.Int64(),
             "evaluations": pl.Int64(),
             "seconds": pl.Float64(),
+            "space": pl.String(),
+            "memory": pl.Int64(),
         }
     )
+    # * The columns of data space are null in the rows of compare.
+    assert estimate.table["space"].null_count() == estimate.table.height
+    assert estimate.table["memory"].null_count() == estimate.table.height
     assert set(estimate.table["engine"]) == {"compare"}
     assert estimate.seconds == pytest.approx(float(estimate.table["seconds"].sum()))
     assert all(seconds > 0 for seconds in estimate.table["seconds"])
@@ -686,3 +698,241 @@ def test_an_empty_estimate_never_warns() -> None:
     """No groups cost nothing, so no budget is exceeded."""
     estimate = diagnose_cost(100, diagnostics=["chains"])
     warn_if_over_budget("diagnose", estimate, 0.0)
+
+
+# * The data-space estimate
+
+
+class SignalStub:
+    """A generator with a fixed number of data entries, and no Fisher matrix."""
+
+    def __init__(self, data_size: int) -> None:
+        """Store the number of data entries."""
+        self.data_size = data_size
+        self.sizes: list[int] = []
+
+    def generate_template(self, params: Any) -> Any:
+        """Return ones shaped (n, M) and record the number of rows."""
+        self.sizes.append(len(params))
+        return np.ones((len(params), self.data_size))
+
+
+class WhiteStub:
+    """A noise model that returns its signals, with a description."""
+
+    description = "stub"
+
+    def whiten(self, signals: Any) -> Any:
+        """Return the signals."""
+        return signals
+
+
+class FisherSignalStub(SignalStub):
+    """A stub generator with a Fisher matrix."""
+
+    def information_matrix(self, params: Any, *, noise: Any) -> Any:
+        """Return the identity of the parameters, once per row."""
+        return np.broadcast_to(np.eye(2), (len(params), 2, 2))
+
+
+def signals_cost(
+    count: int = 300,
+    data_size: int = 24,
+    posteriors: int = 2,
+    batch: int = 1,
+    **options: Any,
+) -> CostEstimate:
+    """Estimate a data-space comparison of Gaussian samples with a stub generator."""
+    samples = shift_set(count, batch=batch, posteriors=3 if posteriors == 3 else 2)
+    names = ["a", "b", "c"][: samples.shape.posterior]
+    return estimate_compare_signals_cost(
+        samples,
+        names,
+        SPACE,
+        generator=options.pop("generator", SignalStub(data_size)),
+        noise=options.pop("noise", WhiteStub()),
+        draws=options.pop("draws", DRAWS),
+        **options,
+    )
+
+
+def test_the_signal_estimate_has_generator_rows_and_energy_rows() -> None:
+    """Per posterior a generator row without seconds, per pair a data row."""
+    estimate = signals_cost(300, 24)
+    table = estimate.table
+    assert set(table["engine"]) == {"compare_signals"}
+    generator_rows = rows(estimate, "generate_template")
+    assert [row["pair"] for row in generator_rows] == [["a"], ["b"]]
+    for row in generator_rows:
+        assert row["estimator"] == "user"
+        assert row["samples"] == 300
+        assert row["dimension"] == 24
+        assert row["evaluations"] == 1
+        assert row["seconds"] is None
+        assert row["space"] is None
+        assert row["memory"] == 8 * 300 * 24
+    (energy,) = rows(estimate, "energy")
+    assert energy["estimator"] == "empirical"
+    assert energy["pair"] == ["a", "b"]
+    assert energy["space"] == "data(stub)"
+    assert energy["samples"] == 300
+    assert energy["dimension"] == 24
+    assert energy["evaluations"] == 1 + DRAWS
+    assert energy["memory"] == 8 * 600**2
+    expected = model("signal_matrix", 300, 24) + (1 + DRAWS) * model(
+        "signal_draw", 300, 0
+    )
+    assert energy["seconds"] == pytest.approx(expected, rel=1e-12)
+    # * The total sums the seconds that exist, and the user code has none.
+    assert estimate.seconds == pytest.approx(expected, rel=1e-12)
+
+
+def test_the_fisher_row_costs_the_same_matrix_in_the_dimension_of_the_chart() -> None:
+    """With a centre there is a chart row with D in place of M; without, none."""
+    plain = signals_cost(200, 24)
+    assert len(rows(plain, "energy")) == 1
+    with_centre = signals_cost(
+        200, 24, centre=np.zeros(2), fisher=np.eye(2), draws=DRAWS
+    )
+    data, chart = rows(with_centre, "energy")
+    assert data["space"] == "data(stub)"
+    assert chart["space"] == "chart(fisher)"
+    assert chart["dimension"] == 2
+    assert chart["memory"] == data["memory"] == 8 * 400**2
+    expected = model("signal_matrix", 200, 2) + (1 + DRAWS) * model(
+        "signal_draw", 200, 0
+    )
+    assert chart["seconds"] == pytest.approx(expected, rel=1e-12)
+    assert chart["seconds"] < data["seconds"]
+    only_centre = signals_cost(
+        200, 24, centre=np.zeros(2), generator=FisherSignalStub(24)
+    )
+    assert len(rows(only_centre, "energy")) == 2
+
+
+def test_the_estimate_counts_the_cap_the_zero_weights_and_the_calls() -> None:
+    """Capped positive counts, one generator call per chunk, and the half-samples."""
+    samples = shift_set(400)
+    log_weights = np.zeros((1, 2, 400))
+    log_weights[0, 1, :150] = -np.inf
+    weighted = SampleSet(samples.samples, log_weights=log_weights)
+    estimate = estimate_compare_signals_cost(
+        weighted,
+        ["a", "b"],
+        SPACE,
+        generator=SignalStub(8),
+        noise=WhiteStub(),
+        draws=DRAWS,
+        cap=300,
+        chunk_size=100,
+        uncertainty="subsampling_bootstrap",
+        half_samples=7,
+    )
+    first, second = rows(estimate, "generate_template")
+    assert (first["samples"], second["samples"]) == (300, 250)
+    assert (first["evaluations"], second["evaluations"]) == (3, 3)
+    assert second["memory"] == 8 * 250 * 8
+    (energy,) = rows(estimate, "energy")
+    assert energy["samples"] == 300
+    assert energy["evaluations"] == 1 + DRAWS + 7
+    assert energy["memory"] == 8 * 550**2
+
+
+def test_the_estimate_probes_one_sample_per_problem_for_the_data_size() -> None:
+    """Each problem's generator is called once on one positive-weight sample."""
+    samples = shift_set(100, batch=2)
+    first, second = SignalStub(5), SignalStub(9)
+    estimate = estimate_compare_signals_cost(
+        samples,
+        ["a", "b"],
+        SPACE,
+        generator=[first, second],
+        noise=[WhiteStub(), WhiteStub()],
+        draws=DRAWS,
+    )
+    assert first.sizes == second.sizes == [1]
+    assert [row["dimension"] for row in rows(estimate, "energy")] == [5, 9]
+    assert [row["problem"] for row in rows(estimate, "energy")] == [0, 1]
+    # * The probe is the first sample with a positive weight.
+    log_weights = np.zeros((1, 2, 100))
+    log_weights[0, 0, :5] = -np.inf
+    probe = SignalStub(4)
+    estimate_compare_signals_cost(
+        SampleSet(shift_set(100).samples, log_weights=log_weights),
+        ["a", "b"],
+        SPACE,
+        generator=probe,
+        noise=WhiteStub(),
+        draws=DRAWS,
+    )
+    assert probe.sizes[0] == 1
+
+
+def test_the_signal_estimate_shares_the_argument_errors_of_the_engine() -> None:
+    """The same checks as compare_signals, from the same code, before any estimate.
+
+    The test session checks the protocol annotations first, so the calls take
+    the unwrapped function, as runs without runtime type checks do.
+    """
+    samples = shift_set(60)
+    options: dict[str, Any] = {"generator": SignalStub(4), "noise": WhiteStub()}
+    with pytest.raises(CapabilityError, match="needs a noise model with whiten"):
+        unchecked_signals_cost(
+            samples, ["a", "b"], SPACE, generator=SignalStub(4), noise=SignalStub(4)
+        )
+    with pytest.raises(
+        CapabilityError, match="needs a generator with generate_template"
+    ):
+        unchecked_signals_cost(
+            samples, ["a", "b"], SPACE, generator=WhiteStub(), noise=WhiteStub()
+        )
+    with pytest.raises(CapabilityError, match="information_matrix"):
+        unchecked_signals_cost(
+            samples, ["a", "b"], SPACE, centre=np.zeros(2), **options
+        )
+    with pytest.raises(ValueError, match="fisher needs centre="):
+        unchecked_signals_cost(samples, ["a", "b"], SPACE, fisher=np.eye(2), **options)
+    with pytest.raises(ValueError, match="draws must be at least 1"):
+        unchecked_signals_cost(samples, ["a", "b"], SPACE, draws=0, **options)
+    with pytest.raises(ValueError, match="the split_half null needs reference"):
+        unchecked_signals_cost(samples, ["a", "b"], SPACE, null="split_half", **options)
+    with pytest.raises(ValueError, match="chunk_size must be at least 1"):
+        unchecked_signals_cost(samples, ["a", "b"], SPACE, chunk_size=0, **options)
+
+
+def test_a_tiny_budget_warns_once_for_the_signal_estimate() -> None:
+    """The warning names the costliest statistic that has seconds."""
+    estimate = signals_cost(300, 24)
+    with pytest.warns(
+        CostWarning, match="the compare_signals run is estimated at"
+    ) as seen:
+        warn_if_over_budget("compare_signals", estimate, 1e-9)
+    assert len(seen) == 1
+    assert "energy (empirical)" in str(seen[0].message)
+    # * User code has no estimate, so the warning does not name it.
+    assert "generate_template" not in str(seen[0].message)
+
+
+def test_the_estimates_of_compare_and_diagnose_keep_their_rows_with_null_columns() -> (
+    None
+):
+    """The two new columns are null in every row of the older estimates."""
+    for estimate in (compare_cost(300), diagnose_cost(300)):
+        assert estimate.table.height > 0
+        assert estimate.table["space"].null_count() == estimate.table.height
+        assert estimate.table["memory"].null_count() == estimate.table.height
+        assert estimate.table["seconds"].null_count() == 0
+
+
+class SingleNoise:
+    """A noise model that returns float32 vectors, which warns about precision."""
+
+    def whiten(self, signals: Any) -> Any:
+        """Return the signals as float32 vectors."""
+        return np.asarray(signals, dtype=np.float32)
+
+
+def test_the_probe_of_the_estimate_raises_none_of_the_template_warnings() -> None:
+    """A float32 whitener warns in the rows of the engine, not in the estimate."""
+    estimate = signals_cost(100, 6, noise=SingleNoise())
+    assert len(rows(estimate, "energy")) == 1

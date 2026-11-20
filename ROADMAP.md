@@ -22,7 +22,7 @@ The implementation is split into twenty focused sessions, numbered 0 to 19. They
 | 12 | Nulls and σ | D | 8 | Done (2026-11-18) |
 | 13 | Reweighting | D | 7 | Done (2026-11-19) |
 | 14 | Engines | E | 8 to 12 | Done (2026-11-20) |
-| 15 | Data space | E | 4, 9 | Open |
+| 15 | Data space | E | 4, 9 | Done (2026-11-20) |
 | 16 | Pipeline and CLI | F | 14 | Open |
 | 17 | Reports | F | 14 | Open |
 | 18 | GW subpackage | F | 7 | Open |
@@ -278,6 +278,8 @@ Scope: `generators/`, `dataspace/` and the data-space engine function.
 - Reference only: `estimate_distances.py` in catpylisa's `common_tools.utils` module (waveform distances with JaxGB). The catpylisa team wrote it, so read it rather than port it.
 - Done when a toy generator gives distances in noise-σ units that match the linear-order Fisher prediction.
 
+Outcome (2026-11-20): the developers decided fifteen items, now in `DESIGN.md`. `generators/` holds the protocols of data space, `SignalGenerator.generate_template`, `FisherGenerator.information_matrix(θ, noise=)` and `NoiseModel.whiten`, with `capabilities` and `require_capabilities`, which raise a `CapabilityError` before any user code runs. `dataspace/` holds `whitened_templates`, which calls the generator and the noise model in the caller's library through `io.arrays.call_in_chunks` and its new `value_shape=`; `distance_matrix`, the exact distances of pooled rows from the Gram matrix of the centred rows, filled in place; and `FisherChart`, the joint local chart of a Fisher matrix with circles unwrapped about its centre, whose distances are ΔθᵀΓΔθ. `engines/dataspace.py` has `compare_signals`. Per pair it gives the energy distance of the whitened templates, exact through one distance matrix whose weighted sums give the observed value, every null draw and every half-sample (`metrics.kernel.energy_distance_from_distances`), and with a Fisher matrix, from arrays or from the generator, the energy distance in the chart. Both rows share the capped samples, the null plan and the half-samples, and read σ_eff from the energy curve with D parameters. The energy kernel on full templates would take about a minute per evaluation at the cap, where one matrix takes about 8 s and 200 null draws under a second. The null sides of a capped set take the design-effect effective size (`core.samples.subsample_effective_size`), which held the 5% level on capped AR(1) chains (4.69 to 5.34% over caps of 2 000 to 12 000 samples), where keeping the ratio m·n_eff/N rejected too rarely and ignoring the correlation too often. An invalid Fisher matrix gives NaN Fisher rows with a warning, and the data rows go on. `estimate_compare_signals_cost` probes the generator on one sample, and the cost table gained `space` and `memory`. The zoo gained `linear_signal`, `sinusoid_signal` and `WhiteNoise`. On a linear signal the data row and the chart row agreed to 2e-12; on a sinusoid the ratio of the data row to the chart row rose from 0.920 at a signal-to-noise ratio of 5 to 1.0000 at 100. Four checks in `scripts/zoo_validation/dataspace.py` join the quick test; the committed page gains them at its next full build. Later sessions pass the generator and the noise model as Python objects, and the GW subpackage supplies a PSD noise model.
+
 ### 16. Pipeline and CLI
 
 Scope: `pipeline/`, `cli.py`.
@@ -287,6 +289,7 @@ Scope: `pipeline/`, `cli.py`.
 - eryn runs load with `Chains.from_eryn`, and their spaces with `ParamSpace.from_eryn_priors`.
 - `mixed-signals run config.yaml`, including the dry-run cost estimate.
 - Session 14 built the pieces: the dry-run table comes from `engines.cost.estimate_compare_cost` and `estimate_diagnose_cost`; the config seed reaches the engines as `key=<int>`, which fills the provenance seed, and the config hash as `config_hash=`; YAML threshold overrides become the `thresholds=` mappings of the engines, floats for `compare` and `diagnostics.flags.Threshold` entries for `diagnose`; `diagnose` returns the reductions of the runs, which `compare` then takes.
+- `compare_signals` (session 15) takes a generator and a noise model as Python objects, which a YAML file cannot hold. Settle with the developers whether the config names them by import path, such as `module:attribute`, or data space stays in the Python API.
 - Done when an example config runs from the shell and gives the same table again from the same seed.
 
 ### 17. Reports
@@ -297,6 +300,7 @@ Scope: `report/`.
 - Contents: the σ_eff, r_eff and σ_sig summary table, cantuccio corner overlays with contours from the metric estimators, null histograms from the stored null draws, and diagnostics, with their flags from `diagnostics.flags.evaluate`.
 - A plot of the Sinkhorn divergence against ε, from the curve that `sinkhorn_divergence` returns for a vector of ε, with the null band per ε of session 12. Since session 14, `compare(..., metrics=["sinkhorn"], sinkhorn_epsilon_factors=...)` gives one `sinkhorn` row per factor, with its ε in the settings and its null draws.
 - Verdicts come from the `flag` and `threshold` columns, and the side of each p-value from the `tail` field of `null_recipe` (session 14).
+- Data-space rows (session 15) come in pairs, the data row (space `data(...)`) and the chart row (`chart(fisher)`). Show them side by side: their ratio shows where the linear order fails.
 - Reweighting rows flag through the `ImportanceWeightWarning` in their warnings column, since the k̂ threshold depends on the number of draws; the `pareto_k` row stores S, M and R in its settings, and `importance_ess` rows are informational.
 - Pass `KernelDensity.resolved_settings().bandwidth` to cantuccio as its `bandwidth`, which reproduces the estimate away from bounds (tested in session 6). cantuccio neither reflects nor corrects at bounds, so near an interval bound draw the contours from `KernelDensity.log_density` on a grid.
 - Done when the example pipeline produces a report that renders.
@@ -306,13 +310,14 @@ Scope: `report/`.
 Scope: `gw/`, with a `gw` extra if it needs new dependencies.
 
 - GW parameter conventions (names, units, sky-position pairs), readers, waveform helpers and the PSD-weighted frequency-domain inner product, so the core stays domain-agnostic.
+- The inner product as a `NoiseModel` of `compare_signals` (session 15): `whiten` returns 2√(Δf/S(f)) times the real and imaginary parts of each frequency bin, stacked per channel; correlated channels go through the Cholesky factor of the inverse cross-spectral matrix. The templates of one problem must share one data grid, so helpers place Galactic-binary templates, whose band starts at a bin that depends on f₀ in JaxGB, on one band per problem. A JaxGB generator can give `information_matrix` by automatic differentiation of its templates.
 - Done when a LISA galactic-binary example loads through `gw` into the core containers.
 
 ### 19. Release readiness
 
 - A Sphinx user guide and API pages, the validation page, and marimo examples in `examples/`.
-- The next full build of the validation page, whichever session runs it, adds the six reweighting checks of session 13 (under a minute) and the checks of session 14 in `scripts/zoo_validation/engines.py` and the costs grid (31 minutes), about 86 minutes in all; then link the docstrings that name `scripts/zoo_validation/reweighting.py` and `engines.py` to their sections instead. Run it in High Power mode with the machine idle.
-- The GPU suite on the cluster with a single GPU, and a performance check. It includes `reweight`, whose `pareto_tail` compiles once per distinct tail length, so a batch of MCMC sets with different relative efficiencies compiles once per set; the developers accepted this in session 13. It also includes `compare` and `diagnose`; the cost model of `engines/cost.py` holds for one CPU of the developers' machine, so its estimates overstate a GPU run.
+- The next full build of the validation page, whichever session runs it, adds the six reweighting checks of session 13 (under a minute), the checks of session 14 in `scripts/zoo_validation/engines.py` and the costs grid (31 minutes) and the four data-space checks of session 15 in `scripts/zoo_validation/dataspace.py` (under two minutes), about 88 minutes in all; then link the docstrings that name `scripts/zoo_validation/reweighting.py`, `engines.py` and `dataspace.py` to their sections instead. Run it in High Power mode with the machine idle.
+- The GPU suite on the cluster with a single GPU, and a performance check. It includes `reweight`, whose `pareto_tail` compiles once per distinct tail length, so a batch of MCMC sets with different relative efficiencies compiles once per set; the developers accepted this in session 13. It also includes `compare`, `diagnose` and `compare_signals`, whose distance matrices need 8P² bytes, 3.2 GB at the cap; the cost model of `engines/cost.py` holds for one CPU of the developers' machine, so its estimates overstate a GPU run.
 - Benchmark `SAMPLE_CAP` per metric. At the cap, one kNN JS evaluation took 9.5 s and one MMD² evaluation 0.3 s on one CPU (session 9); the developers kept one cap for now, because it is easy to tune.
 - Release blockers: reserve `mixed-signals` on PyPI, wait for eryn to release its JAX-compatible prior setup, now on its `feat-jaxpriors` branch, and wait for an ott-jax release with the fix of its online mode (ott-jax pull request 701), now pinned at a commit of its main branch, because a published package cannot depend on git sources.
 - Done when version 0.1.0 can be published.

@@ -313,3 +313,177 @@ def test_at_least_one_point_is_needed() -> None:
     """An empty set of points raises instead of returning nothing."""
     with pytest.raises(ValueError, match="at least one point"):
         call_in_chunks(lambda chunk: np.zeros(len(chunk)), np.zeros((0, 2)))
+
+
+# * Calling user code with an array of values per row
+
+
+class RowFeatures:
+    """A function of the caller that returns an array of a fixed shape per row."""
+
+    def __init__(self, tail: tuple[int, ...]) -> None:
+        """Set the trailing shape of every result and start without calls."""
+        self.tail = tail
+        self.sizes: list[int] = []
+
+    def __call__(self, points: Any) -> Any:
+        """Return the row sum of each point, repeated into the trailing shape."""
+        self.sizes.append(len(points))
+        sums = np.asarray(points).sum(axis=-1)
+        return np.broadcast_to(
+            sums.reshape(-1, *([1] * len(self.tail))), (len(points), *self.tail)
+        ).copy()
+
+
+@pytest.mark.parametrize("tail", [(4,), (3, 3), (2, 1, 5)])
+def test_a_value_shape_gathers_arrays_across_chunks(tail: tuple[int, ...]) -> None:
+    """Each chunk of m rows returns (m, *tail), and the result is (N, *tail)."""
+    points = np.arange(14.0).reshape(7, 2)
+    function = RowFeatures(tail)
+    values = call_in_chunks(function, points, chunk_size=3, value_shape=tail)
+    assert function.sizes == [3, 3, 1]
+    assert values.shape == (7, *tail)
+    assert values.dtype == jnp.float64
+    expected = points.sum(axis=-1).reshape(-1, *([1] * len(tail)))
+    np.testing.assert_array_equal(values, np.broadcast_to(expected, (7, *tail)))
+
+
+def test_a_value_shape_of_none_is_fixed_by_the_first_chunk() -> None:
+    """With None any trailing shape passes, but later chunks must match the first."""
+    points = np.arange(10.0).reshape(5, 2)
+    function = RowFeatures((6,))
+    values = call_in_chunks(function, points, chunk_size=2, value_shape=None)
+    assert values.shape == (5, 6)
+    chunk_sizes: list[int] = []
+
+    def growing(chunk: Any) -> Any:
+        chunk_sizes.append(len(chunk))
+        return np.zeros((len(chunk), 3 if len(chunk_sizes) == 1 else 4))
+
+    with pytest.raises(
+        ValueError,
+        match=r"returned shape \(2, 4\) for a chunk of 2 points; .* \(2, 3\)",
+    ):
+        call_in_chunks(growing, points, chunk_size=2, value_shape=None)
+
+
+def test_a_value_shape_of_none_accepts_a_scalar_per_row() -> None:
+    """One value per row gives a trailing shape of (), so the result is (N,)."""
+    points = np.arange(10.0).reshape(5, 2)
+    values = call_in_chunks(
+        lambda chunk: np.asarray(chunk).sum(axis=-1),
+        points,
+        chunk_size=2,
+        value_shape=None,
+    )
+    assert values.shape == (5,)
+    np.testing.assert_array_equal(values, points.sum(axis=-1))
+
+
+def test_a_value_shape_of_none_still_needs_one_leading_row_per_point() -> None:
+    """A result without the row axis, or with a wrong one, raises."""
+    points = np.arange(10.0).reshape(5, 2)
+    with pytest.raises(ValueError, match=r"returned shape \(\) .* shape \(5, \.\.\.\)"):
+        call_in_chunks(lambda chunk: np.float64(0.0), points, value_shape=None)
+    with pytest.raises(
+        ValueError, match=r"returned shape \(4, 2\) .* shape \(5, \.\.\.\)"
+    ):
+        call_in_chunks(lambda chunk: np.zeros((4, 2)), points, value_shape=None)
+
+
+def test_a_wrong_trailing_shape_names_the_expected_shape() -> None:
+    """The message gives the returned shape and the shape that the chunk needs."""
+    points = np.arange(6.0).reshape(3, 2)
+    with pytest.raises(
+        ValueError,
+        match=(
+            r"returned shape \(3, 5\) for a chunk of 3 points; it must return"
+            r" shape \(3, 4\)"
+        ),
+    ):
+        call_in_chunks(lambda chunk: np.zeros((3, 5)), points, value_shape=(4,))
+    with pytest.raises(ValueError, match=r"it must return shape \(3, 2, 2\)"):
+        call_in_chunks(lambda chunk: np.zeros(3), points, value_shape=(2, 2))
+    with pytest.raises(ValueError, match=r"returned shape \(3, 1\) .* shape \(3,\)"):
+        call_in_chunks(lambda chunk: np.zeros((3, 1)), points)
+
+
+def test_invalid_value_shapes_are_rejected() -> None:
+    """Only None and tuples of positive integers pass, checked before any call.
+
+    The test session checks the annotations first, so the test calls the
+    unwrapped function, as runs without runtime type checks do.
+    """
+    unchecked = inspect.unwrap(call_in_chunks)
+    points = np.zeros((3, 2))
+    calls: list[int] = []
+
+    def function(chunk: Any) -> Any:
+        calls.append(len(chunk))
+        return np.zeros((len(chunk), 2))
+
+    with pytest.raises(
+        TypeError, match="value_shape must be a tuple of integers or None, got list"
+    ):
+        unchecked(function, points, value_shape=[2])
+    with pytest.raises(
+        TypeError, match="value_shape must be a tuple of integers or None, got int"
+    ):
+        unchecked(function, points, value_shape=2)
+    with pytest.raises(
+        TypeError, match="value_shape must hold integers, got an entry of type str"
+    ):
+        unchecked(function, points, value_shape=("2",))
+    with pytest.raises(
+        TypeError, match="value_shape must hold integers, got an entry of type bool"
+    ):
+        unchecked(function, points, value_shape=(True,))
+    with pytest.raises(
+        ValueError, match=r"entry of value_shape must be at least 1, got \(2, 0\)"
+    ):
+        unchecked(function, points, value_shape=(2, 0))
+    with pytest.raises(
+        ValueError, match=r"entry of value_shape must be at least 1, got \(-1,\)"
+    ):
+        unchecked(function, points, value_shape=(-1,))
+    assert calls == []
+
+
+def test_complex_results_are_rejected_with_a_value_shape() -> None:
+    """The real-dtype rule holds for arrays per row, whatever the shape."""
+    points = np.arange(4.0).reshape(2, 2)
+    with pytest.raises(TypeError, match="real numbers, got dtype complex128"):
+        call_in_chunks(
+            lambda chunk: np.zeros((len(chunk), 3), dtype=complex),
+            points,
+            value_shape=(3,),
+        )
+    with pytest.raises(TypeError, match="real numbers, got dtype complex128"):
+        call_in_chunks(
+            lambda chunk: np.zeros((len(chunk), 3), dtype=complex),
+            points,
+            value_shape=None,
+        )
+
+
+def test_narrow_arrays_per_row_warn_once_and_cast() -> None:
+    """Float32 arrays of several chunks give one warning and float64 values."""
+    points = np.arange(10.0).reshape(5, 2)
+    with pytest.warns(PrecisionWarning, match=r"results \(float32\)") as records:
+        values = call_in_chunks(
+            lambda chunk: np.ones((len(chunk), 2), dtype=np.float32),
+            points,
+            chunk_size=2,
+            value_shape=(2,),
+        )
+    assert len(records) == 1
+    assert values.dtype == jnp.float64
+
+
+def test_the_default_value_shape_is_one_value_per_row() -> None:
+    """An explicit () gives what the default gives, a vector of N values."""
+    points = np.arange(12.0).reshape(6, 2)
+    default = call_in_chunks(RowSum(), points, chunk_size=4)
+    explicit = call_in_chunks(RowSum(), points, chunk_size=4, value_shape=())
+    assert default.shape == explicit.shape == (6,)
+    np.testing.assert_array_equal(default, explicit)

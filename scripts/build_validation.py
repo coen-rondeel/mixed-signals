@@ -5,10 +5,10 @@ checks, with a standard error on every number, and writes ``docs/validation.md``
 its figures under ``docs/validation/figures/`` and the raw numbers in
 ``docs/validation/results.json``. All three are stamped with the package
 version, the JAX version and the seed. The full build takes about an hour and a
-half on the 12-core Apple M4 Pro of the developers (about 86 minutes: 54 for the
-checks of sessions 6 to 12, under a minute for those of session 13 and 31 for those
-of session 14); ``--quick`` takes about four minutes and is what the test suite
-runs.
+half on the 12-core Apple M4 Pro of the developers (about 88 minutes: 54 for the
+checks of sessions 6 to 12, under a minute for those of session 13, 31 for those
+of session 14 and under two for those of session 15); ``--quick`` takes about four
+minutes and is what the test suite runs.
 
 Usage:
     uv run python scripts/build_validation.py [--quick] [--seed SEED]
@@ -51,6 +51,7 @@ TOPICS: Final = (
     ("diagnostics", "Diagnostics"),
     ("reweighting", "Reweighting"),
     ("engines", "Engines"),
+    ("dataspace", "Data space"),
     ("costs", "Costs"),
 )
 """The topic modules in page order, with the heading of each.

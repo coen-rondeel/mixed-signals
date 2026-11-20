@@ -19,9 +19,10 @@ first.
 
 User code
     :func:`call_in_chunks` calls a function of the caller, such as a
-    log-likelihood or a prior, at this boundary and outside ``jax.jit``: it
-    hands the function arrays of the chosen library in chunks of rows, checks
-    what comes back and returns one JAX array of float64.
+    log-likelihood, a prior or a signal whitener, at this boundary and outside
+    ``jax.jit``: it hands the function arrays of the chosen library in chunks
+    of rows, checks what comes back and returns one JAX array of float64, with
+    one value per row or an array of a fixed shape per row.
 
 torch and CuPy are imported inside :func:`from_jax`, so the package imports
 without them. The ``torch`` extra installs torch, and the ``cuda12`` and
@@ -153,8 +154,9 @@ def call_in_chunks(
     *,
     backend: ArrayBackend = "numpy",
     chunk_size: int | None = None,
-) -> Float[Array, " sample"]:
-    """Call a function of the caller on rows of points and gather one value per row.
+    value_shape: tuple[int, ...] | None = (),
+) -> Float[Array, "sample ..."]:
+    """Call a function of the caller on rows of points and gather its values per row.
 
     The function may belong to any array library, such as a NumPy
     log-likelihood or a torch prior. For consecutive chunks of at most
@@ -166,21 +168,27 @@ def call_in_chunks(
 
     Args:
         function: Maps points shaped (M, D), as arrays of ``backend``, to M
-            real values.
+            real values, or to real arrays shaped ``(M, *value_shape)``.
         points: The points, shaped (N, D), with at least one row.
         backend: ``"numpy"``, ``"jax"``, ``"torch"`` or ``"cupy"``: the library
             of the arrays that the function receives.
         chunk_size: The most rows in one call; all rows in one call when
             ``None``. A smaller chunk bounds the memory of the function.
+        value_shape: The shape of the result of one row: ``()`` for one value
+            per row, a tuple of positive integers such as (D, D) for an array
+            per row, or ``None`` for any trailing shape, which the first chunk
+            fixes and every later chunk must match.
 
     Returns:
-        The values, one per point, in the order of the points, as float64.
+        The values in the order of the points, as float64, shaped
+        ``(N, *value_shape)``; (N,) by default.
 
     Raises:
         ValueError: If the backend is unknown, ``chunk_size`` is below one,
-            there are no points, or a result is not shaped (M,) for its chunk
-            of M rows.
-        TypeError: If ``chunk_size`` is not an integer or a result is not real.
+            an entry of ``value_shape`` is below one, there are no points, or
+            a result is not shaped ``(M, *value_shape)`` for its chunk of M rows.
+        TypeError: If ``chunk_size`` is not an integer, ``value_shape`` is not
+            a tuple of integers or ``None``, or a result is not real.
         MissingDependencyError: If torch or CuPy is not installed.
 
     Warns:
@@ -203,6 +211,7 @@ def call_in_chunks(
             )
         if chunk_size < 1:
             raise ValueError(f"chunk_size must be at least 1, got {chunk_size}")
+    _check_value_shape(value_shape)
     rows = to_jax(points)
     row_count = rows.shape[0]
     if row_count == 0:
@@ -210,6 +219,8 @@ def call_in_chunks(
     step = row_count if chunk_size is None else int(chunk_size)
     values: list[Array] = []
     narrow_dtypes: set[str] = set()
+    # * With value_shape None, the first chunk fixes the trailing shape.
+    trailing_shape = value_shape
     for start in range(0, row_count, step):
         chunk = rows[start : start + step]
         result = to_jax(function(from_jax(chunk, backend)))
@@ -220,12 +231,7 @@ def call_in_chunks(
             or jnp.issubdtype(dtype, jnp.bool_)
         ):
             raise TypeError(f"the function must return real numbers, got dtype {dtype}")
-        if result.shape != (chunk.shape[0],):
-            raise ValueError(
-                f"the function returned shape {result.shape} for a chunk of"
-                f" {chunk.shape[0]} points; it must return shape"
-                f" ({chunk.shape[0]},), one value per point"
-            )
+        trailing_shape = _trailing_shape(result.shape, chunk.shape[0], trailing_shape)
         if jnp.issubdtype(dtype, jnp.floating) and dtype.itemsize < 8:
             narrow_dtypes.add(str(dtype))
         values.append(jnp.asarray(result, dtype=jnp.float64))
@@ -240,6 +246,51 @@ def call_in_chunks(
             skip_file_prefixes=(_PACKAGE_DIRECTORY,),
         )
     return jnp.concatenate(values)
+
+
+def _check_value_shape(value_shape: object) -> None:
+    """Raise unless ``value_shape`` is ``None`` or a tuple of positive integers."""
+    if value_shape is None:
+        return
+    if not isinstance(value_shape, tuple):
+        raise TypeError(
+            "value_shape must be a tuple of integers or None, got"
+            f" {type(value_shape).__name__}"
+        )
+    for size in value_shape:
+        if isinstance(size, bool) or not isinstance(size, int | np.integer):
+            raise TypeError(
+                "value_shape must hold integers, got an entry of type"
+                f" {type(size).__name__}"
+            )
+        if size < 1:
+            raise ValueError(
+                f"every entry of value_shape must be at least 1, got {value_shape}"
+            )
+
+
+def _trailing_shape(
+    shape: tuple[int, ...], row_count: int, trailing_shape: tuple[int, ...] | None
+) -> tuple[int, ...]:
+    """Return the trailing shape of a result shaped (row_count, *trailing_shape).
+
+    ``None`` accepts any trailing shape and returns the one that this result has.
+    """
+    if (
+        len(shape) == 0
+        or shape[0] != row_count
+        or (trailing_shape is not None and shape[1:] != trailing_shape)
+    ):
+        expected = (
+            f"({row_count}, ...)"
+            if trailing_shape is None
+            else str((row_count, *trailing_shape))
+        )
+        raise ValueError(
+            f"the function returned shape {shape} for a chunk of {row_count} points;"
+            f" it must return shape {expected}"
+        )
+    return shape[1:] if trailing_shape is None else trailing_shape
 
 
 def _import_backend(module_name: str) -> ModuleType:
