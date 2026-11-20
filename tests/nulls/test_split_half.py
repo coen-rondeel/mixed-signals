@@ -136,7 +136,9 @@ def test_the_sides_are_disjoint_halves_of_the_reference() -> None:
         "construction": "split_half",
         "draws": 10,
         "sample_size": expected,
+        "tail": None,
     }
+    assert plan.recipe("upper")["tail"] == "upper"
     for first, second in zip(plan.first, plan.second, strict=True):
         assert len(set(first.tolist()) | set(second.tolist())) == 2 * expected
 

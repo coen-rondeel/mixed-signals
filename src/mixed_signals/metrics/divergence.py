@@ -58,8 +58,10 @@ Weights
     The estimators assume equally weighted, independent draws (Wang,
     Kulkarni and Verdú 2009). Samples of zero weight leave every search;
     unequal positive weights give NaN with a
-    :class:`~mixed_signals.errors.ValidityWarning`, so resample a weighted
-    set in proportion to its weights first (Smith and Gelfand 1992).
+    :class:`~mixed_signals.errors.ValidityWarning`, so convert a weighted set
+    with :func:`~mixed_signals.core.samples.rejection_subset` first, which
+    keeps each sample with probability wᵢ/max w and makes no copies, unlike
+    resampling with replacement (Smith and Gelfand 1992; Ashton et al. 2019).
 Validity
     A posterior needs more samples of positive weight than k. A k-th
     neighbour distance of zero, from at least k coinciding samples such as
@@ -72,7 +74,7 @@ References:
     :cite:t:`kraskov2004mutual`; :cite:t:`poczos2011estimation`;
     :cite:t:`renyi1961measures`; :cite:t:`hellinger1909neue`;
     :cite:t:`bhattacharyya1943measure`; :cite:t:`smith1992bayesian`;
-    :cite:t:`politis1999subsampling`.
+    :cite:t:`ashton2019bilby`; :cite:t:`politis1999subsampling`.
 """
 
 import math

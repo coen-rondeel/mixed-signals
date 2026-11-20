@@ -71,11 +71,20 @@ def shifted_values(shift: float) -> dict[str, float]:
 def test_sigma_eff_returns_the_shift_of_unit_gaussians(shift: float) -> None:
     """Each map inverts its metric for two unit Gaussians a shift apart."""
     values = shifted_values(shift)
-    assert set(values) == set(SIGMA_EFF_MAPS)
+    assert set(values) == {"mean_shift", *SIGMA_EFF_MAPS}
     for metric, value in values.items():
         assert float(sigma_eff(metric, value)) == pytest.approx(
             shift, rel=1e-9, abs=1e-15
         ), metric
+
+
+def test_mean_shift_has_no_map_entry_and_returns_its_signed_value() -> None:
+    """The mean shift is σ_eff already, so sigma_eff returns it before the maps."""
+    assert "mean_shift" not in SIGMA_EFF_MAPS
+    for value in (-0.7, 0.0, 0.25):
+        assert float(sigma_eff("mean_shift", value)) == value
+    values = jnp.array([-1.5, 0.0, 2.0])
+    np.testing.assert_array_equal(sigma_eff("mean_shift", values), values)
 
 
 def test_sigma_eff_is_signed_for_every_map() -> None:
@@ -162,6 +171,120 @@ def test_r_eff_outside_the_range_is_nan() -> None:
     assert float(r_eff("w2_shape", 1.2, 1.0)) == pytest.approx(2.2)
     assert math.isnan(float(r_eff("hellinger_shape", 1.0, 1.0)))
     assert math.isnan(float(r_eff("width_ratio", 0.0)))
+
+
+POOLED_RATIOS = [0.5, 0.8, 1.25, 2.0, 5.0]
+
+
+def pooled_w2_term(ratio: float) -> float:
+    """Return the W2 shape term of a width ratio along one axis in a pooled frame."""
+    return math.sqrt(2) * abs(ratio - 1) / math.sqrt(1 + ratio**2)
+
+
+def pooled_pair(first: jax.Array, second: jax.Array) -> tuple[jax.Array, jax.Array]:
+    """Whiten two covariances by their mean, with the inverse Cholesky factor."""
+    factor = jnp.linalg.inv(jnp.linalg.cholesky(0.5 * (first + second)))
+    return factor @ first @ factor.T, factor @ second @ factor.T
+
+
+@pytest.mark.parametrize("ratio", POOLED_RATIOS)
+def test_pooled_w2_shape_inverts_its_relation_on_both_roots(ratio: float) -> None:
+    """The pooled map returns r from g = √2 |r − 1|/√(1 + r²), wider or narrower."""
+    value = pooled_w2_term(ratio)
+    mapped = r_eff("w2_shape", value, math.log(ratio**2), pooled=True)
+    assert float(mapped) == pytest.approx(ratio, rel=1e-10)
+    # * A value below zero gives the reciprocal of the root, as in the other maps.
+    for direction in (1.0, -1.0):
+        positive = float(r_eff("w2_shape", value, direction, pooled=True))
+        negative = float(r_eff("w2_shape", -value, direction, pooled=True))
+        assert negative == pytest.approx(1 / positive, rel=1e-14)
+
+
+def test_pooled_w2_shape_has_no_cancellation_and_a_pole_at_root_two() -> None:
+    """Zero gives one, a tiny value its own size, and √2 and above give NaN."""
+    assert float(r_eff("w2_shape", 0.0, 1.0, pooled=True)) == 1.0
+    assert float(r_eff("w2_shape", 0.0, -1.0, pooled=True)) == 1.0
+    # * Digits of r − 1 are limited by the rounding of r near one, about 1e-16/1e-8.
+    wider = float(r_eff("w2_shape", 1e-8, 1.0, pooled=True))
+    narrower = float(r_eff("w2_shape", 1e-8, -1.0, pooled=True))
+    assert wider - 1 == pytest.approx(1e-8, rel=1e-6)
+    assert 1 - narrower == pytest.approx(1e-8, rel=1e-6)
+    for value in (math.sqrt(2), 1.5, -math.sqrt(2), math.nan):
+        assert math.isnan(float(r_eff("w2_shape", value, 1.0, pooled=True)))
+    near_pole = math.sqrt(2) * (1 - 1e-9)
+    wide = float(r_eff("w2_shape", near_pole, 1.0, pooled=True))
+    assert math.isfinite(wide)
+    assert wide > 1e8
+    # * The narrow root is 1/wide; the form 1 − spread would cancel here.
+    narrow = float(r_eff("w2_shape", near_pole, -1.0, pooled=True))
+    assert narrow == pytest.approx(1 / wide, rel=1e-6)
+
+
+def test_pooled_keyword_leaves_the_other_maps_as_they_are() -> None:
+    """Only the W2 shape term depends on the frame."""
+    for metric in ("kl_shape", "hellinger_shape"):
+        for direction in (1.0, -1.0):
+            assert float(r_eff(metric, 0.1, direction, pooled=True)) == float(
+                r_eff(metric, 0.1, direction)
+            )
+    assert float(r_eff("width_ratio", 0.8, pooled=True)) == 0.8
+    # * With unit width of the first posterior, the reference map is the old one.
+    assert float(r_eff("w2_shape", 0.1, 1.0)) == pytest.approx(1.1)
+    assert float(r_eff("w2_shape", 0.1, 1.0, pooled=True)) != pytest.approx(1.1)
+
+
+@pytest.mark.parametrize("ratio", [0.6, 1.25, 3.0])
+def test_pooled_w2_shape_returns_the_ratio_of_pooled_whitened_gaussians(
+    ratio: float,
+) -> None:
+    """gaussian_w2 of two covariances whitened by their mean maps back to r."""
+    first = jnp.eye(2)
+    second = jnp.diag(jnp.array([ratio**2, 1.0]))
+    one, two = pooled_pair(first, second)
+    np.testing.assert_allclose(one + two, 2 * jnp.eye(2), atol=1e-12)
+    terms = gaussian_w2(jnp.zeros(2), one, jnp.zeros(2), two)
+    assert float(terms.shape) == pytest.approx(pooled_w2_term(ratio), rel=1e-10)
+    mapped = r_eff("w2_shape", terms.shape, terms.log_det_ratio, pooled=True)
+    assert float(mapped) == pytest.approx(ratio, rel=1e-8)
+    # * The reference map assumes a unit first width, so it reads the ratio wrongly.
+    reference = r_eff("w2_shape", terms.shape, terms.log_det_ratio)
+    assert abs(float(reference) - ratio) > 0.02
+
+
+def test_pooled_w2_shape_separates_per_axis_and_ignores_the_whitening() -> None:
+    """Two changed axes add in squares; another whitening factor gives the same term."""
+    ratios = (1.5, 0.7)
+    first = jnp.eye(2)
+    second = jnp.diag(jnp.array(ratios) ** 2)
+    one, two = pooled_pair(first, second)
+    shape = float(gaussian_w2(jnp.zeros(2), one, jnp.zeros(2), two).shape)
+    expected = math.sqrt(sum(pooled_w2_term(ratio) ** 2 for ratio in ratios))
+    assert shape == pytest.approx(expected, rel=1e-10)
+    # * The Bures form of commuting covariances with A + B = 2I, per eigenvalue a.
+    eigenvalues = np.linalg.eigvalsh(np.asarray(one))
+    bures = np.sqrt(np.sum((np.sqrt(eigenvalues) - np.sqrt(2 - eigenvalues)) ** 2))
+    assert shape == pytest.approx(float(bures), rel=1e-10)
+    # * Any whitening W with W (mean covariance) Wᵀ = I differs by a rotation.
+    rotation = jnp.array([[0.6, -0.8], [0.8, 0.6]])
+    factor = rotation @ jnp.linalg.inv(jnp.linalg.cholesky(0.5 * (first + second)))
+    rotated = gaussian_w2(
+        jnp.zeros(2),
+        factor @ first @ factor.T,
+        jnp.zeros(2),
+        factor @ second @ factor.T,
+    ).shape
+    assert float(rotated) == pytest.approx(shape, rel=1e-10)
+
+
+def test_pooled_w2_shape_of_correlated_covariances_obeys_its_relation() -> None:
+    """For general covariances, the returned r reproduces the measured shape term."""
+    first = jnp.array([[2.0, 0.5], [0.5, 1.0]])
+    second = jnp.array([[3.0, 0.2], [0.2, 1.5]])
+    one, two = pooled_pair(first, second)
+    terms = gaussian_w2(jnp.zeros(2), one, jnp.zeros(2), two)
+    mapped = float(r_eff("w2_shape", terms.shape, terms.log_det_ratio, pooled=True))
+    assert pooled_w2_term(mapped) == pytest.approx(float(terms.shape), rel=1e-10)
+    assert (mapped > 1) == (float(terms.log_det_ratio) > 0)
 
 
 def test_maps_check_their_names_and_directions() -> None:

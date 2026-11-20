@@ -109,6 +109,7 @@ from mixed_signals import errors
 from mixed_signals.core.result import Provenance, Result, UncertaintyMethod, hash_arrays
 from mixed_signals.core.samples import SampleSet
 from mixed_signals.core.space import ParamSpace
+from mixed_signals.engines._common import unique_names
 from mixed_signals.errors import CapabilityError, ImportanceWeightWarning, WarningRecord
 from mixed_signals.io.arrays import ArrayBackend, call_in_chunks
 from mixed_signals.priors.protocol import PriorDistribution
@@ -353,37 +354,16 @@ def _check_names(
     names: object, target_names: object, posterior_count: int
 ) -> tuple[tuple[str, ...], tuple[str, ...]]:
     """Return the source and target names, checked against the posteriors."""
-    sources = _unique_names("names", names, posterior_count)
+    sources = unique_names("names", names, posterior_count)
     if target_names is None:
         return sources, tuple(f"{name}{TARGET_SUFFIX}" for name in sources)
-    targets = _unique_names("target_names", target_names, posterior_count)
+    targets = unique_names("target_names", target_names, posterior_count)
     for source, target in zip(sources, targets, strict=True):
         if source == target:
             raise ValueError(
                 f"target_names must differ from names, but {source!r} is both"
             )
     return sources, targets
-
-
-def _unique_names(
-    argument: str, names: object, posterior_count: int
-) -> tuple[str, ...]:
-    """Return the names as a tuple, one unique string per posterior."""
-    if isinstance(names, str) or not isinstance(names, Sequence):
-        raise ValueError(
-            f"{argument} must be a sequence of strings, got {type(names).__name__}"
-        )
-    values = tuple(names)
-    if len(values) != posterior_count:
-        raise ValueError(
-            f"{argument} must name each of the {posterior_count} posteriors, got"
-            f" {len(values)} names"
-        )
-    if not all(isinstance(value, str) for value in values):
-        raise ValueError(f"{argument} must hold strings, got {list(values)!r}")
-    if len(set(values)) != len(values):
-        raise ValueError(f"{argument} must be unique, got {list(values)!r}")
-    return values
 
 
 def _check_likelihoods(

@@ -36,6 +36,14 @@ per row with 200 null draws at this cap (see :ref:`validation-costs`). A
 keyword of each metric overrides it.
 """
 
+COST_BUDGET: Final = 3_600.0
+"""Default budget of an engine run, in estimated seconds on one CPU: one hour.
+
+The dry-run estimate of an engine is compared with the budget, and a
+:class:`~mixed_signals.errors.CostWarning` follows when it exceeds it. A keyword
+of each engine overrides it.
+"""
+
 PRNG_IMPLEMENTATION: Final = "threefry2x32"
 """JAX random generator of every root key, Threefry-2x32, which is the JAX default.
 

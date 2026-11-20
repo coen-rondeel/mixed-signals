@@ -41,8 +41,10 @@ Weights
     draws (Wang, Kulkarni and Verdú 2009). Samples with zero weight leave
     every search, as the zero-weight padding of unequal sample counts needs.
     Unequal positive weights give NaN and a
-    :class:`~mixed_signals.errors.ValidityWarning`; resample such a set in
-    proportion to its weights first (Smith and Gelfand 1992).
+    :class:`~mixed_signals.errors.ValidityWarning`; convert such a set with
+    :func:`~mixed_signals.core.samples.rejection_subset` first, which keeps
+    each sample with probability wᵢ/max w and makes no copies, unlike
+    resampling with replacement (Smith and Gelfand 1992; Ashton et al. 2019).
 Validity
     Fewer samples with positive weight than k, besides the point itself,
     give NaN. So does a log density whose k-th distance is zero, because k or
@@ -57,7 +59,8 @@ Cost
 References:
     :cite:t:`loftsgaarden1965nonparametric`; :cite:t:`kozachenko1987sample`;
     :cite:t:`kraskov2004mutual`; :cite:t:`wang2009divergence`;
-    :cite:t:`smith1992bayesian`; :cite:t:`mardia2000directional`.
+    :cite:t:`smith1992bayesian`; :cite:t:`ashton2019bilby`;
+    :cite:t:`mardia2000directional`.
 """
 
 import functools
@@ -172,7 +175,8 @@ class NearestNeighbours(Estimator):
             PrecisionWarning: If an input is narrower than float64.
 
         References:
-            :cite:t:`wang2009divergence`; :cite:t:`smith1992bayesian`.
+            :cite:t:`wang2009divergence`; :cite:t:`smith1992bayesian`;
+            :cite:t:`ashton2019bilby`.
         """
         samples_array, weights_array = _read_samples(samples, log_weights, space)
         present = weights_array > -jnp.inf
@@ -188,7 +192,8 @@ class NearestNeighbours(Estimator):
                 _warn(
                     "nearest-neighbour estimates need equally weighted samples, but"
                     f" the positive log weights differ by up to {float(spread):.3g};"
-                    " resample the set in proportion to its weights first"
+                    " convert the set with mixed_signals.core.samples.rejection_subset"
+                    " first"
                 )
             if not bool(enough):
                 _warn(

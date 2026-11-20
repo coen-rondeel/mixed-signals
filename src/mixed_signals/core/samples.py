@@ -31,6 +31,11 @@ Weighted statistics
     values on a circle, and :func:`unwrap_about` their representatives
     within half a period of a centre, such as the circular mean.
     :func:`spherical_width` is the angular width of points on a sphere.
+Rejection
+    :func:`rejection_subset` turns weighted samples into an equally weighted
+    subset without copies by the rejection method of Smith and Gelfand (1992),
+    for the nearest-neighbour estimators, which the copies of resampling with
+    replacement would break.
 Precision
     Every field is stored in float64. Narrower float inputs are cast and raise
     a :class:`~mixed_signals.errors.PrecisionWarning`, because the cast cannot
@@ -50,7 +55,8 @@ Checks
 References:
     :cite:t:`kish1965survey`; :cite:t:`ieee2019ieee`;
     :cite:t:`harris2020array`; :cite:t:`chan1983algorithms`;
-    :cite:t:`mardia2000directional`; :cite:t:`fisher1953dispersion`.
+    :cite:t:`mardia2000directional`; :cite:t:`fisher1953dispersion`;
+    :cite:t:`smith1992bayesian`.
 """
 
 import dataclasses
@@ -65,7 +71,7 @@ import jax.numpy as jnp
 import numpy as np
 from jax.scipy.special import logsumexp
 from jax.typing import ArrayLike
-from jaxtyping import Array, Bool, Float, Integer
+from jaxtyping import Array, Bool, Float, Integer, PRNGKeyArray
 
 from mixed_signals.core.topology import PolarForm, unit_vectors, wrap
 from mixed_signals.errors import PrecisionWarning
@@ -367,6 +373,102 @@ def _resultant_deficit(
     versine = jnp.sum(weights * 2 * jnp.sin(half_angles) ** 2, axis=-1) / total
     sine = jnp.sum(weights * jnp.sin(2 * half_angles), axis=-1) / total
     return jnp.clip(2 * versine - versine**2 - sine**2, 0.0, 1.0)
+
+
+def rejection_subset(
+    samples: ArrayLike, log_weights: ArrayLike, *, key: PRNGKeyArray
+) -> Float[Array, "selected param"]:
+    """Return an equally weighted subset of weighted samples, by rejection.
+
+    Nearest-neighbour estimators need equally weighted samples without copies.
+    Resampling with replacement makes copies, whose zero neighbour distances
+    make the kNN KL and Hellinger estimates NaN and push the KSG mutual
+    information upward. Each sample instead stays with probability wᵢ/max w:
+    the rejection method of Smith and Gelfand (1992, Section 3.1) with the
+    largest weight of the set as its bound, as ``rejection_sample`` of bilby
+    does (Ashton et al. 2019). Exact rejection needs a bound M with w ≤ M on
+    the whole support, and then the kept samples are independent draws of the
+    weighted distribution. The largest weight of a set is not such a bound: its
+    sample always stays, and every other sample stays with a probability
+    proportional to its weight, as in exact rejection, scaled up by M/max w. On
+    the zoo sets of the check below, the kept samples could not be told apart
+    from independent draws of the target, by the mutual information of
+    independent axes. Their expected number is Σw/max w, at most the Kish size
+    (Kish 1965), and equal positive weights keep every sample of positive
+    weight.
+
+    A draw uᵢ is uniform on [0, 1) and sample i stays when
+    ln uᵢ < ln wᵢ − max ln w. The comparison is strict, so a zero weight never
+    stays and the largest weight always does.
+
+    Zoo finding (``scripts/zoo_validation/engines.py``, which joins the
+    validation page at its next full build): with a proposal 1.5 times wider
+    than its Gaussian target and 4 000 draws, resampling with replacement kept
+    55%, 47% and 36% distinct samples in 2, 4 and 8 dimensions, made the kNN KL
+    (k = 3) and Hellinger (k = 5) estimates NaN in every set and the JS
+    estimate (k = 10) in 8 dimensions, and put the KSG mutual information of
+    independent axes 0.165 ± 0.002 and 0.277 ± 0.003 nats above zero in 2 and
+    4 dimensions (2 000 draws, 200 replicates). Rejection kept 1 776, 813 and
+    218 of the 4 000 draws (64%, 42% and 24% of the Kish sizes 2 766, 1 913 and
+    913); on the sets of 2 000 draws it read the mutual information at
+    −0.0012 ± 0.0009 and −0.0016 ± 0.0005 nats, against −0.0001 ± 0.0009 and
+    −0.0017 ± 0.0004 for equal-weight draws of the same count.
+
+    The number of kept samples depends on the values, so the function runs
+    outside ``jax.jit``.
+
+    Args:
+        samples: Samples shaped (N, D).
+        log_weights: Natural logarithms of unnormalised weights shaped (N,);
+            −∞ for zero.
+        key: JAX PRNG key for the uniform draws.
+
+    Returns:
+        The kept samples, shaped (M, D) in their input order, as float64.
+
+    Raises:
+        TypeError: If an input is not real-valued.
+        ValueError: If the shapes do not fit, the inputs are traced, the
+            samples are not finite, the log weights hold NaN or +∞, or no
+            sample has a positive weight.
+
+    Warns:
+        PrecisionWarning: If an input is narrower than float64.
+
+    References:
+        :cite:t:`smith1992bayesian`; :cite:t:`ashton2019bilby`;
+        :cite:t:`kish1965survey`.
+    """
+    samples_array = jnp.asarray(samples)
+    weights_array = jnp.asarray(log_weights)
+    _check_real("samples", samples_array)
+    _check_real("log_weights", weights_array)
+    if samples_array.ndim != 2 or samples_array.shape[0] == 0:
+        raise ValueError(
+            "samples must be shaped (N, D) with at least one sample, got shape"
+            f" {samples_array.shape}"
+        )
+    if weights_array.shape != samples_array.shape[:1]:
+        raise ValueError(
+            f"log_weights must be shaped {samples_array.shape[:1]} for samples of"
+            f" shape {samples_array.shape}, got shape {weights_array.shape}"
+        )
+    _warn_narrow_floats({"samples": samples_array, "log_weights": weights_array})
+    samples_array = samples_array.astype(jnp.float64)
+    weights_array = weights_array.astype(jnp.float64)
+    if not _is_concrete(samples_array, weights_array, key):
+        raise ValueError("call rejection_subset outside jax.jit")
+    if not bool(jnp.all(jnp.isfinite(samples_array))):
+        raise ValueError("samples must be finite")
+    if bool(jnp.any(jnp.isnan(weights_array) | (weights_array == jnp.inf))):
+        raise ValueError("log_weights must not contain NaN or +inf")
+    if not bool(jnp.any(weights_array > -jnp.inf)):
+        raise ValueError("log_weights need at least one sample with a positive weight")
+    uniforms = jax.random.uniform(key, weights_array.shape, dtype=jnp.float64)
+    # * Strict comparison: a zero weight (−∞) never stays and the largest weight
+    # * always does, since the uniform draw lies below one.
+    kept = jnp.log(uniforms) < weights_array - jnp.max(weights_array)
+    return samples_array[jnp.flatnonzero(kept)]
 
 
 class SampleSet(eqx.Module):

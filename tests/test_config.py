@@ -23,3 +23,8 @@ def test_default_null_draws_resolve_the_documented_significance() -> None:
 def test_root_keys_use_the_jax_default_generator() -> None:
     """The pinned generator is the one JAX uses by default, as documented."""
     assert jax.config.jax_default_prng_impl == _config.PRNG_IMPLEMENTATION
+
+
+def test_the_default_cost_budget_is_one_hour() -> None:
+    """The engines compare their dry-run estimate with 3 600 s unless told otherwise."""
+    assert _config.COST_BUDGET == 3_600.0

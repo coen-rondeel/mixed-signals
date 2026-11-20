@@ -190,6 +190,9 @@
 
 .. automodule:: mixed_signals.sigma.thresholds
    :members:
+
+.. automodule:: mixed_signals.sigma.uncertainty
+   :members:
 ```
 
 ## Reweighting
@@ -208,6 +211,16 @@
 
 ```{eval-rst}
 .. automodule:: mixed_signals.engines
+
+.. automodule:: mixed_signals.engines.compare
+   :members:
+
+.. automodule:: mixed_signals.engines.diagnose
+   :members:
+   :show-inheritance:
+
+.. automodule:: mixed_signals.engines.cost
+   :members:
 
 .. automodule:: mixed_signals.engines.reweight
    :members:

@@ -14,6 +14,7 @@ import pytest
 from pydantic import ValidationError
 
 from mixed_signals.core.result import (
+    NULL_RECIPE_DTYPE,
     PROVENANCE_DTYPE,
     REQUIRED_COLUMNS,
     RESULT_SCHEMA,
@@ -45,12 +46,15 @@ AGREED_SCHEMA = pl.Schema(
                 "construction": pl.String(),
                 "draws": pl.Int64(),
                 "sample_size": pl.Int64(),
+                "tail": pl.String(),
             }
         ),
         "p_value": pl.Float64(),
         "sigma_sig": pl.Float64(),
         "sigma_eff": pl.Float64(),
         "r_eff": pl.Float64(),
+        "threshold": pl.Float64(),
+        "flag": pl.Boolean(),
         "warnings": pl.List(
             pl.Struct({"category": pl.String(), "message": pl.String()})
         ),
@@ -85,11 +89,18 @@ def comparison_row(**overrides: Any) -> dict[str, Any]:
         "null_mean": 0.02,
         "null_std": 0.01,
         "null_draws": [0.01, 0.02, 0.03],
-        "null_recipe": {"construction": "permutation", "draws": 3, "sample_size": 500},
+        "null_recipe": {
+            "construction": "permutation",
+            "draws": 3,
+            "sample_size": 500,
+            "tail": "upper",
+        },
         "p_value": 0.25,
         "sigma_sig": 0.67,
         "sigma_eff": 0.45,
         "r_eff": None,
+        "threshold": 0.2,
+        "flag": True,
         "warnings": [WarningRecord("SubsamplingWarning", "cap reached")],
         "provenance": Provenance.collect(
             seed=42,
@@ -107,6 +118,75 @@ def test_empty_result_has_the_agreed_schema() -> None:
     assert len(empty) == 0
     assert empty.table.schema == AGREED_SCHEMA
     assert RESULT_SCHEMA == AGREED_SCHEMA
+
+
+def test_threshold_and_flag_follow_r_eff_in_the_schema() -> None:
+    """The columns sit between r_eff and warnings, as a float and a boolean."""
+    columns = list(RESULT_SCHEMA)
+    position = columns.index("r_eff")
+    assert columns[position : position + 4] == [
+        "r_eff",
+        "threshold",
+        "flag",
+        "warnings",
+    ]
+    assert RESULT_SCHEMA["threshold"] == pl.Float64()
+    assert RESULT_SCHEMA["flag"] == pl.Boolean()
+
+
+def test_the_null_recipe_ends_with_its_tail() -> None:
+    """The recipe struct names the tail of the p-value last, as text."""
+    assert [field.name for field in NULL_RECIPE_DTYPE.fields] == [
+        "construction",
+        "draws",
+        "sample_size",
+        "tail",
+    ]
+    assert NULL_RECIPE_DTYPE.fields[-1].dtype == pl.String()
+
+
+def test_a_row_may_set_the_threshold_flag_and_tail() -> None:
+    """The new columns keep their values, and a row may leave them null."""
+    (stored,) = Result.from_rows([comparison_row()]).table.to_dicts()
+    assert stored["threshold"] == 0.2
+    assert stored["flag"] is True
+    assert stored["null_recipe"]["tail"] == "upper"
+    two_sided = {
+        "construction": "permutation",
+        "draws": 3,
+        "sample_size": 500,
+        "tail": "two_sided",
+    }
+    row = comparison_row(threshold=None, flag=None, null_recipe=two_sided)
+    (stored,) = Result.from_rows([row]).table.to_dicts()
+    assert stored["threshold"] is None
+    assert stored["flag"] is None
+    assert stored["null_recipe"]["tail"] == "two_sided"
+    assert "threshold" not in REQUIRED_COLUMNS
+    assert "flag" not in REQUIRED_COLUMNS
+
+
+def test_rows_without_the_new_columns_leave_them_null() -> None:
+    """A row without threshold, flag and tail gets nulls, as the reweight rows do."""
+    row = comparison_row()
+    del row["threshold"], row["flag"]
+    row["null_recipe"] = {
+        "construction": "permutation",
+        "draws": 3,
+        "sample_size": 500,
+    }
+    (stored,) = Result.from_rows([row]).table.to_dicts()
+    assert stored["threshold"] is None
+    assert stored["flag"] is None
+    assert stored["null_recipe"]["tail"] is None
+
+
+def test_empty_result_has_the_new_columns() -> None:
+    """Result.empty carries the threshold, the flag and the tail field."""
+    table = Result.empty().table
+    assert table.schema["threshold"] == pl.Float64()
+    assert table.schema["flag"] == pl.Boolean()
+    assert table.schema["null_recipe"] == NULL_RECIPE_DTYPE
 
 
 def test_required_columns_are_schema_columns() -> None:
@@ -187,6 +267,10 @@ def test_tables_with_a_wrong_schema_are_rejected() -> None:
     table = Result.from_rows([comparison_row()]).table
     with pytest.raises(SchemaError, match="missing columns r_eff"):
         Result(table.drop("r_eff"))
+    with pytest.raises(SchemaError, match="missing columns threshold, flag"):
+        Result(table.drop("threshold", "flag"))
+    with pytest.raises(SchemaError, match="'flag' has type Float64"):
+        Result(table.with_columns(pl.col("flag").cast(pl.Float64)))
     with pytest.raises(SchemaError, match="unexpected columns verdict"):
         Result(table.with_columns(verdict=pl.lit("pass")))
     with pytest.raises(SchemaError, match="'problem' has type Int32"):

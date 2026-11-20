@@ -4,9 +4,11 @@ The script reruns every check with fewer replicates than the original zoo
 checks, with a standard error on every number, and writes ``docs/validation.md``,
 its figures under ``docs/validation/figures/`` and the raw numbers in
 ``docs/validation/results.json``. All three are stamped with the package
-version, the JAX version and the seed. The full build takes about an hour on the
-12-core Apple M4 Pro of the developers; ``--quick`` takes about three minutes and is
-what the test suite runs.
+version, the JAX version and the seed. The full build takes about an hour and a
+half on the 12-core Apple M4 Pro of the developers (about 86 minutes: 54 for the
+checks of sessions 6 to 12, under a minute for those of session 13 and 31 for those
+of session 14); ``--quick`` takes about four minutes and is what the test suite
+runs.
 
 Usage:
     uv run python scripts/build_validation.py [--quick] [--seed SEED]
@@ -48,6 +50,7 @@ TOPICS: Final = (
     ("estimators", "Estimators"),
     ("diagnostics", "Diagnostics"),
     ("reweighting", "Reweighting"),
+    ("engines", "Engines"),
     ("costs", "Costs"),
 )
 """The topic modules in page order, with the heading of each.
@@ -81,7 +84,7 @@ def parse_arguments(argv: Sequence[str] | None) -> argparse.Namespace:
     parser.add_argument(
         "--quick",
         action="store_true",
-        help="run the quick counts (about three minutes)",
+        help="run the quick counts (about four minutes)",
     )
     parser.add_argument(
         "--seed", type=int, default=DEFAULT_SEED, help="seed of the root key"

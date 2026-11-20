@@ -7,10 +7,24 @@ from collections.abc import Callable
 from typing import NamedTuple
 
 import jax
+import jax.numpy as jnp
+from jaxtyping import Array, PRNGKeyArray
 
 from mixed_signals import zoo
 from mixed_signals._config import SAMPLE_CAP
-from mixed_signals.diagnostics import PAIR_CAP, dependence_statistics
+from mixed_signals.core.space import ParamSpace
+from mixed_signals.diagnostics import (
+    PAIR_CAP,
+    anderson_darling_normality,
+    dependence_statistics,
+    gmm_bic,
+    mardia_moments,
+    marginal_modes,
+    marginal_moments,
+    projection_modes,
+)
+from mixed_signals.engines.cost import _FITS, _evaluation_seconds
+from mixed_signals.estimators.gaussian import GaussianDensity
 from mixed_signals.metrics.divergence import (
     knn_hellinger_distance,
     knn_js_divergence,
@@ -21,6 +35,14 @@ from mixed_signals.metrics.kernel import (
     maximum_mean_discrepancy,
     median_bandwidth,
 )
+from mixed_signals.metrics.marginal import marginal_distances, marginal_kde_divergences
+from mixed_signals.metrics.moments import (
+    gaussian_hellinger,
+    gaussian_kl,
+    gaussian_w2,
+    mean_shift,
+    width_ratio,
+)
 from mixed_signals.metrics.ot.sinkhorn import (
     SINKHORN_EPSILON_FACTOR,
     sinkhorn_divergence,
@@ -29,11 +51,13 @@ from mixed_signals.metrics.ot.sliced import (
     SLICED_DIRECTIONS,
     SLICED_SINKHORN_CAP,
     SLICED_SINKHORN_DIRECTIONS,
+    gaussian_sliced_wasserstein_distance,
     sliced_directions,
     sliced_sinkhorn_divergence,
     sliced_sinkhorn_epsilon,
     sliced_wasserstein_distance,
 )
+from mixed_signals.prng import derive_key
 from mixed_signals.sigma.calibration import (
     KNN_KL_REPLICATES,
     KNN_KL_SHIFTS,
@@ -42,9 +66,11 @@ from mixed_signals.sigma.calibration import (
 from zoo_validation.report import (
     Cell,
     Check,
+    Claim,
     Context,
     Section,
     Table,
+    claim_true,
     grouped,
     role,
 )
@@ -55,6 +81,8 @@ ENERGY_SIZES = (5_000, 10_000, 20_000)
 SLOW_SECONDS = 10.0
 """A call slower than this is timed once."""
 TIMED_CALLS = 3
+GRID_SLOW_SECONDS = 3.0
+"""A call of the grid slower than this is timed once, to keep the build short."""
 NULL_DRAWS = 200
 """Draws of the null that a comparison row runs, by default."""
 
@@ -83,12 +111,15 @@ def _wait(result: object) -> None:
             leaf.block_until_ready()
 
 
-def _time_call(function: Callable[[], object]) -> _Timing:
+def _time_call(
+    function: Callable[[], object], slow_seconds: float = SLOW_SECONDS
+) -> _Timing:
     """Time one evaluation after a warm-up call that compiles.
 
-    A call that takes more than ten seconds stands alone; otherwise the time is
-    the median of three calls. JAX dispatches asynchronously, so each timer
-    starts after all earlier work has finished and stops after the result has.
+    A call that takes more than ``slow_seconds`` stands alone; otherwise the
+    time is the median of three calls. JAX dispatches asynchronously, so each
+    timer starts after all earlier work has finished and stops after the result
+    has.
     """
     _wait(function())
     durations = []
@@ -96,7 +127,7 @@ def _time_call(function: Callable[[], object]) -> _Timing:
         started = time.perf_counter()
         _wait(function())
         durations.append(time.perf_counter() - started)
-        if durations[0] > SLOW_SECONDS:
+        if durations[0] > slow_seconds:
             return _Timing(durations[0], 1)
     return _Timing(statistics.median(durations), TIMED_CALLS)
 
@@ -110,6 +141,375 @@ class _Row(NamedTuple):
     record: str
     per_draw: bool
     """Whether a comparison repeats the call for every null draw."""
+
+
+# * The grid on which the cost model of the engines is checked.
+
+GRID_POINTS = ((3_000, 16), (10_000, 2), (10_000, 8), (10_000, 16))
+"""Samples per set and number of parameters of the full grid."""
+QUICK_GRID = ((500, 4),)
+QUICK_STATISTICS = (
+    "moments",
+    "marginal",
+    "gaussian",
+    "energy",
+    "sliced_w2",
+    "marginal_moments",
+)
+"""The statistics of the quick run, which skips the slow ones."""
+MODEL_FACTOR = 1.5
+"""The factor within which the model must predict each checked timing."""
+COSTLY_SECONDS = 0.01
+"""A timing of at least this, of a per-draw or per-surrogate statistic, is checked."""
+ONCE_STATISTICS = ("median_bandwidth", "sliced_sinkhorn_epsilon", "gmm_bic")
+"""Statistics that run once per comparison or posterior, not per draw or surrogate."""
+EXISTING_ROWS = (
+    ("energy distance", "energy"),
+    ("median bandwidth", "median_bandwidth"),
+    ("MMD squared", "mmd"),
+    ("kNN KL", "knn_kl"),
+    ("kNN Hellinger", "knn_hellinger"),
+    ("kNN JS", "knn_js"),
+    ("Sinkhorn divergence", "sinkhorn"),
+    ("sliced W2", "sliced_w2"),
+    ("sliced Sinkhorn divergence", "sliced_sinkhorn"),
+    ("pairwise dependence statistics", "dependence"),
+)
+"""Rows of the table above, by name, that time a statistic of the model."""
+KDE_FACTOR = 0.2
+"""The bandwidth factor of the KDE statistics in the timings."""
+PROJECTION_DIRECTIONS = 3
+"""Directions of the mode projections in the timings; the model counts them as units."""
+
+
+class _Timed(NamedTuple):
+    """A statistic of the cost model, ready to call, with its work units."""
+
+    statistic: str
+    """Key of the constants in the model."""
+    call: Callable[[], object]
+    units: float
+
+
+def _gaussian_terms(
+    first: Array,
+    first_weights: Array,
+    second: Array,
+    second_weights: Array,
+    *,
+    space: ParamSpace,
+) -> tuple[object, ...]:
+    """Return the Gaussian terms: both KL directions, W2 and the Hellinger distance."""
+    one = GaussianDensity.fit(first, first_weights, space)
+    two = GaussianDensity.fit(second, second_weights, space)
+    return (
+        gaussian_kl(one.mean, one.covariance, two.mean, two.covariance, space),
+        gaussian_kl(two.mean, two.covariance, one.mean, one.covariance, space),
+        gaussian_w2(one.mean, one.covariance, two.mean, two.covariance, space),
+        gaussian_hellinger(one.mean, one.covariance, two.mean, two.covariance, space),
+    )
+
+
+def _moments(
+    first: Array,
+    first_weights: Array,
+    second: Array,
+    second_weights: Array,
+    *,
+    space: ParamSpace,
+) -> tuple[Array, Array]:
+    """Return the mean shift and the width ratio of every parameter."""
+    return (
+        mean_shift(first, first_weights, second, second_weights, space),
+        width_ratio(first, first_weights, second, second_weights, space),
+    )
+
+
+def _grid_calls(
+    first: Array, second: Array, space: ParamSpace, key: PRNGKeyArray
+) -> list[_Timed]:
+    """Return every statistic of the model as one call on a pair of sets.
+
+    The per-draw statistics are jitted, as they are inside the loop of the null
+    draws; the GMM-BIC fit runs once per posterior and is not jitted.
+    """
+    count, dimension = int(first.shape[0]), int(first.shape[1])
+    weights = jnp.zeros(count)
+    bandwidth = median_bandwidth(first, None, second, None, space, key=key)
+    directions = sliced_directions(
+        space, SLICED_DIRECTIONS, key=derive_key(key, "directions")
+    )
+    small_directions = sliced_directions(
+        space, SLICED_SINKHORN_DIRECTIONS, key=derive_key(key, "small-directions")
+    )
+    epsilon = sliced_sinkhorn_epsilon(
+        first, None, second, None, space, directions=small_directions, key=key
+    )
+    mode_directions = jnp.eye(dimension)[: min(PROJECTION_DIRECTIONS, dimension)]
+    pair_statistics: dict[str, tuple[Callable[..., object], float]] = {
+        "moments": (functools.partial(_moments, space=space), float(dimension)),
+        "marginal": (
+            functools.partial(marginal_distances, space=space),
+            float(dimension),
+        ),
+        "kde": (
+            functools.partial(marginal_kde_divergences, space=space, factor=KDE_FACTOR),
+            float(dimension),
+        ),
+        "gaussian": (functools.partial(_gaussian_terms, space=space), 1.0),
+        "knn_kl": (functools.partial(knn_kl_divergence, space=space, key=key), 1.0),
+        "knn_js": (functools.partial(knn_js_divergence, space=space, key=key), 1.0),
+        "knn_hellinger": (
+            functools.partial(knn_hellinger_distance, space=space, key=key),
+            1.0,
+        ),
+        "mmd": (
+            functools.partial(
+                maximum_mean_discrepancy, space=space, bandwidth=bandwidth, key=key
+            ),
+            1.0,
+        ),
+        "energy": (functools.partial(energy_distance, space=space, key=key), 1.0),
+        "sinkhorn": (
+            functools.partial(
+                sinkhorn_divergence,
+                space=space,
+                epsilon=SINKHORN_EPSILON_FACTOR * bandwidth**2,
+                key=key,
+            ),
+            1.0,
+        ),
+        "sliced_w2": (
+            functools.partial(
+                sliced_wasserstein_distance, space=space, directions=directions
+            ),
+            1.0,
+        ),
+        "sliced_w2_gaussian": (
+            functools.partial(
+                gaussian_sliced_wasserstein_distance,
+                space=space,
+                directions=directions,
+            ),
+            1.0,
+        ),
+        "sliced_sinkhorn": (
+            functools.partial(
+                sliced_sinkhorn_divergence,
+                space=space,
+                directions=small_directions,
+                epsilon=epsilon,
+                key=key,
+            ),
+            float(small_directions.shape[0]),
+        ),
+    }
+    posterior_statistics: dict[str, tuple[Callable[..., object], float]] = {
+        "marginal_moments": (
+            functools.partial(marginal_moments, space=space),
+            float(dimension),
+        ),
+        "anderson_darling": (
+            functools.partial(anderson_darling_normality, space=space),
+            float(dimension),
+        ),
+        "mardia": (functools.partial(mardia_moments, space=space, key=key), 1.0),
+        "dependence": (
+            functools.partial(dependence_statistics, space=space, key=key),
+            float(dimension * (dimension - 1) // 2),
+        ),
+        "marginal_modes": (
+            functools.partial(marginal_modes, space=space),
+            float(dimension),
+        ),
+        "projection_modes": (
+            functools.partial(
+                projection_modes,
+                space=space,
+                directions=mode_directions,
+                centres=jnp.zeros(0),
+            ),
+            float(mode_directions.shape[0]),
+        ),
+    }
+    timed = [
+        _Timed(
+            name,
+            functools.partial(jax.jit(function), first, weights, second, weights),
+            units,
+        )
+        for name, (function, units) in pair_statistics.items()
+    ]
+    timed.extend(
+        _Timed(name, functools.partial(jax.jit(function), first, weights), units)
+        for name, (function, units) in posterior_statistics.items()
+    )
+    timed.append(
+        _Timed(
+            "median_bandwidth",
+            functools.partial(
+                jax.jit(functools.partial(median_bandwidth, space=space, key=key)),
+                first,
+                None,
+                second,
+                None,
+            ),
+            1.0,
+        )
+    )
+    timed.append(
+        _Timed(
+            "sliced_sinkhorn_epsilon",
+            functools.partial(
+                jax.jit(
+                    functools.partial(
+                        sliced_sinkhorn_epsilon,
+                        space=space,
+                        directions=small_directions,
+                        key=key,
+                    )
+                ),
+                first,
+                None,
+                second,
+                None,
+            ),
+            float(small_directions.shape[0]),
+        )
+    )
+    timed.append(
+        _Timed(
+            "gmm_bic",
+            functools.partial(
+                gmm_bic,
+                first,
+                None,
+                space,
+                effective_sample_size=float(count),
+                key=key,
+            ),
+            1.0,
+        )
+    )
+    return timed
+
+
+class _Prediction(NamedTuple):
+    """The model and the timing of one statistic at one grid point."""
+
+    statistic: str
+    samples: int
+    dimension: int
+    units: float
+    measured: float
+    modelled: float
+
+    @property
+    def factor(self) -> float:
+        """The larger of model over timing and timing over model."""
+        ratio = self.modelled / self.measured
+        return max(ratio, 1 / ratio)
+
+    @property
+    def checked(self) -> bool:
+        """Whether the statistic runs per draw and the timing is costly."""
+        return self.statistic not in ONCE_STATISTICS and (
+            self.measured >= COSTLY_SECONDS
+        )
+
+
+def _grid_predictions(
+    context: Context, existing: dict[str, float], statistics_of_quick: tuple[str, ...]
+) -> list[_Prediction]:
+    """Time the statistics on the grid and predict each with the model."""
+    caps = {
+        "cap": SAMPLE_CAP,
+        "pair_cap": PAIR_CAP,
+        "sliced_sinkhorn_cap": SLICED_SINKHORN_CAP,
+    }
+    points = QUICK_GRID if context.quick else GRID_POINTS
+    predictions = []
+    for count, dimension in points:
+        case = zoo.shifted_gaussians(1.0, param_count=dimension)
+        key = context.key(COSTS_LABEL, "grid", count, dimension)
+        sets = case.sample(key, count).samples
+        first, second = sets[0, 0], sets[0, 1]
+        _wait((first, second))
+        # * Statistics already timed at the largest point need no second timing.
+        reused = existing if (count, dimension) == GRID_POINTS[-1] else {}
+        for timed in _grid_calls(first, second, case.space, key):
+            if context.quick and timed.statistic not in statistics_of_quick:
+                continue
+            seconds = reused.get(timed.statistic)
+            if seconds is None:
+                seconds = _time_call(timed.call, GRID_SLOW_SECONDS).seconds
+            predictions.append(
+                _Prediction(
+                    timed.statistic,
+                    count,
+                    dimension,
+                    timed.units,
+                    seconds,
+                    _evaluation_seconds(
+                        _FITS[timed.statistic], count, dimension, timed.units, caps
+                    ),
+                )
+            )
+    return predictions
+
+
+def _grid_section(predictions: list[_Prediction]) -> tuple[Table, Claim]:
+    """Return the table of the grid and the claim that the model predicts it."""
+    rows: list[list[Cell]] = [
+        [
+            prediction.statistic,
+            prediction.samples,
+            prediction.dimension,
+            prediction.units,
+            prediction.measured,
+            prediction.modelled,
+            prediction.factor,
+            prediction.checked,
+        ]
+        for prediction in predictions
+    ]
+    table = Table.of(
+        "The model of the dry run against the timings of every statistic of the model:"
+        " the work units, the seconds of one jitted evaluation, the model, and the"
+        " factor between them.",
+        (
+            "Statistic",
+            "Samples per set",
+            "Parameters",
+            "Work units",
+            "Measured (s)",
+            "Model (s)",
+            "Factor",
+            "Checked",
+        ),
+        rows,
+    )
+    checked = [prediction for prediction in predictions if prediction.checked]
+    if checked:
+        worst = max(checked, key=lambda prediction: prediction.factor)
+        observed = (
+            f"worst of {len(checked)} checked rows of {len(predictions)}:"
+            f" {worst.statistic} at {grouped(worst.samples)} samples and"
+            f" {worst.dimension} parameters, factor {worst.factor:.2f}"
+            f" (model {worst.modelled:.3g} s, measured {worst.measured:.3g} s)"
+        )
+    else:
+        observed = f"no checked row of {len(predictions)}"
+    claim = claim_true(
+        "The model of the dry run predicts each costly timing within a factor of"
+        f" {MODEL_FACTOR:g}.",
+        f"every timing of at least {COSTLY_SECONDS * 1e3:g} ms of a statistic run per"
+        f" null draw or surrogate within a factor of {MODEL_FACTOR:g} of the model",
+        observed,
+        all(prediction.factor <= MODEL_FACTOR for prediction in checked),
+        full_only=True,
+    )
+    return table, claim
 
 
 def _costs(context: Context) -> Section:
@@ -306,8 +706,17 @@ def _costs(context: Context) -> Section:
         )
     )
     table_rows: list[list[Cell]] = []
+    existing: dict[str, float] = {}
     for row in rows:
         timing = _time_call(row.call)
+        for prefix, statistic in EXISTING_ROWS:
+            at_grid_size = (
+                row.name != "energy distance" or row.samples == GRID_POINTS[-1][0]
+            )
+            # * A name ends there or at a comma, so the calibration curve stays out.
+            named = row.name == prefix or row.name.startswith(f"{prefix},")
+            if named and at_grid_size:
+                existing[statistic] = timing.seconds
         extrapolated = (
             (NULL_DRAWS + 1) * timing.seconds / 60.0 if row.per_draw else None
         )
@@ -363,16 +772,44 @@ def _costs(context: Context) -> Section:
         " no extrapolation. The times depend on the machine in the stamp of this"
         " page; the record column holds the times that the sessions measured on an"
         " Apple M4 Pro CPU, 20 minutes for the dependence statistics of 201 sets"
-        " being about 6 s per set. No claim reads them."
+        " being about 6 s per set. No claim reads these rows."
     )
-    return Section(setup, (table,), ())
+    predictions = _grid_predictions(context, existing, QUICK_STATISTICS)
+    grid_table, claim = _grid_section(predictions)
+    points = QUICK_GRID if context.quick else GRID_POINTS
+    point_text = ", ".join(
+        f"({grouped(count)}, {dimension})" for count, dimension in points
+    )
+    cost_role = role("func", "mixed_signals.engines.cost.estimate_compare_cost")
+    setup += (
+        f" The model of the dry run ({cost_role}) predicts the seconds of one"
+        " evaluation of every statistic from the samples per set, the parameters"
+        " and the work units of the statistic. The second table times each"
+        " statistic as a jitted program, as in the loop of the null draws, at the"
+        f" pairs of samples per set and parameters {point_text}, except the"
+        " GMM-BIC fit, which is timed as the plain call that runs once per"
+        " posterior. It divides the larger of model and timing by the smaller."
+        " The statistics that the table above times at the largest point are not"
+        " timed again, and the"
+        " caps of the package act on the model as they do on the timings. A call"
+        f" of more than {GRID_SLOW_SECONDS:g} s is timed once, otherwise the"
+        " median of three calls counts. A claim, in the full run only, lets every"
+        " statistic that runs per null draw or surrogate and takes at least"
+        f" {COSTLY_SECONDS * 1e3:g} ms lie within a factor of {MODEL_FACTOR:g} of"
+        " the model; the faster rows, dominated by the cost of dispatch, and the"
+        " statistics that run once per call (the median bandwidth, the ε of the"
+        " sliced Sinkhorn divergence and the GMM-BIC fit) stay in the table"
+        " unchecked. A run of the quick counts times six cheap statistics at one"
+        " point."
+    )
+    return Section(setup, (table, grid_table), (claim,))
 
 
 CHECKS: tuple[Check, ...] = (
     Check(
         label=COSTS_LABEL,
         title="Cost of the metrics and diagnostics",
-        session="8, 9, 10 and 12",
+        session="8, 9, 10, 12 and 14",
         supports=(
             role("data", "mixed_signals._config.SAMPLE_CAP", short=False),
             role("data", "mixed_signals.diagnostics.dependence.PAIR_CAP", short=False),
@@ -380,6 +817,12 @@ CHECKS: tuple[Check, ...] = (
                 "data",
                 "mixed_signals.metrics.ot.sliced.SLICED_SINKHORN_CAP",
                 short=False,
+            ),
+            role(
+                "func", "mixed_signals.engines.cost.estimate_compare_cost", short=False
+            ),
+            role(
+                "func", "mixed_signals.engines.cost.estimate_diagnose_cost", short=False
             ),
             "the cost weights of the dry run in session 14",
         ),

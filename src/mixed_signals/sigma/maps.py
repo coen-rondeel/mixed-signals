@@ -90,7 +90,11 @@ r_eff
     Each value has two roots, r and a root below one; the sign of
     ln(det Σ_q/det Σ_p), which the Gaussian divergences of
     :mod:`mixed_signals.metrics.moments` return, chooses r above one when the
-    second posterior is wider.
+    second posterior is wider. The W2 map takes the first posterior to have unit
+    width, as a reference whitening makes it. In a pooled whitening the two whitened
+    covariances sum to twice the identity, and the W2 shape term of a width
+    ratio r along one axis is √2 · abs(r − 1)/√(1 + r²); ``pooled=True`` inverts that
+    relation. KL and Hellinger do not depend on the frame.
 Null subtraction
     The null mean, the bias of a metric between two draws of one
     distribution, is subtracted before a map applies. :func:`null_subtract`
@@ -347,10 +351,6 @@ def _null_subtract_kernel(
 _null_subtract = _jit(_null_subtract_kernel, "space")
 
 
-def _shift(value: Array) -> Array:
-    return value
-
-
 def _distance(value: Array) -> Array:
     return jnp.where(value >= 0, value, jnp.nan)
 
@@ -375,7 +375,6 @@ def _root(value: Array) -> Array:
 
 SIGMA_EFF_MAPS: Final[Mapping[str, Callable[[Array], Array]]] = MappingProxyType(
     {
-        "mean_shift": _shift,
         "w1": _distance,
         "w2": _distance,
         "w2_location": _distance,
@@ -391,8 +390,10 @@ SIGMA_EFF_MAPS: Final[Mapping[str, Callable[[Array], Array]]] = MappingProxyType
 """The closed-form σ_eff map of each metric that needs only its value, by name.
 
 The maps take the magnitude of a value; :func:`sigma_eff` restores the sign.
-The kernel metrics ``mmd`` and ``energy`` also need the dimension of the
-space, and ``mmd`` its bandwidth; :func:`sigma_eff` takes both.
+``mean_shift`` has no entry: its value is σ_eff, and :func:`sigma_eff` returns
+it before it reads the maps. The kernel metrics ``mmd`` and ``energy`` also
+need the dimension of the space, and ``mmd`` its bandwidth; :func:`sigma_eff`
+takes both.
 
 :meta hide-value:
 """
@@ -461,9 +462,9 @@ def sigma_eff(
     is not resolved.
 
     Args:
-        metric: Name of the metric: a key of :data:`SIGMA_EFF_MAPS`, or one
-            of :data:`KERNEL_METRICS`, :data:`SLICED_METRICS` or
-            :data:`QUADRATURE_METRICS`.
+        metric: Name of the metric: ``mean_shift``, a key of
+            :data:`SIGMA_EFF_MAPS`, or one of :data:`KERNEL_METRICS`,
+            :data:`SLICED_METRICS` or :data:`QUADRATURE_METRICS`.
         value: Null-subtracted values of the metric, in the units of the
             whitening; the squared MMD for ``mmd`` and SW2² for
             ``sliced_w2``.
@@ -552,7 +553,13 @@ def _magnitude_sigma(
             mapped = SIGMA_EFF_MAPS[metric](magnitudes)
         except KeyError:
             names = sorted(
-                [*SIGMA_EFF_MAPS, *KERNEL_METRICS, *SLICED_METRICS, *QUADRATURE_METRICS]
+                [
+                    "mean_shift",
+                    *SIGMA_EFF_MAPS,
+                    *KERNEL_METRICS,
+                    *SLICED_METRICS,
+                    *QUADRATURE_METRICS,
+                ]
             )
             raise KeyError(
                 f"no closed-form sigma_eff map for {metric!r}; the maps cover"
@@ -650,6 +657,8 @@ def r_eff(
     metric: str,
     value: Float[ArrayLike, " *leading"],
     log_det_ratio: Float[ArrayLike, " *leading"] | None = None,
+    *,
+    pooled: bool = False,
 ) -> Float[Array, " *leading"]:
     """Return the Gaussian-equivalent width ratio r_eff of null-subtracted values.
 
@@ -665,6 +674,12 @@ def r_eff(
             subtracted ratio.
         log_det_ratio: ln(det Σ_q/det Σ_p) of each row, whose sign chooses
             the root above or below one; needed for every shape term.
+        pooled: Whether the values come from a pooled whitening, in which the
+            whitened covariances A and B satisfy A + B = 2I. They commute, so
+            the W2 distance separates per axis, and for a width ratio r along
+            one axis the W2 shape term is g = √2 · abs(r − 1)/√(1 + r²); ``w2_shape``
+            then solves that relation instead of g = abs(r − 1). The other
+            metrics ignore it.
 
     Returns:
         r_eff for each value, below one when the second posterior is
@@ -689,7 +704,12 @@ def r_eff(
     if log_det_ratio is None:
         raise ValueError(f"the r_eff of {metric!r} needs log_det_ratio")
     wider = jnp.asarray(log_det_ratio, dtype=jnp.float64) > 0
-    root = _SHAPE_MAPS[metric](jnp.abs(values), wider)
+    shape_map = (
+        _w2_shape_pooled_ratio
+        if pooled and metric == "w2_shape"
+        else _SHAPE_MAPS[metric]
+    )
+    root = shape_map(jnp.abs(values), wider)
     return jnp.where(values < 0, 1 / root, root)
 
 
@@ -716,6 +736,16 @@ def _newton_step(_: Array, log_square: Array, target: Array) -> Array:
 def _w2_shape_ratio(value: Array, wider: Array) -> Array:
     ratio = jnp.where(wider, 1 + value, 1 - value)
     return jnp.where((value >= 0) & (ratio > 0), ratio, jnp.nan)
+
+
+def _w2_shape_pooled_ratio(value: Array, wider: Array) -> Array:
+    """Return r with √2 · abs(r − 1)/√(1 + r²) = value, above one where ``wider``."""
+    inside = (value >= 0) & (value < math.sqrt(2))
+    magnitude = jnp.where(inside, value, 0.0)
+    # * The wide root has no cancellation; (1 − spread) would lose digits towards √2.
+    spread = magnitude * jnp.sqrt(1 - magnitude**2 / 4)
+    root = (1 + spread) / (1 - magnitude**2 / 2)
+    return jnp.where(inside, jnp.where(wider, root, 1 / root), jnp.nan)
 
 
 def _hellinger_shape_ratio(value: Array, wider: Array) -> Array:

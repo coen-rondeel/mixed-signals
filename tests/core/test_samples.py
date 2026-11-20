@@ -3,6 +3,8 @@
 import dataclasses
 import math
 from collections.abc import Callable
+from functools import partial
+from typing import Any
 
 import equinox as eqx
 import jax
@@ -21,6 +23,7 @@ from mixed_signals.core.samples import (
     circular_standard_deviation,
     kish_effective_sample_size,
     mean_resultant_length,
+    rejection_subset,
     spherical_width,
     unwrap_about,
     weighted_covariance,
@@ -893,3 +896,170 @@ def test_is_concrete_follows_the_staging_of_the_trace() -> None:
 
     jax.lax.scan(under_scan, jnp.zeros(()), jnp.ones(2))
     assert not seen["scan"]
+
+
+# * Rejection subsets of weighted samples
+
+PROPOSAL_WIDTH = 1.5
+"""Width of the Gaussian proposal of the rejection tests, against a unit target."""
+
+
+def weighted_proposal(count: int, param_count: int, seed: int) -> tuple[Any, Any]:
+    """Draw a wide Gaussian proposal with the log weights of a unit Gaussian target."""
+    proposal = stats.norm(scale=PROPOSAL_WIDTH)
+    target = stats.norm()
+    draws = proposal.rvs(
+        size=(count, param_count), random_state=np.random.default_rng(seed)
+    )
+    log_weights = (target.logpdf(draws) - proposal.logpdf(draws)).sum(axis=1)
+    return jnp.asarray(draws), jnp.asarray(log_weights)
+
+
+def test_rejection_keeps_every_positive_weight_sample_of_equal_weights() -> None:
+    """Equal positive weights, at any scale, keep every sample of positive weight."""
+    samples = jnp.arange(24.0).reshape(12, 2)
+    key = jax.random.key(0)
+    for level in (0.0, 3.5, -40.0):
+        kept = rejection_subset(samples, jnp.full(12, level), key=key)
+        np.testing.assert_array_equal(kept, samples)
+    log_weights = jnp.where(jnp.arange(12) % 3 == 0, -jnp.inf, 1.0)
+    kept = rejection_subset(samples, log_weights, key=key)
+    np.testing.assert_array_equal(kept, samples[jnp.arange(12) % 3 != 0])
+
+
+def test_rejection_never_keeps_a_zero_weight_and_keeps_the_input_order() -> None:
+    """A weight of zero never stays; the kept rows keep their order and values."""
+    count = 400
+    index = jnp.arange(float(count))
+    samples = jnp.stack([index, -index], axis=1)
+    log_weights = jnp.where(jnp.arange(count) % 2 == 0, -jnp.inf, -0.2 * index / 100)
+    for seed in range(5):
+        kept = rejection_subset(samples, log_weights, key=jax.random.key(seed))
+        positions = np.asarray(kept[:, 0]).astype(int)
+        assert kept.shape[1] == 2
+        assert np.all(positions % 2 == 1)
+        assert np.all(np.diff(positions) > 0)
+        np.testing.assert_array_equal(kept, samples[positions])
+        assert positions.size > 0
+
+
+def test_rejection_always_keeps_the_largest_weight() -> None:
+    """The sample of the largest weight stays under every key."""
+    samples = jnp.arange(30.0).reshape(30, 1)
+    log_weights = jnp.where(jnp.arange(30) == 17, 0.0, -6.0)
+    for seed in range(20):
+        kept = rejection_subset(samples, log_weights, key=jax.random.key(seed))
+        assert 17.0 in np.asarray(kept[:, 0])
+
+
+def test_rejection_repeats_for_a_fixed_key_and_changes_with_the_key() -> None:
+    """The same key keeps the same samples; another key keeps others."""
+    samples, log_weights = weighted_proposal(300, 2, seed=1)
+    first = rejection_subset(samples, log_weights, key=jax.random.key(3))
+    again = rejection_subset(samples, log_weights, key=jax.random.key(3))
+    other = rejection_subset(samples, log_weights, key=jax.random.key(4))
+    np.testing.assert_array_equal(first, again)
+    assert first.shape != other.shape or not np.array_equal(first, other)
+
+
+def test_rejection_returns_float64_rows_of_the_input() -> None:
+    """The output is a float64 JAX array of selected rows; integers are cast."""
+    samples = jnp.arange(20).reshape(10, 2)
+    kept = rejection_subset(samples, jnp.zeros(10), key=jax.random.key(0))
+    assert isinstance(kept, jax.Array)
+    assert kept.dtype == jnp.float64
+    np.testing.assert_array_equal(kept, samples)
+
+
+def test_the_kept_count_matches_the_sum_of_weights_over_the_largest_weight() -> None:
+    """Over many keys the kept count averages to Σw/max w, within binomial error."""
+    samples, log_weights = weighted_proposal(500, 2, seed=2)
+    probabilities = np.exp(np.asarray(log_weights - jnp.max(log_weights)))
+    expected = probabilities.sum()
+    variance = (probabilities * (1 - probabilities)).sum()
+    key_count = 60
+    counts = [
+        rejection_subset(samples, log_weights, key=jax.random.key(seed)).shape[0]
+        for seed in range(key_count)
+    ]
+    assert abs(np.mean(counts) - expected) < 5 * math.sqrt(variance / key_count)
+    kish = float(kish_effective_sample_size(log_weights))
+    assert expected <= kish
+
+
+def test_the_kept_samples_follow_the_target_of_a_wider_proposal() -> None:
+    """A proposal 1.5 times wider gives a unit Gaussian: mean 0 and variance 1."""
+    param_count = 2
+    samples, log_weights = weighted_proposal(4_000, param_count, seed=3)
+    kept = rejection_subset(samples, log_weights, key=jax.random.key(5))
+    kept_count = kept.shape[0]
+    assert 0.3 * 4_000 < kept_count < 0.8 * 4_000
+    mean_error = 1 / math.sqrt(kept_count)
+    variance_error = math.sqrt(2 / kept_count)
+    np.testing.assert_allclose(kept.mean(axis=0), 0.0, atol=5 * mean_error)
+    np.testing.assert_allclose(kept.var(axis=0), 1.0, atol=5 * variance_error)
+    # * The proposal itself is wider, so the test can tell a wrong subset apart.
+    assert float(jnp.var(samples)) > 1 + 5 * variance_error
+
+
+def test_rejection_makes_no_copies() -> None:
+    """Every kept row is a distinct input row, unlike resampling with replacement."""
+    samples, log_weights = weighted_proposal(1_000, 2, seed=4)
+    kept = rejection_subset(samples, log_weights, key=jax.random.key(6))
+    assert np.unique(np.asarray(kept), axis=0).shape[0] == kept.shape[0]
+
+
+def test_rejection_needs_concrete_inputs() -> None:
+    """Traced samples, weights or key raise, since the output size depends on values."""
+    samples = jnp.arange(20.0).reshape(10, 2)
+    log_weights = jnp.zeros(10)
+    key = jax.random.key(0)
+    with pytest.raises(ValueError, match=r"call rejection_subset outside jax\.jit"):
+        jax.jit(partial(rejection_subset, key=key))(samples, log_weights)
+    with pytest.raises(ValueError, match=r"call rejection_subset outside jax\.jit"):
+        jax.jit(partial(rejection_subset, samples, key=key))(log_weights)
+    keys = jax.random.split(key, 3)
+    with pytest.raises(ValueError, match=r"call rejection_subset outside jax\.jit"):
+        jax.vmap(partial(rejection_subset, samples, log_weights))(key=keys)
+
+
+@pytest.mark.parametrize(
+    ("samples", "log_weights", "message"),
+    [
+        (jnp.full((4, 2), jnp.nan), jnp.zeros(4), "samples must be finite"),
+        (jnp.full((4, 2), jnp.inf), jnp.zeros(4), "samples must be finite"),
+        (jnp.zeros((4, 2)), jnp.array([0.0, jnp.nan, 0.0, 0.0]), "NaN or"),
+        (jnp.zeros((4, 2)), jnp.array([0.0, jnp.inf, 0.0, 0.0]), "NaN or \\+inf"),
+        (jnp.zeros((4, 2)), jnp.full(4, -jnp.inf), "at least one sample with a pos"),
+        (jnp.zeros(4), jnp.zeros(4), r"shaped \(N, D\).*shape \(4,\)"),
+        (jnp.zeros((0, 2)), jnp.zeros(0), r"shaped \(N, D\).*shape \(0, 2\)"),
+        (jnp.zeros((4, 2, 1)), jnp.zeros(4), r"shaped \(N, D\).*\(4, 2, 1\)"),
+        (jnp.zeros((4, 2)), jnp.zeros(3), r"log_weights must be shaped \(4,\)"),
+        (jnp.zeros((4, 2)), jnp.zeros((4, 1)), r"got shape \(4, 1\)"),
+    ],
+)
+def test_rejection_rejects_invalid_values_and_shapes(
+    samples: Any, log_weights: Any, message: str
+) -> None:
+    """Non-finite samples, invalid weights and misfit shapes each raise ValueError."""
+    with pytest.raises(ValueError, match=message):
+        rejection_subset(samples, log_weights, key=jax.random.key(0))
+
+
+def test_rejection_rejects_values_that_are_not_real() -> None:
+    """Complex samples or weights raise TypeError with the argument's name."""
+    key = jax.random.key(0)
+    with pytest.raises(TypeError, match="samples must hold real numbers"):
+        rejection_subset(jnp.zeros((4, 2), dtype=complex), jnp.zeros(4), key=key)
+    with pytest.raises(TypeError, match="log_weights must hold real numbers"):
+        rejection_subset(jnp.zeros((4, 2)), jnp.zeros(4, dtype=complex), key=key)
+
+
+def test_rejection_warns_about_float32_input() -> None:
+    """Float32 samples or weights are cast and raise a PrecisionWarning."""
+    samples = jnp.ones((6, 2), dtype=jnp.float32)
+    log_weights = jnp.zeros(6, dtype=jnp.float32)
+    with pytest.warns(PrecisionWarning, match=r"samples \(float32\)") as records:
+        kept = rejection_subset(samples, log_weights, key=jax.random.key(0))
+    assert kept.dtype == jnp.float64
+    assert "log_weights (float32)" in str(records[0].message)

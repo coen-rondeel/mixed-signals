@@ -1,4 +1,4 @@
-# Ruff and the style rules run from the project environment, so their versions
+# Ruff, ty and the style rules run from the project environment, so their versions
 # come from uv.lock. Install the hooks once with `uv run pre-commit install`.
 repos:
   - repo: https://github.com/pre-commit/pre-commit-hooks
@@ -36,3 +36,10 @@ repos:
         entry: uv run --frozen python scripts/check_style.py
         language: system
         types: [text]
+      - id: ty-deprecated
+        name: ty deprecations
+        entry: uv run --frozen ty check --ignore all --error deprecated
+        language: system
+        types_or: [python, pyi]
+        pass_filenames: false
+        require_serial: true

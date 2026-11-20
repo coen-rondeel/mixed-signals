@@ -25,11 +25,11 @@ jobs:
       - name: Install the project
         run: uv sync --locked
       - name: Pre-commit hygiene hooks
-        # * Ruff and the style rules have their own steps, and `uv sync --locked`
+        # * Ruff, ty and the style rules have their own steps, and `uv sync --locked`
         # * already checks the lockfile.
         run: uv run --frozen pre-commit run --all-files --show-diff-on-failure
         env:
-          SKIP: ruff-check,ruff-format,style-rules,uv-lock
+          SKIP: ruff-check,ruff-format,style-rules,ty-deprecated,uv-lock
       - name: Ruff lint
         run: uv run --frozen ruff check --output-format=github
       - name: Ruff format
@@ -38,6 +38,8 @@ jobs:
         run: uv run --frozen python scripts/check_style.py
       - name: Strict mypy
         run: uv run --frozen mypy
+      - name: ty deprecations
+        run: uv run --frozen ty check --ignore all --error deprecated --output-format=github
 
   test:
     name: Tests on Python ${{ matrix.python-version }}

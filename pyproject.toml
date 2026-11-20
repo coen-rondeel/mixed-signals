@@ -90,6 +90,7 @@ lint = [
     "pre-commit>=4.7.0",
     "ruff>=0.17.0",
     "scipy-stubs>=1.18.1.1",
+    "ty>=0.0.107",
     "types-pyyaml>=6.0.12.20260906",
 ]
 docs = [
@@ -112,7 +113,6 @@ conflicts = [
 
 [tool.uv.sources]
 # ! Development only: eryn's JAX priors live on feat-jaxpriors until their release.
-# ! The branch is not pushed yet, so uv.lock still records l2d-dev; see DESIGN.md.
 eryn = { git = "https://github.com/lisa-analysis-tools/Eryn", branch = "feat-jaxpriors" }
 # ! Development only: the memory-bounded online mode of ott-jax 0.6.0 fails on JAX 0.9 and
 # ! later; main fixed it in June 2026 (ott-jax pull request 701), unreleased so far.
@@ -190,6 +190,15 @@ ignore_missing_imports = true
 # ? Without the docs group, the citation style that docs/conf.py extends is untyped.
 module = ["conf"]
 disallow_subclassing_any = false
+
+[tool.ty.src]
+# ? Strict mypy stays the type checker. The hook and CI run only ty's deprecated rule,
+# ? which reports the typeshed deprecations that mypy's own stubs revert.
+include = ["src", "tests", "scripts", "docs/conf.py"]
+
+[tool.ty.environment]
+# ? mypy finds zoo_validation through its file list, while ty needs scripts on its search path.
+extra-paths = ["scripts"]
 
 [tool.pytest.ini_options]
 minversion = "9.0"

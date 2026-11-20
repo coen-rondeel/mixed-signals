@@ -32,6 +32,7 @@ uv run pytest -m gpu                   # GPU suite, run by hand on a CUDA machin
 uv run ruff check
 uv run ruff format --check
 uv run mypy                            # strict type checking
+uv run ty check --ignore all --error deprecated   # deprecations that mypy's stubs hide
 uv run python scripts/check_style.py   # style rules that ruff cannot enforce
 uv run --group docs sphinx-build -W -b html docs docs/_build/html
 ```
@@ -40,7 +41,7 @@ uv run --group docs sphinx-build -W -b html docs docs/_build/html
 
 | Extra | Adds |
 | --- | --- |
-| `eryn` | Reading eryn backends and priors; during development eryn comes from its `l2d-dev` branch |
+| `eryn` | Reading eryn backends and priors; during development eryn comes from its `feat-jaxpriors` branch |
 | `plot` | Corner plots with cantuccio |
 | `report` | Report notebooks with marimo |
 

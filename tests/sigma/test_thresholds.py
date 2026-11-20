@@ -59,6 +59,7 @@ def test_the_thresholds_follow_from_the_js_divergence_of_a_small_shift() -> None
 def test_every_metric_with_a_map_has_a_threshold() -> None:
     """The table covers every σ_eff and r_eff metric, and no other metric."""
     sigma_metrics = {
+        "mean_shift",
         *SIGMA_EFF_MAPS,
         *KERNEL_METRICS,
         *SLICED_METRICS,
@@ -73,6 +74,35 @@ def test_every_metric_with_a_map_has_a_threshold() -> None:
     assert {"js", "ad", "energy", "mmd", "sliced_w2", "sliced_sinkhorn"} <= set(
         THRESHOLDS
     )
+
+
+def test_mean_shift_keeps_its_threshold_without_a_map_entry() -> None:
+    """The key set and order are the old ones, with mean_shift named explicitly."""
+    assert "mean_shift" not in SIGMA_EFF_MAPS
+    assert THRESHOLDS["mean_shift"] == SIGMA_EFF_THRESHOLD
+    assert list(THRESHOLDS) == [
+        "mean_shift",
+        "w1",
+        "w2",
+        "w2_location",
+        "kl",
+        "kl_location",
+        "ks",
+        "kuiper_ks",
+        "hellinger",
+        "hellinger_location",
+        "sinkhorn",
+        "energy",
+        "mmd",
+        "sliced_sinkhorn",
+        "sliced_w2",
+        "ad",
+        "js",
+        "width_ratio",
+        "kl_shape",
+        "w2_shape",
+        "hellinger_shape",
+    ]
 
 
 def test_the_tail_is_two_sided_for_the_signed_metrics_only() -> None:

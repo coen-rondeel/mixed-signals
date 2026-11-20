@@ -21,7 +21,7 @@ The implementation is split into twenty focused sessions, numbered 0 to 19. They
 | 11 | Diagnostics | C | 5, 6 | Done (2026-10-25) |
 | 12 | Nulls and σ | D | 8 | Done (2026-11-18) |
 | 13 | Reweighting | D | 7 | Done (2026-11-19) |
-| 14 | Engines | E | 8 to 12 | Open |
+| 14 | Engines | E | 8 to 12 | Done (2026-11-20) |
 | 15 | Data space | E | 4, 9 | Open |
 | 16 | Pipeline and CLI | F | 14 | Open |
 | 17 | Reports | F | 14 | Open |
@@ -33,11 +33,11 @@ The critical path runs through sessions 0, 1, 2, 3 or 6, 8, 12, 14, 16 and 19. S
 ## How every session runs
 
 1. Read `CLAUDE.md`, `DESIGN.md` and the session's brief below.
-2. Confirm with the developers any Proposed or Open item the session relies on. After session 7, only the eryn pin is open: `pyproject.toml` names eryn's `feat-jaxpriors` branch, which is not pushed yet. Since session 10 it also pins ott-jax's main branch at a commit whose fix of the online mode is unreleased; both wait for the relock.
+2. Confirm with the developers any Proposed or Open item the session relies on. After session 7, only the eryn pin is open: `pyproject.toml` names eryn's `feat-jaxpriors` branch, pushed on 2026-11-20 but not released. Since session 10 it also pins ott-jax's main branch at a commit whose fix of the online mode is unreleased; `uv.lock` records both since session 14, and both wait for releases.
 3. Replace the stubs in scope with working code. Tests mirror `src/` and use the validation zoo once it exists. From session 12 on, a Claude Sonnet 5.5 subagent at xhigh effort writes the code and the tests from a written specification; the main session settles the design with the developers, reviews the subagent's work and reruns every check.
 4. Cite every method and assumption: a `References` section in each docstring, with keys in `docs/references.bib`, taken from the References section of `DESIGN.md`. A new method needs a verifiable source before it lands, and a new empirical finding goes on the validation page.
 5. Where a brief names catpylisa code, port it: adapt it to this package's data model, docstrings and style rules instead of copying it.
-6. Run every check: `ruff check`, `ruff format --check`, the style script, `mypy`, `pytest` and the docs build; until the eryn branch is pushed, through `uv run --no-sync` on the eryn wheel and the pinned ott-jax commit in `.venv`, as `CLAUDE.md` describes.
+6. Run every check: `ruff check`, `ruff format --check`, the style script, `mypy`, ty's deprecated rule, `pytest` and the docs build.
 7. Update `DESIGN.md` when a decision changes, and the status table above.
 8. Present the work to a developer for review, and commit once on `main` with the trailers from `CLAUDE.md` after their approval.
 
@@ -266,6 +266,8 @@ Scope: `engines/` (`compare` and `diagnose`) and the public API in `__init__.py`
 - kNN, MMD and energy rows pass the metric a key derived from the row's path ending in `"subsample"`. Compute `metrics.kernel.median_bandwidth` once per comparison, from a path ending in `"bandwidth"`, reuse it in every null draw, and write it into the `estimator_settings` of the MMD rows; kNN rows write `NearestNeighbourSettings(neighbours=k).to_json()`. kNN JS needs equal sample counts inside `jax.jit`, where it gives NaN otherwise.
 - Done when a zoo comparison produces the full result table end to end.
 
+Outcome (2026-11-20): the developers decided twenty-eight items, now in `DESIGN.md`. `engines/compare.py` has `compare`, which takes one `SampleSet` or a list of sets with one name per posterior, pairs the reference with every other posterior (mode A, `reference=`) or all with all (mode B), and runs the recipes of `RECIPES`, a metric with its estimator, selected by metric or by `metric:estimator`. `DEFAULT_METRICS` is the fast set, without the kNN, Sinkhorn and sliced Sinkhorn rows, which take most of the 2.1 hours that every metric needs for one pair at the cap in 16 parameters. Each comparison builds two whitenings eagerly, the decorrelated one for joint rows and a z-score that treats sphere axes by their own topologies for per-parameter rows, and one permutation plan that serves every recipe but the kNN rows; each row carries its null draws, σ_sig, the null-subtracted σ_eff or r_eff, the new `threshold` and `flag` columns, the tail of its p-value in the null recipe, its warnings and its provenance. kNN rows convert weighted sets with `core.samples.rejection_subset`, cut both sets to the smaller count and run their own permutation null, which is exact by exchangeability: resampling with replacement, the plan of record, made kNN KL and Hellinger NaN in every zoo set. `engines/diagnose.py` has `diagnose`, which takes `Chains`, reduced inside after their burn-in, or flat sets, runs the families chains, shape, dependence, modes and railing, and returns `Diagnosis(result, reductions)`; surrogate sets hold at most `SAMPLE_CAP` samples (`PAIR_CAP` for dependence), and the dependence rows of a weighted set run on its rejection subset, because resampling with replacement put the mutual information of independent axes 0.165 and 0.277 nats high in 2 and 4 dimensions, where the rejection subset read as equal-weight draws do. `sigma/uncertainty.py` has the subsampling bootstrap of `compare`, the spread of 200 half-sample values, the delete-d jackknife with d = n/2, times the side-size factor for correlated sets; on the zoo it recovered the true scatter within 0.99 to 1.12, where the subsampling scale √(1/2) read 21 to 30% low. `sigma.maps.r_eff` gained `pooled=`, the exact map of the W2 shape term in a pooled whitening, whose whitened covariances sum to 2I; `compare` sets it from the whitening source, and mode B then recovered a width ratio of 1.25 where the reference map had read 1.21. `engines/cost.py` has the dry run, `estimate_compare_cost` and `estimate_diagnose_cost`, with a cost model fitted to timings in High Power mode (Low Power Mode had slowed them 1.35 to 1.9 times), which a grid of four points matched within a factor of 1.33 for the statistics that run per null draw or surrogate and take at least 10 ms; both engines raise a `CostWarning` above a budget of one hour. The engines take `transform=`, an integer seed or a key, and `config_hash=`, and `import mixed_signals` re-exports the workflow names. The weighted permutation null of session 12a held for the joint metrics as well. New checks in `scripts/zoo_validation/engines.py` and a costs grid join the quick test; the committed page gains them at its next full build. A `contextmanager` annotated `-> Iterator[...]` passed mypy, whose stubs revert that typeshed deprecation, so pre-commit and CI gained ty's deprecated rule; with eryn's branch pushed, `uv.lock` was rebuilt on it, so `uv sync --locked` passes again. Later sessions call the engines by their keywords, read verdicts from the `flag` and `threshold` columns, and give the engines the pipeline's seed and config hash.
+
 ### 15. Data space
 
 Scope: `generators/`, `dataspace/` and the data-space engine function.
@@ -284,6 +286,7 @@ Scope: `pipeline/`, `cli.py`.
 - Chain reduction through `mcmc.reduce_chains`, with the burn-in and thinning in the config, and each run's `ReductionRecord` written next to the results.
 - eryn runs load with `Chains.from_eryn`, and their spaces with `ParamSpace.from_eryn_priors`.
 - `mixed-signals run config.yaml`, including the dry-run cost estimate.
+- Session 14 built the pieces: the dry-run table comes from `engines.cost.estimate_compare_cost` and `estimate_diagnose_cost`; the config seed reaches the engines as `key=<int>`, which fills the provenance seed, and the config hash as `config_hash=`; YAML threshold overrides become the `thresholds=` mappings of the engines, floats for `compare` and `diagnostics.flags.Threshold` entries for `diagnose`; `diagnose` returns the reductions of the runs, which `compare` then takes.
 - Done when an example config runs from the shell and gives the same table again from the same seed.
 
 ### 17. Reports
@@ -292,7 +295,8 @@ Scope: `report/`.
 
 - A generated marimo notebook that runs as a script and exports to HTML.
 - Contents: the σ_eff, r_eff and σ_sig summary table, cantuccio corner overlays with contours from the metric estimators, null histograms from the stored null draws, and diagnostics, with their flags from `diagnostics.flags.evaluate`.
-- A plot of the Sinkhorn divergence against ε, from the curve that `sinkhorn_divergence` returns for a vector of ε, with the null band per ε of session 12.
+- A plot of the Sinkhorn divergence against ε, from the curve that `sinkhorn_divergence` returns for a vector of ε, with the null band per ε of session 12. Since session 14, `compare(..., metrics=["sinkhorn"], sinkhorn_epsilon_factors=...)` gives one `sinkhorn` row per factor, with its ε in the settings and its null draws.
+- Verdicts come from the `flag` and `threshold` columns, and the side of each p-value from the `tail` field of `null_recipe` (session 14).
 - Reweighting rows flag through the `ImportanceWeightWarning` in their warnings column, since the k̂ threshold depends on the number of draws; the `pareto_k` row stores S, M and R in its settings, and `importance_ess` rows are informational.
 - Pass `KernelDensity.resolved_settings().bandwidth` to cantuccio as its `bandwidth`, which reproduces the estimate away from bounds (tested in session 6). cantuccio neither reflects nor corrects at bounds, so near an interval bound draw the contours from `KernelDensity.log_density` on a grid.
 - Done when the example pipeline produces a report that renders.
@@ -307,8 +311,8 @@ Scope: `gw/`, with a `gw` extra if it needs new dependencies.
 ### 19. Release readiness
 
 - A Sphinx user guide and API pages, the validation page, and marimo examples in `examples/`.
-- The next full build of the validation page, whichever session runs it, adds the six reweighting checks of session 13; then link the docstrings that name `scripts/zoo_validation/reweighting.py` to their sections instead.
-- The GPU suite on the cluster with a single GPU, and a performance check. It includes `reweight`, whose `pareto_tail` compiles once per distinct tail length, so a batch of MCMC sets with different relative efficiencies compiles once per set; the developers accepted this in session 13.
+- The next full build of the validation page, whichever session runs it, adds the six reweighting checks of session 13 (under a minute) and the checks of session 14 in `scripts/zoo_validation/engines.py` and the costs grid (31 minutes), about 86 minutes in all; then link the docstrings that name `scripts/zoo_validation/reweighting.py` and `engines.py` to their sections instead. Run it in High Power mode with the machine idle.
+- The GPU suite on the cluster with a single GPU, and a performance check. It includes `reweight`, whose `pareto_tail` compiles once per distinct tail length, so a batch of MCMC sets with different relative efficiencies compiles once per set; the developers accepted this in session 13. It also includes `compare` and `diagnose`; the cost model of `engines/cost.py` holds for one CPU of the developers' machine, so its estimates overstate a GPU run.
 - Benchmark `SAMPLE_CAP` per metric. At the cap, one kNN JS evaluation took 9.5 s and one MMD² evaluation 0.3 s on one CPU (session 9); the developers kept one cap for now, because it is easy to tune.
 - Release blockers: reserve `mixed-signals` on PyPI, wait for eryn to release its JAX-compatible prior setup, now on its `feat-jaxpriors` branch, and wait for an ott-jax release with the fix of its online mode (ott-jax pull request 701), now pinned at a commit of its main branch, because a published package cannot depend on git sources.
 - Done when version 0.1.0 can be published.

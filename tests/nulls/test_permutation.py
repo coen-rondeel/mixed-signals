@@ -154,7 +154,9 @@ def test_plan_holds_disjoint_sides_inside_the_pool() -> None:
         "construction": "permutation",
         "draws": 12,
         "sample_size": 200,
+        "tail": None,
     }
+    assert plan.recipe("two_sided")["tail"] == "two_sided"
     for first_side, second_side in zip(plan.first, plan.second, strict=True):
         assert len(set(first_side.tolist()) | set(second_side.tolist())) == 400
 

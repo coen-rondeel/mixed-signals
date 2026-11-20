@@ -28,8 +28,8 @@ columns, so the results of different engines and runs concatenate.
 ``null_mean``, ``null_std``, ``null_draws``
     Mean, standard deviation and draws of the metric under the null.
 ``null_recipe``
-    The construction of the null, its number of draws and the sample size of
-    each side.
+    The construction of the null, its number of draws, the sample size of each
+    side, and the tail of its p-value, ``upper`` or ``two_sided``.
 ``p_value``
     Empirical p-value of the value under the null, with the +1 correction of
     Phipson and Smyth (2010).
@@ -42,6 +42,16 @@ columns, so the results of different engines and runs concatenate.
 ``r_eff``
     The width ratio between two unit Gaussians that gives the same
     null-subtracted value, for rows that measure only a difference in width.
+``threshold``
+    The threshold that the effect size of the row was compared with, the
+    package default or the caller's override; null for rows without a
+    threshold, such as informational rows.
+``flag``
+    Whether the row fails, for a comparison row whose effect size reaches its
+    threshold while σ_sig reaches the significance level
+    (:func:`~mixed_signals.sigma.thresholds.verdict`), or flags, for a
+    diagnostic row (:func:`~mixed_signals.diagnostics.flags.evaluate`); null
+    for rows without a threshold.
 ``warnings``
     Package warnings raised for the row, as
     :class:`~mixed_signals.errors.WarningRecord` entries.
@@ -78,7 +88,12 @@ SHA256_HEX_PATTERN: Final = re.compile(r"[0-9a-f]{64}")
 """Pattern of a SHA-256 hex digest, 64 lowercase hex characters."""
 
 NULL_RECIPE_DTYPE: Final = pl.Struct(
-    {"construction": pl.String(), "draws": pl.Int64(), "sample_size": pl.Int64()}
+    {
+        "construction": pl.String(),
+        "draws": pl.Int64(),
+        "sample_size": pl.Int64(),
+        "tail": pl.String(),
+    }
 )
 """Type of the ``null_recipe`` column."""
 
@@ -118,6 +133,8 @@ RESULT_SCHEMA: Final = pl.Schema(
         "sigma_sig": pl.Float64(),
         "sigma_eff": pl.Float64(),
         "r_eff": pl.Float64(),
+        "threshold": pl.Float64(),
+        "flag": pl.Boolean(),
         "warnings": pl.List(WARNING_DTYPE),
         "provenance": PROVENANCE_DTYPE,
     }

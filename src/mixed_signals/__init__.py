@@ -13,4 +13,25 @@ enable_float64()
 
 __version__: str = _distribution_version("mixed-signals")
 
-__all__ = ["__version__"]
+# * Re-exports of the main objects, below the float64 switch.
+from mixed_signals.core.chains import Chains
+from mixed_signals.core.result import Result
+from mixed_signals.core.samples import SampleSet
+from mixed_signals.core.space import ParamSpace
+from mixed_signals.engines import Reweighting, compare, diagnose, reweight
+from mixed_signals.mcmc.reduce import reduce_chains
+from mixed_signals.prng import root_key
+
+__all__ = [
+    "Chains",
+    "ParamSpace",
+    "Result",
+    "Reweighting",
+    "SampleSet",
+    "__version__",
+    "compare",
+    "diagnose",
+    "reduce_chains",
+    "reweight",
+    "root_key",
+]

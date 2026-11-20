@@ -8,5 +8,7 @@ uses, and :mod:`mixed_signals.sigma.maps` the null subtraction and the maps of
 the moment, marginal, kernel and optimal-transport metrics, whose kNN KL map
 needs the curve that :mod:`mixed_signals.sigma.calibration` measures at run
 time. :mod:`mixed_signals.sigma.thresholds` holds the default thresholds of the
-effect sizes and the verdict of a comparison row.
+effect sizes and the verdict of a comparison row, and
+:mod:`mixed_signals.sigma.uncertainty` the half-sample standard errors of the
+subsampling bootstrap.
 """

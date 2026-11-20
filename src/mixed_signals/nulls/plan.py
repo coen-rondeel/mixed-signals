@@ -28,8 +28,8 @@ Statistic
     statistic gives (M,), one shaped (D,) gives (D, M).
 Recipe
     Rows name the construction, the number of draws and the sides' size in
-    the ``null_recipe`` column of the result table; :meth:`NullPlan.recipe`
-    gives them.
+    the ``null_recipe`` column of the result table, with the tail of the
+    p-value; :meth:`NullPlan.recipe` gives them.
 
 References:
     :cite:t:`good2005permutation`.
@@ -54,6 +54,7 @@ from mixed_signals.core.samples import (
     kish_effective_sample_size,
 )
 from mixed_signals.prng import derive_key
+from mixed_signals.sigma.significance import Tail
 
 type Statistic = Callable[[Array, Array, Array, Array], Array]
 """A statistic of two weighted sides: samples and log weights of each, in turn."""
@@ -90,18 +91,27 @@ class NullPlan(NamedTuple):
     second: Int[Array, "draw selected"]
     """Positions in the pool of side two, for every draw."""
 
-    def recipe(self) -> dict[str, str | int]:
+    def recipe(self, tail: Tail | str | None = None) -> dict[str, str | int | None]:
         """Return the entry of the ``null_recipe`` column of a result row.
 
+        Args:
+            tail: The tail of the p-value that the row reads from the null,
+                ``"upper"`` or ``"two_sided"``; ``None`` leaves it null.
+
         Returns:
-            The construction, the number of draws and the sample size per
-            side, under the field names of
+            The construction, the number of draws, the sample size per side
+            and the tail, under the field names of
             :data:`~mixed_signals.core.result.NULL_RECIPE_DTYPE`.
+
+        Raises:
+            ValueError: If the tail is not a value of
+                :class:`~mixed_signals.sigma.significance.Tail`.
         """
         return {
             "construction": str(self.construction),
             "draws": int(self.first.shape[0]),
             "sample_size": int(self.first.shape[1]),
+            "tail": None if tail is None else str(Tail(tail)),
         }
 
 

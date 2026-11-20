@@ -99,6 +99,7 @@ THRESHOLDS: Final[Mapping[str, float]] = MappingProxyType(
     {
         **dict.fromkeys(
             (
+                "mean_shift",
                 *SIGMA_EFF_MAPS,
                 *KERNEL_METRICS,
                 *SLICED_METRICS,

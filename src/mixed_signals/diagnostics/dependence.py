@@ -38,9 +38,11 @@ Mutual information
     :class:`~mixed_signals.estimators.knn.NearestNeighbours`. Its Gaussian
     value is −½ ln(1 − r²) (Cover and Thomas 2006). It needs equally weighted
     samples, so unequal weights give NaN, as for every nearest-neighbour
-    estimate. Unlike the others, it does not change under a monotone map of
-    either parameter, such as eryn's map from sampling to physical
-    coordinates.
+    estimate; convert a weighted set with
+    :func:`~mixed_signals.core.samples.rejection_subset` first (Smith and
+    Gelfand 1992; Ashton et al. 2019), which makes no copies. Unlike the
+    others, it does not change under a monotone map of either parameter, such
+    as eryn's map from sampling to physical coordinates.
 Rank and cap
     The default rank :data:`MUTUAL_INFORMATION_NEIGHBOURS` and the cap
     :data:`PAIR_CAP` come from a zoo check on bananas whose mutual
@@ -57,7 +59,8 @@ References:
     :cite:t:`spearman1904proof`; :cite:t:`pearson1907mathematical`;
     :cite:t:`moran1948rank`; :cite:t:`szekely2007measuring`;
     :cite:t:`lyons2013distance`; :cite:t:`kraskov2004mutual`;
-    :cite:t:`cover2006elements`; :cite:t:`efron1993introduction`.
+    :cite:t:`cover2006elements`; :cite:t:`efron1993introduction`;
+    :cite:t:`smith1992bayesian`; :cite:t:`ashton2019bilby`.
 """
 
 import functools
@@ -196,7 +199,9 @@ def dependence_statistics(
         Pearson's r and the excesses of Spearman's ρ_s, the distance
         correlation and the mutual information over their Gaussian values,
         each shaped (D(D − 1)/2,) in the order of :func:`parameter_pairs`;
-        the mutual information is NaN for unequal weights.
+        the mutual information is NaN for unequal weights, so convert a
+        weighted set with
+        :func:`~mixed_signals.core.samples.rejection_subset` first.
 
     Raises:
         ValueError: If the shapes do not fit the space, the space has fewer
@@ -213,7 +218,8 @@ def dependence_statistics(
 
     References:
         :cite:t:`spearman1904proof`; :cite:t:`szekely2007measuring`;
-        :cite:t:`kraskov2004mutual`.
+        :cite:t:`kraskov2004mutual`; :cite:t:`smith1992bayesian`;
+        :cite:t:`ashton2019bilby`.
     """
     if len(space) < 2:
         raise ValueError(
@@ -285,7 +291,7 @@ def _warn_about_weights(log_weights: Array, neighbours: int) -> None:
     if float(jnp.max(positive) - jnp.min(positive)) > WEIGHT_TOLERANCE:
         _warn(
             "the mutual information needs equally weighted samples, so it is NaN;"
-            " resample the set in proportion to its weights first"
+            " convert the set with mixed_signals.core.samples.rejection_subset first"
         )
     elif int(jnp.sum(present)) <= neighbours:
         _warn(

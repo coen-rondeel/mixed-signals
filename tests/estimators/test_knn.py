@@ -196,7 +196,7 @@ def test_zero_weights_leave_every_search() -> None:
 def test_unequal_weights_give_nan_and_warn() -> None:
     """Unequal positive weights are a hard limit of the estimators."""
     samples = np.random.default_rng(9).normal(size=(50, 3))
-    with pytest.warns(ValidityWarning, match="equally weighted samples"):
+    with pytest.warns(ValidityWarning, match=r"equally weighted.*rejection_subset"):
         fitted = NearestNeighbours.fit(
             samples, np.linspace(0.0, 1.0, 50), REAL_TRIPLE, settings(2)
         )
@@ -332,7 +332,7 @@ def test_counts_give_nan_for_nan_radii_and_invalid_estimators() -> None:
     counts = fitted.leave_one_out_count(np.r_[np.nan, np.ones(29)])
     assert math.isnan(float(counts[0]))
     assert bool(jnp.all(jnp.isfinite(counts[1:])))
-    with pytest.warns(ValidityWarning, match="equally weighted samples"):
+    with pytest.warns(ValidityWarning, match=r"equally weighted.*rejection_subset"):
         unequal = NearestNeighbours.fit(
             samples, np.linspace(0.0, 1.0, 30), REAL_TRIPLE, max_settings(2)
         )

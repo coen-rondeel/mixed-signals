@@ -197,10 +197,10 @@ def test_zero_weights_leave_every_estimate(
 def test_unequal_weights_give_nan_and_warn(
     rng: np.random.Generator, metric: Metric
 ) -> None:
-    """Weighted sets need resampling first."""
+    """Weighted sets need a rejection subset first."""
     first = rng.normal(size=(100, 2))
     second = rng.normal(size=(100, 2))
-    with pytest.warns(ValidityWarning, match="equally weighted samples"):
+    with pytest.warns(ValidityWarning, match=r"equally weighted.*rejection_subset"):
         value = metric(first, np.linspace(0.0, 1.0, 100), second, None, PLANE, key=KEY)
     assert math.isnan(float(value))
 

@@ -180,7 +180,7 @@ def test_integer_weights_equal_repeated_samples_for_ranks_and_dcor() -> None:
     case = zoo.banana(0.01)
     samples = np.asarray(case.sample(jax.random.key(6), 300).samples[0, 0])
     counts = np.random.default_rng(7).integers(1, 4, size=300)
-    with pytest.warns(ValidityWarning, match="equally weighted"):
+    with pytest.warns(ValidityWarning, match=r"equally weighted.*rejection_subset"):
         weighted = dependence_statistics(
             samples, np.log(counts), case.space, key=jax.random.key(8)
         )

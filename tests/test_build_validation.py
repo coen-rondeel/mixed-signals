@@ -15,7 +15,7 @@ import jax
 import jax.numpy as jnp
 import pytest
 import scipy.integrate
-from zoo_validation import diagnostics, effects, figures, nulls
+from zoo_validation import costs, diagnostics, effects, engines, figures, nulls
 from zoo_validation.common import (
     ResolutionRuns,
     pooled_resolution,
@@ -575,6 +575,70 @@ def test_a_band_claim_names_the_entry_with_the_least_room() -> None:
         expected="between 0.7 and 1.4",
     )
     assert not undefined.consistent
+
+
+def test_the_cost_claim_checks_each_costly_timing_against_the_model() -> None:
+    """A per-draw row of 10 ms or more is checked, and one miss fails the claim."""
+    close = costs._Prediction("energy", 3_000, 16, 1.0, 0.02, 0.025)
+    low = costs._Prediction("energy", 10_000, 8, 1.0, 0.02, 0.01)
+    cheap = costs._Prediction("moments", 3_000, 16, 16.0, 0.005, 0.05)
+    once = costs._Prediction("gmm_bic", 3_000, 16, 1.0, 0.7, 0.4)
+    assert close.factor == pytest.approx(1.25)
+    assert low.factor == pytest.approx(2.0)
+    assert close.checked
+    assert not cheap.checked
+    assert not once.checked
+    _, passing = costs._grid_section([close, cheap, once])
+    assert passing.consistent
+    assert passing.full_only
+    assert "worst of 1 checked rows of 3" in passing.observed
+    table, failing = costs._grid_section([close, low, cheap, once])
+    assert not failing.consistent
+    assert "energy at 10 000 samples and 8 parameters, factor 2.00" in failing.observed
+    assert len(table.rows) == 4
+    _, empty = costs._grid_section([cheap, once])
+    assert empty.consistent
+    assert empty.observed == "no checked row of 2"
+
+
+def test_a_ratio_of_half_sample_errors_combines_both_errors() -> None:
+    """The error joins the scatter of the errors with that of the true scatter."""
+    errors = jnp.asarray([1.1, 0.9, 1.0, 1.2])
+    ratio = engines._ratio(errors, jnp.asarray(1.0), 200)
+    mean = 1.05
+    error_of_mean = math.sqrt(0.05 / 3) / math.sqrt(4)
+    relative = math.hypot(error_of_mean / mean, 1 / math.sqrt(2 * 199))
+    assert ratio.value == pytest.approx(mean)
+    assert ratio.error == pytest.approx(mean * relative)
+    assert ratio.replicates == 4
+    scaled = engines._scaled(ratio, 0.5)
+    assert scaled.value == pytest.approx(0.5 * mean)
+    assert scaled.error == pytest.approx(0.5 * mean * relative)
+
+
+def test_the_flags_of_a_zoo_case_name_the_required_and_the_excluded_rows() -> None:
+    """A required row must flag, an excluded row must not, a quiet case flags none."""
+    cases = {case.name: case for case in engines._flag_cases()}
+    banana = cases["Banana"]
+    required = set(banana.required)
+    assert engines._flags_met(banana, required)
+    assert engines._flags_met(banana, required | {("variance", "x0")})
+    assert not engines._flags_met(banana, required - {("gmm_bic", "x0,x1")})
+    assert not engines._flags_met(banana, required | {("mode_dip", "x0")})
+    assert not engines._flags_met(banana, required | {("spearman", "x0,x1")})
+    gaussian = cases["Gaussian with correlations"]
+    assert engines._flags_met(gaussian, set())
+    assert not engines._flags_met(gaussian, {("skewness", "x0")})
+
+
+def test_counts_and_lists_are_written_in_plain_text() -> None:
+    """One problem is singular, and lists end with and, or or."""
+    assert engines._plural(1, "problem") == "1 problem"
+    assert engines._plural(4, "problem") == "4 problems"
+    assert engines._dimension_text((2, 4, 8)) == "2, 4 and 8"
+    assert engines._dimension_text((2,)) == "2"
+    assert engines._value_text((0.5, 1.0)) == "0.5 or 1"
+    assert engines._value_text((1.0,)) == "1"
 
 
 def test_a_failing_claim_gives_a_non_zero_status(

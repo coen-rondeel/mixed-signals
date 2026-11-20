@@ -1,6 +1,7 @@
 """Tests for the null plans: random sides, evaluating statistics and the recipe."""
 
 from collections.abc import Callable
+from functools import partial
 
 import jax
 import jax.numpy as jnp
@@ -33,9 +34,14 @@ from mixed_signals.nulls import (
     random_sides,
 )
 from mixed_signals.nulls.permutation import permutation_null
+from mixed_signals.nulls.plan import _read_set
 from mixed_signals.prng import derive_key
 from mixed_signals.sigma.maps import null_subtract
-from mixed_signals.sigma.significance import empirical_p_value, null_significance
+from mixed_signals.sigma.significance import (
+    Tail,
+    empirical_p_value,
+    null_significance,
+)
 
 CASE = zoo.shifted_gaussians(0.5, param_count=3)
 SPACE = CASE.space
@@ -142,17 +148,46 @@ def test_counts_are_checked(
 
 
 def test_recipe_fits_the_result_schema() -> None:
-    """The recipe names the construction, the draws and the side size."""
+    """The recipe names the construction, the draws, the side size and the tail."""
     plan = small_plan(draws=7)
-    recipe = plan.recipe()
+    recipe = plan.recipe(tail="upper")
     assert recipe == {
         "construction": "permutation",
         "draws": 7,
         "sample_size": plan.first.shape[1],
+        "tail": "upper",
     }
+    assert list(recipe) == [field.name for field in NULL_RECIPE_DTYPE.fields]
     row = pl.Series("null_recipe", [recipe], dtype=NULL_RECIPE_DTYPE)
     assert row.dtype == NULL_RECIPE_DTYPE
     assert row[0]["sample_size"] == 150
+    assert row[0]["tail"] == "upper"
+
+
+@pytest.mark.parametrize(
+    ("tail", "expected"),
+    [
+        (Tail.UPPER, "upper"),
+        (Tail.TWO_SIDED, "two_sided"),
+        ("upper", "upper"),
+        ("two_sided", "two_sided"),
+        (None, None),
+    ],
+)
+def test_recipe_names_the_tail_as_text(tail: Tail | str | None, expected: str) -> None:
+    """A tail given as a member or as text is stored as its value; None stays null."""
+    recipe = small_plan().recipe(tail)
+    assert recipe["tail"] == expected
+    assert type(recipe["tail"]) in (str, type(None))
+    row = pl.Series("null_recipe", [recipe], dtype=NULL_RECIPE_DTYPE)
+    assert row[0]["tail"] == expected
+    assert small_plan().recipe()["tail"] is None
+
+
+def test_recipe_rejects_an_unknown_tail() -> None:
+    """A tail outside the two named ones raises ValueError from the enum."""
+    with pytest.raises(ValueError, match="'lower' is not a valid Tail"):
+        small_plan().recipe("lower")
 
 
 def test_construction_names_match_the_recipe_values() -> None:
@@ -392,3 +427,46 @@ def test_package_metrics_trace_under_the_map(statistic: Statistic) -> None:
         rtol=1e-9,
         atol=1e-12,
     )
+
+
+# * The traced branch of reading a set
+
+
+def test_read_set_runs_on_traced_samples_without_log_weights() -> None:
+    """Inside jit, float64 samples and equal normalised log weights come back."""
+    samples = jnp.arange(12.0).reshape(6, 2)
+    read_traced = jax.jit(partial(_read_set, "traced", log_weights=None))
+    read_samples, read_weights = read_traced(samples)
+    assert read_samples.dtype == jnp.float64
+    assert read_weights.dtype == jnp.float64
+    np.testing.assert_array_equal(read_samples, samples)
+    np.testing.assert_allclose(read_weights, jnp.full(6, -np.log(6)), rtol=1e-14)
+
+
+def test_read_set_runs_on_traced_samples_with_log_weights() -> None:
+    """Traced log weights are normalised, and the eager result is the same."""
+    samples = jnp.arange(12.0).reshape(6, 2)
+    log_weights = jnp.array([0.0, -1.0, 2.0, -jnp.inf, 0.5, 1.5])
+    read_traced = jax.jit(partial(_read_set, "traced"))
+    read_samples, read_weights = read_traced(samples, log_weights)
+    assert read_samples.dtype == jnp.float64
+    assert read_weights.dtype == jnp.float64
+    np.testing.assert_allclose(
+        jax.scipy.special.logsumexp(read_weights), 0.0, atol=1e-14
+    )
+    assert float(read_weights[3]) == -jnp.inf
+    eager_samples, eager_weights = _read_set("eager", samples, log_weights)
+    np.testing.assert_array_equal(read_samples, eager_samples)
+    np.testing.assert_allclose(read_weights, eager_weights, rtol=1e-14)
+
+
+def test_read_set_skips_the_value_checks_on_traced_input() -> None:
+    """A traced NaN passes unchecked, as the values are unknown; shapes still fail."""
+    samples = jnp.full((4, 2), jnp.nan)
+    log_weights = jnp.zeros(4)
+    read_samples, _ = jax.jit(partial(_read_set, "traced"))(samples, log_weights)
+    assert bool(jnp.all(jnp.isnan(read_samples)))
+    with pytest.raises(ValueError, match="shaped"):
+        jax.jit(partial(_read_set, "traced"))(jnp.zeros(4), log_weights)
+    with pytest.raises(ValueError, match="finite"):
+        _read_set("eager", samples, log_weights)

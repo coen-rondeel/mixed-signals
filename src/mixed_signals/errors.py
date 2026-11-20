@@ -18,7 +18,7 @@ Exceptions that the package raises on purpose derive from
 import contextlib
 import dataclasses
 import warnings
-from collections.abc import Iterator
+from collections.abc import Generator
 
 
 class MixedSignalsError(Exception):
@@ -121,7 +121,7 @@ class WarningRecord:
 
 
 @contextlib.contextmanager
-def capture_warnings() -> Iterator[list[WarningRecord]]:
+def capture_warnings() -> Generator[list[WarningRecord]]:
     """Record the package warnings raised inside a block.
 
     Every package warning raised inside the block becomes a
