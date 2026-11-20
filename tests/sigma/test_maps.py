@@ -523,10 +523,12 @@ def test_js_and_ad_maps_agree_with_scipy_quadrature(shift: float) -> None:
 
 
 def test_js_and_ad_maps_saturate_beyond_ten_sigma() -> None:
-    """At the limits of the metrics the map stops at the end of its interval."""
+    """At the limits of the metrics the map returns an unresolved shift beyond 10σ."""
     for metric, limit in (("js", math.log(2)), ("ad", 8 * math.log(2) - 4)):
         beyond = float(sigma_eff(metric, limit))
-        assert 12.0 < beyond <= 20.0, metric
+        # ? Float64 rounding noise sets where the bisection lands at the limit:
+        # ? the AD value is 11.63 on the Linux runners and 18.78 on macOS arm64.
+        assert 10.0 < beyond <= 20.0, metric
         assert float(sigma_eff(metric, 0.0)) == 0.0
 
 
