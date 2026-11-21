@@ -13,8 +13,9 @@ Inputs
     with K posteriors and B problems. Chains count as one problem, so they
     mix only with sets of one problem. Each run of chains is reduced by
     :func:`~mixed_signals.mcmc.reduce.reduce_chains` after its burn-in and
-    thinned by its autocorrelation time, and the reduced set, with its
-    effective sample size, feeds every family but the chain rows.
+    thinned by ``thin``: by its autocorrelation time by default, or by a given
+    factor. The reduced set, with its effective sample size, feeds every
+    family but the chain rows.
 Families
     ``chains`` (the rows of the chains, in the coordinates of the chains),
     ``shape``, ``dependence``, ``modes`` and ``railing``; see
@@ -122,7 +123,7 @@ from mixed_signals.engines.cost import _diagnose_cost, warn_if_over_budget
 from mixed_signals.errors import ValidityWarning, WarningRecord
 from mixed_signals.estimators.kde import KernelDensitySettings
 from mixed_signals.estimators.knn import WEIGHT_TOLERANCE, NearestNeighbourSettings
-from mixed_signals.mcmc.reduce import Reduction, reduce_chains
+from mixed_signals.mcmc.reduce import TAU_THINNING, Reduction, reduce_chains
 from mixed_signals.nulls.surrogates import (
     CONSTRUCTION,
     gaussian_surrogates,
@@ -203,6 +204,7 @@ def diagnose(
     *,
     key: KeyInput,
     burn_in: int | Sequence[int] = 0,
+    thin: int | str | Sequence[int | str] = TAU_THINNING,
     transform: Transform | None = None,
     diagnostics: Sequence[str] | None = None,
     draws: int = NULL_DRAWS,
@@ -232,6 +234,10 @@ def diagnose(
             :func:`~mixed_signals.prng.root_key` and fills the provenance seed.
         burn_in: Steps to drop from the start of the chains: one number for
             every Chains input, or one per Chains input in order.
+        thin: The thinning of the chains after the burn-in, ``"tau"`` or a
+            factor of at least 1, as for
+            :func:`~mixed_signals.mcmc.reduce.reduce_chains`: one value for
+            every Chains input, or one per Chains input in order.
         transform: A transform that maps the flat and the reduced sets to the
             coordinates of the shape, dependence, mode and railing rows;
             ``None`` for the coordinates of the input.
@@ -254,8 +260,9 @@ def diagnose(
         The result table and the reduction of every Chains input.
 
     Raises:
-        ValueError: If the sources, names, space, burn-in, families, counts or
-            thresholds do not fit, or chains are too short for their burn-in.
+        ValueError: If the sources, names, space, burn-in, thinning, families,
+            counts or thresholds do not fit, or chains are too short for their
+            burn-in and thinning.
         TypeError: If a source or a count is of another type than the
             arguments need.
         KeyError: If the thresholds lack a flagging metric of the selected
@@ -271,6 +278,7 @@ def diagnose(
         space,
         key=key,
         burn_in=burn_in,
+        thin=thin,
         transform=transform,
         diagnostics=diagnostics,
         draws=draws,
@@ -320,7 +328,9 @@ def _reduce_chains(arguments: DiagnoseArguments) -> dict[str, _ChainEntry]:
                     source.chains, arguments.space, burn_in=source.burn_in
                 )
         with errors.capture_warnings() as reduction_records:
-            reduction = reduce_chains(source.chains, burn_in=source.burn_in, thin="tau")
+            reduction = reduce_chains(
+                source.chains, burn_in=source.burn_in, thin=source.thin
+            )
         entries[source.names[0]] = _ChainEntry(
             source.burn_in, health, health_records, reduction, reduction_records
         )

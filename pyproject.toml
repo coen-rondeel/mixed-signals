@@ -52,6 +52,9 @@ Issues = "https://github.com/coen-rondeel/mixed-signals/issues"
 eryn = [
     "eryn",
 ]
+hdf5 = [
+    "h5py>=3.16.0",
+]
 plot = [
     "cantuccio>=0.5.0",
 ]
@@ -75,7 +78,7 @@ cuda13 = [
 [dependency-groups]
 # * The default environment carries every extra except the CUDA ones, which need a GPU.
 dev = [
-    "mixed-signals[eryn,plot,report,torch]",
+    "mixed-signals[eryn,hdf5,plot,report,torch]",
     { include-group = "test" },
     { include-group = "lint" },
 ]

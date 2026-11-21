@@ -10,7 +10,7 @@ import numpy as np
 import polars as pl
 import pytest
 
-from mixed_signals import _config, zoo
+from mixed_signals import _config, errors, zoo
 from mixed_signals.core.samples import SampleSet
 from mixed_signals.core.space import ParamSpace
 from mixed_signals.engines import cost
@@ -25,6 +25,7 @@ from mixed_signals.engines.cost import (
 )
 from mixed_signals.engines.diagnose import diagnose
 from mixed_signals.errors import CapabilityError, CostWarning
+from mixed_signals.mcmc.reduce import reduce_chains
 from mixed_signals.nulls.surrogates import surrogate_size
 from mixed_signals.transforms.whiten import Whitening
 
@@ -560,6 +561,35 @@ def test_chains_enter_before_their_reduction_with_the_upper_bound() -> None:
     assert rows(shape_only, "marginal_moments")[0]["samples"] == 50 * 8
 
 
+def test_an_integer_thinning_enters_with_the_samples_that_the_reduction_keeps() -> None:
+    """A factor k keeps ceil((steps − burn-in)/k) steps per walker, with n_eff = N."""
+    chain_case = zoo.ar1_chains([0.9, 0.0])
+    chains = chain_case.sample(jax.random.key(6), 400, walker_count=8)
+    estimate = estimate_diagnose_cost(
+        chains, ["run"], chain_case.space, burn_in=50, thin=8, draws=DRAWS
+    )
+    # * 350 steps in factors of 8 leave 44 steps, a count that no division by 8 gives.
+    count = math.ceil((400 - 50) / 8) * 8
+    assert count == 352
+    with errors.capture_warnings():
+        reduction = reduce_chains(chains, burn_in=50, thin=8)
+    assert reduction.sample_set.shape.sample == count
+    assert rows(estimate, "marginal_moments")[0]["samples"] == count
+    flat = SampleSet(jnp.zeros((count, 2)).at[:, 0].set(jnp.arange(count) / count))
+    reference = estimate_diagnose_cost(flat, ["run"], chain_case.space, draws=DRAWS)
+    assert estimate.seconds == pytest.approx(reference.seconds, rel=1e-12)
+    # * The default and "tau" keep the upper bound, whatever the autocorrelation time.
+    for thin in ("tau", ["tau"]):
+        bound = estimate_diagnose_cost(
+            chains, ["run"], chain_case.space, burn_in=50, thin=thin, draws=DRAWS
+        )
+        assert rows(bound, "marginal_moments")[0]["samples"] == (400 - 50) * 8
+    one_per_run = estimate_diagnose_cost(
+        chains, ["run"], chain_case.space, burn_in=50, thin=[8], draws=DRAWS
+    )
+    assert one_per_run.seconds == estimate.seconds
+
+
 def test_the_diagnose_estimate_shares_the_argument_errors_of_the_engine() -> None:
     """The same checks, from the same code, before any estimate."""
     samples = shift_set(60).select(posteriors=[0])
@@ -575,6 +605,12 @@ def test_the_diagnose_estimate_shares_the_argument_errors_of_the_engine() -> Non
         estimate_diagnose_cost(samples, ["a"], SPACE, burn_in=-1)
     with pytest.raises(ValueError, match="one value for every Chains input"):
         estimate_diagnose_cost(samples, ["a"], SPACE, burn_in=[1, 2])
+    with pytest.raises(ValueError, match="thin must be at least 1"):
+        estimate_diagnose_cost(samples, ["a"], SPACE, thin=0)
+    with pytest.raises(ValueError, match="thin must be 'tau' or an integer"):
+        estimate_diagnose_cost(samples, ["a"], SPACE, thin="x")
+    with pytest.raises(ValueError, match="one value for every Chains input"):
+        estimate_diagnose_cost(samples, ["a"], SPACE, thin=[1, 2])
     with pytest.raises(ValueError, match="cap must be at least 2"):
         estimate_diagnose_cost(samples, ["a"], SPACE, cap=1)
     with pytest.raises(ValueError, match="pair_cap must be at least 2"):

@@ -37,6 +37,7 @@ from mixed_signals.engines._common import (
 )
 from mixed_signals.generators.capabilities import Capability, require_capabilities
 from mixed_signals.io.arrays import ArrayBackend
+from mixed_signals.mcmc.reduce import TAU_THINNING
 from mixed_signals.metrics.classifier import _DEFERRED
 from mixed_signals.metrics.marginal import ks_metric_names
 from mixed_signals.nulls.plan import Construction
@@ -699,6 +700,8 @@ class DiagnoseSource(NamedTuple):
     """The names of its posteriors."""
     burn_in: int
     """Steps dropped from the start of the chains; zero for a sample set."""
+    thin: int | str
+    """The thinning of the chains, ``"tau"`` or a factor; 1 for a sample set."""
 
 
 class DiagnoseArguments(NamedTuple):
@@ -731,6 +734,7 @@ def read_diagnose_arguments(
     *,
     key: object,
     burn_in: object,
+    thin: object,
     transform: Transform | None,
     diagnostics: object,
     draws: object,
@@ -745,6 +749,7 @@ def read_diagnose_arguments(
     entries = _read_sources(sources)
     chain_count = sum(isinstance(entry, Chains) for entry in entries)
     burn_ins = iter(_read_burn_in(burn_in, chain_count))
+    thins = iter(_read_thin(thin, chain_count))
     param_count = len(space)
     batch_counts = {
         1 if isinstance(entry, Chains) else entry.shape.batch for entry in entries
@@ -775,6 +780,7 @@ def read_diagnose_arguments(
                 sample_set=None if isinstance(entry, Chains) else entry,
                 names=posterior_names[start : start + count],
                 burn_in=next(burn_ins) if is_chains else 0,
+                thin=next(thins) if is_chains else 1,
             )
         )
         start += count
@@ -844,6 +850,30 @@ def _read_burn_in(burn_in: object, chain_count: int) -> tuple[int, ...]:
             )
         return tuple(read_count("burn_in", value, 0) for value in burn_in)
     return (read_count("burn_in", burn_in, 0),) * chain_count
+
+
+def _read_thin(thin: object, chain_count: int) -> tuple[int | str, ...]:
+    """Return the thinning of each Chains input: one value for all, or one for each."""
+    # * A str is a Sequence, so the single-value branch comes first.
+    if isinstance(thin, str) or not isinstance(thin, Sequence):
+        return (_read_thin_value(thin),) * chain_count
+    if len(thin) != chain_count:
+        raise ValueError(
+            "thin must give one value for every Chains input, got"
+            f" {len(thin)} values for {chain_count} Chains inputs"
+        )
+    return tuple(_read_thin_value(value) for value in thin)
+
+
+def _read_thin_value(value: object) -> int | str:
+    """Return one thinning: ``"tau"`` or an integer factor of at least 1."""
+    if isinstance(value, str):
+        if value != TAU_THINNING:
+            raise ValueError(
+                f"thin must be {TAU_THINNING!r} or an integer, got {value!r}"
+            )
+        return value
+    return read_count("thin", value, 1)
 
 
 def _read_families(diagnostics: object) -> tuple[str, ...]:

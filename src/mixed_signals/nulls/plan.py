@@ -180,7 +180,7 @@ def null_draws(
         batch_size: Draws evaluated at once; one at a time when ``None``.
 
     Returns:
-        The values of all draws, shaped (..., draws): the leading axes are
+        The values of all draws, shaped (..., draws). The leading axes are
         those of the statistic's value and the draw axis comes last, as the
         p-value and null subtraction functions read it.
     """

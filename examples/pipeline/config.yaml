@@ -1,0 +1,41 @@
+# The pipeline example: one reference run, two other posteriors and three engines.
+# Run `make_data.py` first. Relative paths start at the folder of this file.
+seed: 2026
+output: results
+
+# The space comes from the eryn priors of models.py: the parameters x0, x1 and x2.
+space:
+  eryn_priors: models:priors
+
+posteriors:
+  # The reference run: an eryn HDF5 file, reduced after a burn-in by its autocorrelation time.
+  - name: mcmc
+    format: eryn
+    path: data/mcmc.h5
+    burn_in: 200
+    thin: tau
+  # Flat draws from a table, such as the output of simulation-based inference.
+  - name: sbi
+    format: table
+    path: data/sbi.parquet
+  # Flat draws from an HDF5 group with one dataset per parameter.
+  - name: peer
+    format: hdf5
+    path: data/peer.h5
+    group: posterior
+
+# Chain health, shape, dependence, modes and railing of every posterior.
+diagnose: {}
+
+# Compare the other posteriors with the reference, in parameter space.
+compare:
+  reference: mcmc
+
+# Compare them in data space too: the generator and the noise model of models.py.
+# With a centre, each pair also gets a row in the local chart of the Fisher matrix,
+# which the generator gives.
+compare_signals:
+  generator: models:generator
+  noise: models:noise
+  reference: mcmc
+  centre: data/centre.npy

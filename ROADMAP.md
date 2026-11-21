@@ -23,7 +23,7 @@ The implementation is split into twenty focused sessions, numbered 0 to 19. They
 | 13 | Reweighting | D | 7 | Done (2026-11-19) |
 | 14 | Engines | E | 8 to 12 | Done (2026-11-20) |
 | 15 | Data space | E | 4, 9 | Done (2026-11-20) |
-| 16 | Pipeline and CLI | F | 14 | Open |
+| 16 | Pipeline and CLI | F | 14 | Done (2026-11-21) |
 | 17 | Reports | F | 14 | Open |
 | 18 | GW subpackage | F | 7 | Open |
 | 19 | Release readiness | G | all | Open |
@@ -292,6 +292,8 @@ Scope: `pipeline/`, `cli.py`.
 - `compare_signals` (session 15) takes a generator and a noise model as Python objects, which a YAML file cannot hold. Settle with the developers whether the config names them by import path, such as `module:attribute`, or data space stays in the Python API.
 - Done when an example config runs from the shell and gives the same table again from the same seed.
 
+Outcome (2026-11-21): the developers decided twenty-eight items, now in `DESIGN.md`. `pipeline/config.py` holds the pydantic models of the YAML config and `load_config`: a strict safe loader that rejects unknown and repeated keys and keeps YAML merge keys, the required `seed`, `space`, `output` and `posteriors`, one entry per posterior in the formats `eryn`, `chains`, `samples`, `table` and `hdf5`, and the sections `diagnose`, `compare` and `compare_signals`, which mirror the keywords and defaults of their engines; threshold overrides merge over the package defaults. The config hash is the SHA-256 of the canonical JSON of the validated config and its resolved space, without the output folder and the budget, which change no row, and the run folder keeps those bytes as `config.json`. Python objects enter by import path `module:attribute`, resolved by `pkgutil.resolve_name` with the config's folder first on `sys.path`; a module that the process already imported from another file stops the run (`pipeline/_sources.py`). `pipeline/runner.py` has `estimate_pipeline` and `run_pipeline`. They read the space (a file, inline, or `ParamSpace.from_eryn_priors`), the objects and the posteriors, and reduce every run of chains once. They estimate every engine with the arguments of its section, which checks every argument before any engine runs, `compare`'s Fisher matrices included. A run then raises one `CostWarning` above the budget, runs the engines with the seed and the config hash, and writes `results.parquet`, `config.json`, `reductions.json`, `cost.parquet` and `provenance.json` once, at the end. `mixed-signals run CONFIG [--output DIR] [--overwrite] [--dry-run]` exits with 0, with 1 when a run fails and with 2 for an invalid config. The readers are classmethods: `SampleSet.from_npz`, `SampleSet.from_table` and `SampleSet.from_hdf5` (`io/files.py`, and `io/hdf5.py` with h5py from the new `hdf5` extra), `Chains.from_npz`, and `Chains.from_eryn(parameters=)`, which picks columns by the stored key order; tables, HDF5 groups and eryn runs are read by the names of the space. `diagnose` and `estimate_diagnose_cost` gained `thin=`. `examples/pipeline/` writes an eryn run on the Gaussian posterior of the zoo's linear signal, a table shifted by 0.3 widths and an HDF5 group, and runs the three engines on them. From the shell, two runs gave byte-identical `results.parquet`, `cost.parquet`, `config.json` and `reductions.json` (198 rows, 3.5 minutes each on the developers' Apple M4 Pro, against an estimate of 3.9 minutes). The shifted table read σ_eff = 0.33 in data space, in the data row and the chart row alike. eryn copies NumPy's global random state when its sampler is built, so the example seeds NumPy before that, and its data repeat byte for byte. The suite holds 2 176 tests at 100% line and branch coverage. Later sessions extend the config through the keywords of the engines, read result files through the classmethod readers, and name user code by import path.
+
 ### 17. Reports
 
 Scope: `report/`.
@@ -303,6 +305,9 @@ Scope: `report/`.
 - Data-space rows (session 15) come in pairs, the data row (space `data(...)`) and the chart row (`chart(fisher)`). Show them side by side: their ratio shows where the linear order fails.
 - Reweighting rows flag through the `ImportanceWeightWarning` in their warnings column, since the k̂ threshold depends on the number of draws; the `pareto_k` row stores S, M and R in its settings, and `importance_ess` rows are informational.
 - Pass `KernelDensity.resolved_settings().bandwidth` to cantuccio as its `bandwidth`, which reproduces the estimate away from bounds (tested in session 6). cantuccio neither reflects nor corrects at bounds, so near an interval bound draw the contours from `KernelDensity.log_density` on a grid.
+- The example pipeline is `examples/pipeline/` (session 16): `make_data.py` writes an eryn run, a parquet table, an HDF5 group and the centre of the Fisher chart, and `config.yaml` runs `diagnose`, `compare` and `compare_signals`, the last with a data row and a chart row per pair. Its run folder holds `results.parquet`, `config.json`, `reductions.json`, `cost.parquet` and `provenance.json`, written once at the end of a run.
+- The run folder holds no samples. The report can read them through the config, with `load_config` and the readers of session 16, and repeat each reduction from `reductions.json`: `reduce_chains` with the recorded burn-in and factor repeats it exactly, and the stored `chains_hash` checks the input. Settle with the developers whether the pipeline should write the reduced samples into the run folder instead.
+- `provenance.json` holds the estimated and the wall seconds of each engine, which the report can set side by side.
 - Done when the example pipeline produces a report that renders.
 
 ### 18. GW subpackage
@@ -310,12 +315,13 @@ Scope: `report/`.
 Scope: `gw/`, with a `gw` extra if it needs new dependencies.
 
 - GW parameter conventions (names, units, sky-position pairs), readers, waveform helpers and the PSD-weighted frequency-domain inner product, so the core stays domain-agnostic.
+- Readers of GW result files can build on `SampleSet.from_hdf5` and `SampleSet.from_table` (session 16), which read by parameter name, and the GW noise model and generators enter pipeline configs by import path.
 - The inner product as a `NoiseModel` of `compare_signals` (session 15): `whiten` returns 2√(Δf/S(f)) times the real and imaginary parts of each frequency bin, stacked per channel; correlated channels go through the Cholesky factor of the inverse cross-spectral matrix. The templates of one problem must share one data grid, so helpers place Galactic-binary templates, whose band starts at a bin that depends on f₀ in JaxGB, on one band per problem. A JaxGB generator can give `information_matrix` by automatic differentiation of its templates.
 - Done when a LISA galactic-binary example loads through `gw` into the core containers.
 
 ### 19. Release readiness
 
-- A Sphinx user guide and API pages, the validation page, and marimo examples in `examples/`.
+- A Sphinx user guide and API pages, the validation page, and marimo examples in `examples/`. The user guide covers the pipeline: the config format, whose reference is the docstring of `pipeline/config.py`, the run folder and the example pipeline of session 16.
 - The next full build of the validation page, whichever session runs it, adds the six reweighting checks of session 13 (under a minute), the checks of session 14 in `scripts/zoo_validation/engines.py` and the costs grid (31 minutes) and the four data-space checks of session 15 in `scripts/zoo_validation/dataspace.py` (under two minutes), about 88 minutes in all; then link the docstrings that name `scripts/zoo_validation/reweighting.py`, `engines.py` and `dataspace.py` to their sections instead. Run it in High Power mode with the machine idle.
 - The GPU suite on the cluster with a single GPU, and a performance check. It includes `reweight`, whose `pareto_tail` compiles once per distinct tail length, so a batch of MCMC sets with different relative efficiencies compiles once per set; the developers accepted this in session 13. It also includes `compare`, `diagnose` and `compare_signals`, whose distance matrices need 8P² bytes, 3.2 GB at the cap; the cost model of `engines/cost.py` holds for one CPU of the developers' machine, so its estimates overstate a GPU run.
 - Benchmark `SAMPLE_CAP` per metric. At the cap, one kNN JS evaluation took 9.5 s and one MMD² evaluation 0.3 s on one CPU (session 9); the developers kept one cap for now, because it is easy to tune.

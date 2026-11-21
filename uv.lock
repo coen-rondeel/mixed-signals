@@ -1814,6 +1814,9 @@ cuda13 = [
 eryn = [
     { name = "eryn" },
 ]
+hdf5 = [
+    { name = "h5py" },
+]
 plot = [
     { name = "cantuccio" },
 ]
@@ -1830,7 +1833,7 @@ torch = [
 dev = [
     { name = "beartype" },
     { name = "emcee" },
-    { name = "mixed-signals", extra = ["eryn", "plot", "report", "torch"] },
+    { name = "mixed-signals", extra = ["eryn", "hdf5", "plot", "report", "torch"] },
     { name = "mypy" },
     { name = "pre-commit" },
     { name = "pytest" },
@@ -1869,6 +1872,7 @@ requires-dist = [
     { name = "cupy-cuda13x", marker = "extra == 'cuda13'", specifier = ">=14.2.0" },
     { name = "equinox", specifier = ">=0.13.8" },
     { name = "eryn", marker = "extra == 'eryn'", git = "https://github.com/lisa-analysis-tools/Eryn?branch=feat-jaxpriors" },
+    { name = "h5py", marker = "extra == 'hdf5'", specifier = ">=3.16.0" },
     { name = "jax", specifier = ">=0.11.2" },
     { name = "jax", extras = ["cuda12"], marker = "extra == 'cuda12'", specifier = ">=0.11.2" },
     { name = "jax", extras = ["cuda13"], marker = "extra == 'cuda13'", specifier = ">=0.11.2" },
@@ -1883,13 +1887,13 @@ requires-dist = [
     { name = "torch", marker = "(sys_platform == 'linux' and extra == 'torch') or (sys_platform == 'win32' and extra == 'torch')", specifier = ">=2.14.1", index = "https://download.pytorch.org/whl/cpu" },
     { name = "torch", marker = "sys_platform != 'linux' and sys_platform != 'win32' and extra == 'torch'", specifier = ">=2.14.1" },
 ]
-provides-extras = ["eryn", "plot", "report", "torch", "cuda12", "cuda13"]
+provides-extras = ["eryn", "hdf5", "plot", "report", "torch", "cuda12", "cuda13"]
 
 [package.metadata.requires-dev]
 dev = [
     { name = "beartype", specifier = ">=0.23.1" },
     { name = "emcee", specifier = ">=3.1.6" },
-    { name = "mixed-signals", extras = ["eryn", "plot", "report", "torch"] },
+    { name = "mixed-signals", extras = ["eryn", "hdf5", "plot", "report", "torch"] },
     { name = "mypy", specifier = ">=2.4.0" },
     { name = "pre-commit", specifier = ">=4.7.0" },
     { name = "pytest", specifier = ">=9.1.1" },

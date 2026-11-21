@@ -391,6 +391,123 @@ def test_burn_in_is_checked() -> None:
     )
 
 
+# * Thinning
+
+
+def test_a_thinning_factor_reduces_each_run_like_reduce_chains() -> None:
+    """A factor k keeps every k-th step, and the record repeats with thin=k."""
+    space, chains = ar1_chains(seed=5)
+    diagnosis = diagnose(
+        chains, ["run"], space, key=KEY, burn_in=30, thin=7, diagnostics=["chains"]
+    )
+    with errors.capture_warnings():
+        expected = reduce_chains(chains, burn_in=30, thin=7)
+    reduction = diagnosis.reductions["run"]
+    assert reduction.record == expected.record
+    assert reduction.record.thin == 7
+    np.testing.assert_array_equal(
+        reduction.sample_set.samples, expected.sample_set.samples
+    )
+    # * The chain rows read the raw chains after the burn-in, whatever the thinning.
+    default = diagnose(
+        chains, ["run"], space, key=KEY, burn_in=30, diagnostics=["chains"]
+    )
+    assert default.result.table.drop("provenance").equals(
+        diagnosis.result.table.drop("provenance")
+    )
+
+
+def test_each_run_takes_its_own_thinning() -> None:
+    """One value per Chains input, mixing the autocorrelation time and a factor."""
+    space, first = ar1_chains(seed=1)
+    _, second = ar1_chains((0.5, 0.2), seed=2)
+    diagnosis = diagnose(
+        [first, second],
+        ["slow", "fast"],
+        space,
+        key=KEY,
+        burn_in=20,
+        thin=["tau", 5],
+        diagnostics=["chains"],
+    )
+    for name, chains, thin in (("slow", first, "tau"), ("fast", second, 5)):
+        with errors.capture_warnings():
+            expected = reduce_chains(chains, burn_in=20, thin=thin)
+        assert diagnosis.reductions[name].record == expected.record
+    assert diagnosis.reductions["fast"].record.thin == 5
+    shared = diagnose(
+        [first, second],
+        ["slow", "fast"],
+        space,
+        key=KEY,
+        thin=3,
+        diagnostics=["chains"],
+    )
+    assert {reduction.record.thin for reduction in shared.reductions.values()} == {3}
+    with_set = diagnose(
+        [first, SampleSet(jax.random.normal(jax.random.key(4), (80, 2)))],
+        ["run", "flat"],
+        space,
+        key=KEY,
+        thin=[2],
+        draws=DRAWS,
+        diagnostics=["railing"],
+    )
+    assert with_set.reductions["run"].record.thin == 2
+
+
+def test_thinning_by_the_autocorrelation_time_is_the_default() -> None:
+    """Without thin=, a run is thinned by τ, as reduce_chains does."""
+    space, chains = ar1_chains(seed=3)
+    default = diagnose(chains, ["run"], space, key=KEY, burn_in=30)
+    named = diagnose(chains, ["run"], space, key=KEY, burn_in=30, thin="tau")
+    assert default.reductions["run"].record == named.reductions["run"].record
+    assert default.result.table.equals(named.result.table)
+
+
+def test_thin_is_checked() -> None:
+    """The autocorrelation time or a factor of at least one, one per run."""
+    space, chains = ar1_chains()
+    base: dict[str, Any] = {"key": KEY, "diagnostics": ["chains"]}
+    with pytest.raises(ValueError, match="thin must be 'tau' or an integer, got 'x'"):
+        unchecked_diagnose(chains, ["run"], space, thin="x", **base)
+    with pytest.raises(ValueError, match="thin must be at least 1, got 0"):
+        diagnose(chains, ["run"], space, thin=0, **base)
+    with pytest.raises(ValueError, match="thin must be at least 1, got -2"):
+        diagnose(chains, ["run"], space, thin=[-2], **base)
+    with pytest.raises(TypeError, match="thin must be an integer, got float"):
+        unchecked_diagnose(chains, ["run"], space, thin=2.0, **base)
+    with pytest.raises(TypeError, match="thin must be an integer, got bool"):
+        unchecked_diagnose(chains, ["run"], space, thin=True, **base)
+    with pytest.raises(TypeError, match="thin must be an integer, got NoneType"):
+        unchecked_diagnose(chains, ["run"], space, thin=[None], **base)
+    with pytest.raises(
+        ValueError, match="one value for every Chains input, got 2 values for 1"
+    ):
+        diagnose(chains, ["run"], space, thin=[3, 4], **base)
+    with pytest.raises(ValueError, match="got 0 values for 1"):
+        diagnose(chains, ["run"], space, thin=[], **base)
+    with pytest.raises(ValueError, match="chains are too short for this factor"):
+        diagnose(chains, ["run"], space, thin=STEPS, **base)
+    flat = SampleSet(jax.random.normal(jax.random.key(2), (50, 2)))
+    thins: list[Any] = [[], 5]
+    for thin in thins:
+        assert (
+            len(
+                diagnose(
+                    flat,
+                    ["flat"],
+                    space,
+                    thin=thin,
+                    key=KEY,
+                    draws=DRAWS,
+                    diagnostics=["railing"],
+                ).result
+            )
+            == 0
+        )
+
+
 # * The families
 
 

@@ -203,6 +203,84 @@ def test_branches_are_chosen_by_name(run: Run) -> None:
     assert Chains.from_eryn(backend, branch=BRANCH).shape.param == 3
 
 
+# * Parameter names
+
+
+def test_parameters_pick_columns_by_their_stored_names(run: Run) -> None:
+    """A subset, a new order, and every array without a parameter axis unchanged."""
+    full = Chains.from_eryn(run.sampler)
+    reordered = Chains.from_eryn(
+        run.sampler.backend,
+        num_repeats_in_model=REPEATS,
+        priors=run.priors,
+        parameters=["phase", "ln_amplitude"],
+    )
+    np.testing.assert_array_equal(reordered.samples, full.samples[..., ::-1])
+    subset = Chains.from_eryn(run.sampler, parameters=["phase"])
+    np.testing.assert_array_equal(subset.samples, full.samples[..., 1:])
+    for chains in (reordered, subset):
+        for name in FIELDS[1:]:
+            np.testing.assert_array_equal(
+                getattr(chains, name), getattr(full, name), err_msg=name
+            )
+    same_order = Chains.from_eryn(run.sampler, parameters=("ln_amplitude", "phase"))
+    assert_same_chains(same_order, full)
+
+
+def test_a_fixed_parameter_is_available_only_without_priors(run: Run) -> None:
+    """With the priors the fixed name drops with its column; without, it stays."""
+    available = r"no parameters 'fixed'.*'ln_amplitude', 'phase'"
+    with pytest.raises(ValueError, match=available):
+        Chains.from_eryn(run.sampler, parameters=["fixed", "phase"])
+    with pytest.raises(ValueError, match="no parameters 'fixed'"):
+        Chains.from_eryn(run.sampler.backend, priors=run.priors, parameters=["fixed"])
+    chains = Chains.from_eryn(run.sampler.backend, parameters=["fixed", "phase"])
+    np.testing.assert_array_equal(chains.samples[..., 0], FIXED_VALUE)
+    assert chains.shape.param == 2
+
+
+def test_integer_keys_are_named_by_position() -> None:
+    """Keys 0, 1 and 2 give the names x0, x1 and x2, as the space of the priors does."""
+    priors = eryn_priors.ProbDistContainer(
+        {position: eryn_priors.UniformDistribution(-5.0, 5.0) for position in range(3)}
+    )
+    sampler = ensemble.EnsembleSampler(
+        WALKER_COUNT,
+        3,
+        lambda points, *args: -0.5 * np.sum(points**2, axis=-1),
+        priors,
+        tempering_kwargs={"ntemps": 1},
+    )
+    sampler.run_mcmc(priors.rvs(size=(1, WALKER_COUNT)), STEP_COUNT, progress=False)
+    full = Chains.from_eryn(sampler)
+    assert ParamSpace.from_eryn_priors(priors).names == ("x0", "x1", "x2")
+    picked = Chains.from_eryn(sampler, parameters=["x2", "x0"])
+    np.testing.assert_array_equal(picked.samples, full.samples[..., [2, 0]])
+
+
+def test_parameter_names_must_be_unique_and_stored(run: Run) -> None:
+    """A repeated name and a name that the run lacks raise, listing the options."""
+    with pytest.raises(ValueError, match="parameters repeats 'phase'"):
+        Chains.from_eryn(run.sampler, parameters=["phase", "ln_amplitude", "phase"])
+    with pytest.raises(ValueError, match=r"no parameters 'x', 'y'.*'ln_amplitude'"):
+        Chains.from_eryn(run.sampler, parameters=["x", "phase", "y"])
+
+
+def test_runs_without_names_are_read_in_order(run: Run) -> None:
+    """Without a stored key order the columns stay, and only their number is checked."""
+    for key_order in (None, {"other_branch": ["a", "b", "c"]}):
+        backend = copy.deepcopy(run.sampler.backend)
+        backend.key_order = key_order
+        chains = Chains.from_eryn(backend, parameters=["a", "b", "c"])
+        assert_same_chains(chains, Chains.from_eryn(backend))
+        with pytest.raises(ValueError, match=r"stores no parameter names.*3 columns"):
+            Chains.from_eryn(backend, parameters=["a", "b"])
+    free = Chains.from_eryn(backend, priors=run.priors, parameters=["a", "b"])
+    assert free.shape.param == 2
+    with pytest.raises(ValueError, match=r"stores no parameter names.*2 columns"):
+        Chains.from_eryn(backend, priors=run.priors, parameters=["a", "b", "c"])
+
+
 # * Checks
 
 

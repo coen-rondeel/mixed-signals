@@ -49,7 +49,7 @@ In v1:
 
 ## Decisions so far
 
-The developers have agreed 304 decisions: 88 from rounds 1–8, the repository setup and the design close-out, 7 from roadmap session 1 (Foundations), 7 from roadmap session 2 (Sample containers) and 14 from roadmap session 3 (Validation zoo), all on 2026-10-13, and 14 from roadmap session 4 (Transforms and whitening), 12 from roadmap session 5 (MCMC tools) and 16 from roadmap session 6 (Estimators), all three on 2026-10-14, 14 from roadmap session 7 (eryn adapters and priors), taken on 2026-10-14 and 2026-10-24, 14 from roadmap session 8 (Metrics I: moments and marginals), on 2026-10-24, and 10 from roadmap session 9 (Metrics II: divergences, kernels and classifiers), 14 from roadmap session 10 (Optimal transport) and 16 from roadmap session 11 (Diagnostics), all three on 2026-10-25, 12 from the first part of roadmap session 12 (Nulls and σ), on 2026-11-16, 5 from its second part, on 2026-11-17, 18 from roadmap session 13 (Reweighting), on 2026-11-18, 28 from roadmap session 14 (Engines), on 2026-11-19 and 2026-11-20, and 15 from roadmap session 15 (Data space), on 2026-11-20.
+The developers have agreed 332 decisions: 88 from rounds 1–8, the repository setup and the design close-out, 7 from roadmap session 1 (Foundations), 7 from roadmap session 2 (Sample containers) and 14 from roadmap session 3 (Validation zoo), all on 2026-10-13, and 14 from roadmap session 4 (Transforms and whitening), 12 from roadmap session 5 (MCMC tools) and 16 from roadmap session 6 (Estimators), all three on 2026-10-14, 14 from roadmap session 7 (eryn adapters and priors), taken on 2026-10-14 and 2026-10-24, 14 from roadmap session 8 (Metrics I: moments and marginals), on 2026-10-24, and 10 from roadmap session 9 (Metrics II: divergences, kernels and classifiers), 14 from roadmap session 10 (Optimal transport) and 16 from roadmap session 11 (Diagnostics), all three on 2026-10-25, 12 from the first part of roadmap session 12 (Nulls and σ), on 2026-11-16, 5 from its second part, on 2026-11-17, 18 from roadmap session 13 (Reweighting), on 2026-11-18, 28 from roadmap session 14 (Engines), on 2026-11-19 and 2026-11-20, and 15 from roadmap session 15 (Data space), on 2026-11-20, and 28 from roadmap session 16 (Pipeline and CLI), on 2026-11-20 and 2026-11-21.
 
 | Topic | Decision |
 | --- | --- |
@@ -318,7 +318,7 @@ The developers have agreed 304 decisions: 88 from rounds 1–8, the repository s
 | Comparison modes in the API | `reference=` selects mode A: pairs (reference, other) and the reference whitening; without it, mode B: all pairs and pooled whitening per pair. `whitening=` overrides (`reference` in mode A only, `pooled`, or `fisher` with `fisher=` and `centre=`), and `null="split_half"` needs mode A |
 | Metric selection | An entry names a metric, which selects every estimator of it, or a `metric:estimator` recipe, in the words of the metric and estimator columns; `kuiper_ks` is an alias of `ks`, and terms such as `kl_location` come with their total |
 | Default metrics | The fast set: mean shift, width ratio, KS, AD, W1, the KDE JS and Hellinger, the Gaussian KL, W2 and Hellinger, MMD², the energy distance and sliced W2 with both estimators; kNN, Sinkhorn and sliced Sinkhorn rows run on request. Per pair at the cap in 16 parameters with 200 null draws on one CPU: about 6 minutes, against 2.1 hours for every metric |
-| diagnose input and output | `Chains`, one run each, reduced inside by `reduce_chains(thin="tau")` after the burn-in, or flat `SampleSet`s; it returns `Diagnosis(result, reductions)`, so the same reduced samples go to `compare` |
+| diagnose input and output | `Chains`, one run each, reduced inside by `reduce_chains` after the burn-in and thinned by `thin=` (τ by default, or a factor per run; session 16), or flat `SampleSet`s; it returns `Diagnosis(result, reductions)`, so the same reduced samples go to `compare` |
 | diagnose families | `chains`, `shape`, `dependence`, `modes` and `railing`, all by default, selected by family name |
 | Transforms in the engines | `compare` and `diagnose` take `transform=`; `compare` whitens after it, so the space column reads "physical(eryn) \| whiten(pooled)"; chain-health rows stay in the coordinates of the chains and read `identity` |
 | Verdict columns | The result gains `threshold` (Float64), the threshold that a row's effect size met, default or override, and `flag` (Boolean), whether a comparison row fails or a diagnostic row flags; both are null on rows without a threshold |
@@ -357,6 +357,34 @@ The developers have agreed 304 decisions: 88 from rounds 1–8, the repository s
 | Chunked user calls | `io.arrays.call_in_chunks(value_shape=)`: `()` for one value per row, a tuple for a fixed trailing shape, `None` for a shape that the first chunk fixes |
 | Toy signals | `zoo.linear_signal(fisher)`, whose Fisher matrix in white noise is exactly the one given, and `zoo.sinusoid_signal(snr)` (Rife and Boorstyn 1974), with `zoo.WhiteNoise`, as `SignalCase` objects with their Fisher matrix and `fisher_gaussians(shift)`; public, for tests, the validation page and users |
 | Validation of session 15 | Four checks in `scripts/zoo_validation/dataspace.py` join the quick test; their full-mode run took 89 s and held all 13 claims, and the committed page gains them at its next full build. The claims on capped chains test the kept ratio m·n_eff/N at caps up to N/2 and the Kish size from N/2 up, each away from the limit where it is exact |
+| Pipeline engines | A config runs `diagnose`, `compare` and `compare_signals`, each when its section is present, on every posterior of the config; a config without an engine section is invalid. `reweight` stays in the Python API (Deferred) |
+| Python objects in a config | Import paths of the form `module:attribute`, which `pkgutil.resolve_name` reads; while the pipeline resolves and runs, the config's folder comes first on `sys.path`, as a script's folder does, so a `models.py` next to the config imports and a config runs the code it names |
+| Import paths name attributes | No factory calls with arguments from the YAML; `provenance.json` records the file and SHA-256 of the module of every import path |
+| Module clashes | Python imports a module once per process, so when the module of an import path is already imported from another file than the one in the config's folder, the run stops with a `ConfigError` that names both files, before any work; the command line runs one config per process and never meets it. An edit of a module takes effect in a new process |
+| Input formats | `eryn` (an eryn HDF5 file), `chains` (`.npz` with the keyword names of `Chains`), `samples` (`.npz` with those of `SampleSet`, or `.npy` samples alone), `table` (parquet or CSV, one column per parameter) and `hdf5` (a group holding one dataset per parameter) |
+| One posterior per file | Flat samples are (N, D), or (B, N, D) for B problems; per-sample arrays (N,) or (B, N); `n_eff` a number, or one per problem |
+| Columns by name | Tables, HDF5 groups and eryn files, through the key order they store, give the columns that the space names, in its order, so a space may hold a subset and a missing name raises; `.npz` and `.npy` arrays carry no names and stay positional |
+| HDF5 layout | `group:` names the group whose datasets carry the parameter names, each (N,) or (B, N); `log_weights:` names an optional dataset of log weights in that group, and `n_eff:` comes from the config |
+| h5py | A new extra `hdf5`, imported inside the reader, which raises `MissingDependencyError` naming the extra without it; the dev group installs it |
+| Readers | Public classmethods on the core objects: `SampleSet.from_npz`, `SampleSet.from_table`, `SampleSet.from_hdf5`, `Chains.from_npz`, and `Chains.from_eryn(parameters=)`, which picks columns by the stored key order; the code lives in `io/files.py` and `io/hdf5.py` |
+| Thinning in configs | `thin: tau` (default) or a factor per run of chains; `diagnose` and `estimate_diagnose_cost` take `thin=`, one value or one per Chains input, as `burn_in` |
+| Burn-in in configs | `burn_in` per run of chains, 0 by default as in `diagnose`; the developers chose the default over a required value |
+| eryn priors in configs | One set per config: a space from `eryn_priors` passes them to `Chains.from_eryn`, which drops the `DeltaFunction` columns and checks the stored key order; eryn entries name no priors of their own, so one config has one set of sampling coordinates |
+| Engine sections | Each section mirrors the keywords of its engine by name, with the engine's defaults, and has its own `transform`: none, `physical` (`ErynPhysical` of the space's eryn priors) or an import path |
+| Reductions in the pipeline | One `reduce_chains` per run of chains, with its burn-in and thinning, feeds the dry run, `compare` and `compare_signals`; `diagnose` makes the same reduction |
+| Config thresholds | Floats per metric, merged over the package defaults; a `diagnose` override keeps the default side and tail of its metric, and an unknown metric is invalid |
+| Config arrays | `fisher` and `centre` as nested YAML lists or `.npy` paths |
+| Required keys | `seed`, `space`, `output` and `posteriors`; `space` is the path of a `ParamSpace` YAML, an inline space, or `eryn_priors` with optional `periodic` and `spheres` |
+| Config paths | Relative paths resolve against the folder of the config file |
+| Strict YAML | Unknown keys and repeated keys are invalid, with the entry named |
+| Config hash | SHA-256 of `{"config": the validated config with every default filled and paths as written, without the output folder and the budget, "space": the resolved space}` as sorted compact JSON, kept in the run folder as `config.json`, so `sha256sum config.json` gives the hash of every row. Neither the folder nor the budget changes a row, so the hash covers exactly the settings that shape the rows |
+| Run folder | `results.parquet` (every row of every engine), `config.json`, `reductions.json` (the `ReductionRecord` of every run of chains), `cost.parquet` (the dry-run table) and `provenance.json`; a folder that holds a `results.parquet` stops the run unless `--overwrite` |
+| Writing the run folder | Once, at the end, so a failed run writes nothing; the developers chose this over writing after each engine |
+| Dry run in the CLI | `mixed-signals run config.yaml --dry-run` prints the estimate of every engine and stops; a run prints it, raises one `CostWarning` when the total passes `budget`, goes on, and calls the engines with an infinite budget |
+| Output folder | `output` in the config; `--output` overrides it, and like the budget it stays out of the config hash |
+| Exit codes | 0 when the run finished, 1 when it failed while running, 2 for an invalid config or arguments, printed as a message instead of a traceback |
+| Pipeline API | `load_config`, `estimate_pipeline` and `run_pipeline` in `mixed_signals.pipeline`, not re-exported by `import mixed_signals` |
+| Example pipeline | `examples/pipeline/`: an eryn run, a parquet table and an HDF5 group from the zoo's linear signal, and a config that runs the three engines; data and run folders are written, never committed |
 
 ## Design principles
 
@@ -620,7 +648,7 @@ Three layers serve three uses (Decided): kernels for code, SampleSet functions f
 
 1. **Kernels:** pure JAX functions on arrays, public and importable one by one.
 2. **SampleSet API:** `diagnose`, `compare`, `reweight` and `compare_signals`, which add nulls, both σ's, warnings and provenance. They are plain functions that return results.
-3. **Pipeline:** a pydantic-validated YAML config plus an argparse CLI that writes `results.parquet`, provenance and a generated marimo notebook, which runs as a script and exports to HTML.
+3. **Pipeline:** a pydantic-validated YAML config plus an argparse CLI that writes a run folder: `results.parquet`, the hashed config, the reductions, the dry-run table and the provenance (session 16). Session 17 adds a generated marimo notebook, which runs as a script and exports to HTML.
 
 Plots use cantuccio, with contours drawn from the same estimator settings as the metrics, so plots and numbers agree. The report holds a σ_eff, r_eff and σ_sig summary table, corner overlays, null histograms drawn from the stored null draws, and diagnostics.
 
@@ -644,7 +672,30 @@ result = ms.compare(
 result.table  # polars DataFrame
 ```
 
-From the shell: `mixed-signals run config.yaml`.
+The same steps run from a YAML config (session 16), here `examples/pipeline/config.yaml`, whose `models.py` holds the eryn priors, the generator and the noise model:
+
+```yaml
+seed: 2026
+output: results
+space:
+  eryn_priors: models:priors
+posteriors:
+  - {name: mcmc, format: eryn, path: data/mcmc.h5, burn_in: 200, thin: tau}
+  - {name: sbi, format: table, path: data/sbi.parquet}
+  - {name: peer, format: hdf5, path: data/peer.h5, group: posterior}
+diagnose: {}
+compare:
+  reference: mcmc
+compare_signals:
+  generator: models:generator
+  noise: models:noise
+  reference: mcmc
+  centre: data/centre.npy
+```
+
+From the shell, `mixed-signals run config.yaml --dry-run` prints the estimate of every engine, and `mixed-signals run config.yaml` runs them and writes the run folder.
+
+**Pipeline (session 16).** `load_config` validates a config without reading data or importing code. A run refuses a folder that already holds results, then prepares everything with the config's folder first on `sys.path`: the space, the transform of each section, the generator, the noise model, the arrays and the posteriors, each read by the names of the space where its file names its columns, and one `reduce_chains` per run of chains. It estimates every engine with the arguments of its section, which checks every argument before any engine runs, `compare`'s Fisher matrices included; an argument that does not fit raises a `ConfigError` that names its section. One `CostWarning` follows when the total passes the budget, the engines run in the order `diagnose`, `compare`, `compare_signals` with the seed of the config and the config hash, and the run folder is written last. eryn copies NumPy's global random state when its sampler is built, so the example seeds NumPy before that, and its data repeat byte for byte. From the shell, two runs of the example gave byte-identical `results.parquet`, `cost.parquet`, `config.json` and `reductions.json`, 198 rows in 3.5 minutes each on the developers' Apple M4 Pro, where the dry run estimated 3.9 minutes; only `provenance.json` differed, in its times and its folder.
 
 ## Package layout
 
@@ -670,6 +721,8 @@ mixed-signals/
 │   ├── io/
 │   │   ├── arrays.py       # NumPy, CuPy, torch ↔ JAX via DLPack; chunked calls of user code
 │   │   ├── eryn_backend.py # eryn backends → Chains
+│   │   ├── files.py        # .npz and .npy files, parquet and CSV tables → SampleSet, Chains
+│   │   ├── hdf5.py         # HDF5 groups of one dataset per parameter → SampleSet
 │   │   └── weights.py      # benched: nested-sampling weights → log_weights
 │   ├── priors/
 │   │   ├── protocol.py     # minimal prior interface: logpdf, rvs
@@ -717,17 +770,20 @@ mixed-signals/
 │   │   ├── dataspace.py    # the data-space engine compare_signals
 │   │   └── reweight.py     # the reweight engine and its rows
 │   ├── zoo/                # cases with known answers: distributions, closed forms, toy signals
-│   ├── pipeline/           # YAML config models, runner, dry-run cost
+│   ├── pipeline/           # the config-driven pipeline
+│   │   ├── config.py       # YAML config models, load_config, the config hash
+│   │   ├── _sources.py     # import paths, inputs and their records
+│   │   └── runner.py       # dry run, engine runs, the run folder
 │   ├── report/             # marimo notebook, cantuccio plots
-│   ├── cli.py              # argparse: mixed-signals run config.yaml
+│   ├── cli.py              # argparse: mixed-signals run config.yaml [--dry-run]
 │   └── gw/                 # GW conventions, readers, waveform helpers
 ├── scripts/                # style-rule check; rebuild the validation page from the zoo
 ├── tests/                  # mirrors src/, zoo validation, GPU suite run by hand
-├── examples/               # marimo notebooks
+├── examples/               # marimo notebooks; pipeline/ holds the example config
 └── docs/                   # Sphinx, references.bib, validation page
 ```
 
-Decided at setup: core dependencies are jax, ott-jax, equinox, jaxtyping, numpy, polars, pydantic and pyyaml; session 3 added scipy, which JAX already requires, as a core dependency for later sessions; the zoo computes in JAX, and the tests use SciPy as an independent check, with `scipy-stubs` in the lint group. jaxtyping is listed directly because every kernel imports it. eryn is the `eryn` extra, because its runtime dependencies include matplotlib, pandas, seaborn and pytest, and only `io/eryn_backend.py` and `priors/eryn_container.py` use it; both import it lazily. The other extras are plot (cantuccio), report (marimo, cantuccio), torch, and cuda12 and cuda13, which install the JAX CUDA plugin with the matching CuPy wheel and exclude each other; the gw extra arrives with its module. The dev dependency group installs every extra except the CUDA ones, with CPU-only torch from the PyTorch index on Linux and Windows, beartype and emcee sit in the test group, and Sphinx in the docs group, where sphinxcontrib-bibtex renders the citations from `docs/references.bib`.
+Decided at setup: core dependencies are jax, ott-jax, equinox, jaxtyping, numpy, polars, pydantic and pyyaml; session 3 added scipy, which JAX already requires, as a core dependency for later sessions; the zoo computes in JAX, and the tests use SciPy as an independent check, with `scipy-stubs` in the lint group. jaxtyping is listed directly because every kernel imports it. eryn is the `eryn` extra, because its runtime dependencies include matplotlib, pandas, seaborn and pytest, and only `io/eryn_backend.py` and `priors/eryn_container.py` use it; both import it lazily. The other extras are hdf5 (h5py, for the HDF5 reader of session 16), plot (cantuccio), report (marimo, cantuccio), torch, and cuda12 and cuda13, which install the JAX CUDA plugin with the matching CuPy wheel and exclude each other; the gw extra arrives with its module. The dev dependency group installs every extra except the CUDA ones, with CPU-only torch from the PyTorch index on Linux and Windows, beartype and emcee sit in the test group, and Sphinx in the docs group, where sphinxcontrib-bibtex renders the citations from `docs/references.bib`.
 
 ## Open questions
 
@@ -737,7 +793,7 @@ One item stays open by the developers' decision.
 
 ## Deferred
 
-Fourteen items wait until the v1 core is stable; replicate runs may never come.
+Fifteen items wait until the v1 core is stable; replicate runs may never come.
 
 - **Trans-dimensional catalogs:** cross-matching and label switching, including multi-leaf eryn runs; comparing summed signals in data space avoids matching for the global check.
 - **Injection-ensemble calibration:** PP plots, SBC, TARP; needs an ensemble container with true parameters.
@@ -752,6 +808,7 @@ Fourteen items wait until the v1 core is stable; replicate runs may never come.
 - **Weighted zoo draws:** draws from a wider proposal with `log_weights` = ln p − ln q, to test that every kernel honours weights; until then sessions 8 and 13 build weights in their tests.
 - **Rank-truncated Fisher projection:** catpylisa's projection onto the measurable directions of a singular Fisher matrix. It is not a bijection, so it has no inverse and no log-determinant; until data-space comparisons need it, Fisher whitening and the Fisher chart of data space need a positive-definite Γ, and a singular Γ gives NaN Fisher rows in data space.
 - **Independent-data tension:** the parameter-shift probability (Raveri and Hu 2019; Raveri and Doux 2021), for posteriors from independent data, such as multiband sources seen by LISA and by ground-based detectors. Modes A and B analyse the same data, where every shift is a systematic difference.
+- **Reweighting in the pipeline:** a `reweight` section of the YAML config, whose new priors and likelihoods the config would name by import path and whose reweighted sets would join `compare` as further posteriors, as when draws of an approximation are reweighted to their target (Dax et al. 2023) and compared with MCMC; until a config needs it, `reweight` stays in the Python API.
 - **Self-term de-biasing of sliced W2:** SW2²(p, q) − ¼[SW2²(p_a, p_b) + SW2²(q_a, q_b)] on random halves, as the Galactic-binary example uses it. On identical inputs it left +0.0001 ± 0.0003 of a raw 0.0061 (8 parameters, N = 1 000), where the null mean left −0.0003 ± 0.0003, and both agreed for a banana, a mixture and a 0.5σ shift; it costs six extra evaluations per row, and the factor ¼ is not exact, because the empirical W2² of a Gaussian converges as (log log n)/n (Bobkov and Ledoux 2019). Rows subtract the null mean.
 
 ## References

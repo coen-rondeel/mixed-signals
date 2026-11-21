@@ -37,6 +37,14 @@ class MissingDependencyError(MixedSignalsError, ImportError):
     """
 
 
+class ConfigError(MixedSignalsError, ValueError):
+    """A pipeline config cannot run as written.
+
+    A file, an import path, an option or the output folder does not resolve. The
+    message names the part of the config at fault.
+    """
+
+
 class CapabilityError(MixedSignalsError):
     """An engine needs a capability that its inputs do not provide.
 

@@ -119,10 +119,13 @@ Diagnostics
     their reduction and the railing rows are not modelled; they cost a
     fraction of a second.
 Chains
-    A run of chains enters the estimate before its reduction, with the upper
-    bound N = (steps − burn-in) · walkers and an effective sample size of N,
-    so the estimate overstates the cost of the thinned samples that the
-    engine reads.
+    A run of chains enters the estimate before its reduction. For an integer
+    thinning factor k it enters with the N = ⌈(steps − burn-in)/k⌉ · walkers
+    samples that the reduction keeps, and an effective sample size of N. For
+    ``thin="tau"`` the factor is unknown before the reduction, so the run
+    enters with the upper bound N = (steps − burn-in) · walkers and an
+    effective sample size of N, and the estimate overstates the cost of the
+    thinned samples that the engine reads.
 Data space
     A pair of ``compare_signals`` costs one distance matrix of the pooled
     whitened templates and 1 + ``draws`` evaluations of the energy distance from
@@ -185,6 +188,7 @@ from mixed_signals.engines._common import Posterior, data_space_text, space_text
 from mixed_signals.errors import CostWarning
 from mixed_signals.generators.protocol import NoiseModel, SignalGenerator
 from mixed_signals.io.arrays import ArrayBackend
+from mixed_signals.mcmc.reduce import TAU_THINNING
 from mixed_signals.metrics._embedding import embedding_size
 from mixed_signals.metrics.ot.sinkhorn import SINKHORN_EPSILON_FACTOR
 from mixed_signals.metrics.ot.sliced import (
@@ -407,6 +411,7 @@ def estimate_diagnose_cost(
     space: ParamSpace,
     *,
     burn_in: int | Sequence[int] = 0,
+    thin: int | str | Sequence[int | str] = TAU_THINNING,
     transform: Transform | None = None,
     diagnostics: Sequence[str] | None = None,
     draws: int = NULL_DRAWS,
@@ -416,9 +421,11 @@ def estimate_diagnose_cost(
     """Estimate the run time of :func:`~mixed_signals.engines.diagnose.diagnose`.
 
     The arguments are those of ``diagnose`` that change the cost, read and
-    checked by the same code. A run of chains enters with N = (steps −
-    burn-in) · walkers samples and an effective sample size of N, before its
-    reduction, so the estimate overstates the cost of the thinned samples.
+    checked by the same code. A run of chains enters with the samples that its
+    reduction keeps for an integer ``thin``, N = ⌈(steps − burn-in)/thin⌉ ·
+    walkers, and with the upper bound (steps − burn-in) · walkers for
+    ``thin="tau"``, so then the estimate overstates the cost of the thinned
+    samples. Its effective sample size is N.
 
     Args:
         sources: Chains, a :class:`~mixed_signals.core.samples.SampleSet` or a
@@ -426,6 +433,8 @@ def estimate_diagnose_cost(
         names: One unique name per posterior.
         space: The parameter space.
         burn_in: Steps dropped from the start of the chains.
+        thin: The thinning of the chains, ``"tau"`` or a factor; one value for
+            every Chains input, or one per Chains input in order.
         transform: A transform of the coordinates; it changes no count.
         diagnostics: The families to run; all when ``None``.
         draws: Number of surrogate sets per posterior.
@@ -449,6 +458,7 @@ def estimate_diagnose_cost(
         space,
         key=0,
         burn_in=burn_in,
+        thin=thin,
         transform=transform,
         diagnostics=diagnostics,
         draws=draws,
@@ -570,24 +580,33 @@ def warn_if_over_budget(engine: str, estimate: CostEstimate, budget: float) -> N
     """
     if not estimate.seconds > budget:
         return
+    warnings.warn(
+        CostWarning(
+            f"the {engine} run is estimated at {_format_seconds(estimate.seconds)}"
+            " on one CPU of the developers' machine, above the budget of"
+            f" {_format_seconds(budget)}; the costliest statistics are"
+            f" {_costliest_statistics(estimate.table)}"
+        ),
+        skip_file_prefixes=(_PACKAGE_DIRECTORY,),
+    )
+
+
+def _costliest_statistics(table: pl.DataFrame) -> str:
+    """Name the three costliest statistics of an estimate table, with their seconds.
+
+    The seconds are summed over problems and pairs; rows without seconds, those
+    of user code, are left out.
+    """
     costliest = (
-        estimate.table.filter(pl.col("seconds").is_not_null())
+        table.filter(pl.col("seconds").is_not_null())
         .group_by(["metric", "estimator"], maintain_order=True)
         .agg(pl.col("seconds").sum())
         .sort("seconds", descending=True, maintain_order=True)
         .head(3)
     )
-    groups = ", ".join(
+    return ", ".join(
         f"{metric} ({estimator}) {_format_seconds(float(seconds))}"
         for metric, estimator, seconds in costliest.iter_rows()
-    )
-    warnings.warn(
-        CostWarning(
-            f"the {engine} run is estimated at {_format_seconds(estimate.seconds)}"
-            " on one CPU of the developers' machine, above the budget of"
-            f" {_format_seconds(budget)}; the costliest statistics are {groups}"
-        ),
-        skip_file_prefixes=(_PACKAGE_DIRECTORY,),
     )
 
 
@@ -956,8 +975,10 @@ def _diagnosed_size(
 ) -> tuple[int, float]:
     """Return the samples and the effective sample size that a posterior enters with."""
     if source.chains is not None:
-        steps = source.chains.shape.step - source.burn_in
-        count = max(steps, 1) * source.chains.shape.walker
+        steps = max(source.chains.shape.step - source.burn_in, 1)
+        # * The reduction keeps ceil(steps / k) steps per walker for a factor k.
+        kept = steps if isinstance(source.thin, str) else -(-steps // source.thin)
+        count = kept * source.chains.shape.walker
         return count, float(count)
     assert source.sample_set is not None
     n_eff = float(source.sample_set.effective_sample_size()[problem, position])

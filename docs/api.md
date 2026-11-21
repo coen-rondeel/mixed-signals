@@ -278,10 +278,16 @@
    :members:
 ```
 
-## Array conversion and eryn runs
+## Files, arrays and eryn runs
 
 ```{eval-rst}
 .. automodule:: mixed_signals.io.arrays
+   :members:
+
+.. automodule:: mixed_signals.io.files
+   :members:
+
+.. automodule:: mixed_signals.io.hdf5
    :members:
 
 .. automodule:: mixed_signals.io.eryn_backend
@@ -314,6 +320,18 @@
 
 ```{eval-rst}
 .. automodule:: mixed_signals._config
+   :members:
+```
+
+## Pipeline
+
+```{eval-rst}
+.. automodule:: mixed_signals.pipeline
+
+.. automodule:: mixed_signals.pipeline.config
+   :members:
+
+.. automodule:: mixed_signals.pipeline.runner
    :members:
 ```
 

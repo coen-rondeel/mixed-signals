@@ -40,7 +40,8 @@ References:
     :cite:t:`foremanmackey2013emcee`.
 """
 
-from collections.abc import Mapping
+import os
+from collections.abc import Mapping, Sequence
 from typing import Final, NamedTuple
 
 import equinox as eqx
@@ -260,6 +261,7 @@ class Chains(eqx.Module):
         branch: str | None = None,
         num_repeats_in_model: int | None = None,
         priors: object = None,
+        parameters: Sequence[str] | None = None,
     ) -> "Chains":
         """Read one branch of an eryn run, with all its temperatures.
 
@@ -268,7 +270,9 @@ class Chains(eqx.Module):
         with every run of several temperatures. With the priors, the columns
         of ``DeltaFunction`` parameters are dropped, as in the space of
         :meth:`ParamSpace.from_eryn_priors
-        <mixed_signals.core.space.ParamSpace.from_eryn_priors>`. See
+        <mixed_signals.core.space.ParamSpace.from_eryn_priors>`. With
+        ``parameters``, the chain keeps the named columns in that order, read
+        by the parameter names that the run stores. See
         :mod:`mixed_signals.io.eryn_backend` for the details.
 
         Args:
@@ -279,13 +283,17 @@ class Chains(eqx.Module):
                 acceptance counts of a backend or file.
             priors: eryn ``ProbDistContainer`` of the branch, for a backend or
                 file.
+            parameters: The names of the columns to keep, in the order of the
+                last axis of the chains, such as the names of the parameter
+                space; all columns, in their stored order, when ``None``.
 
         Returns:
             The chains of the branch.
 
         Raises:
             TypeError: If an input has the wrong type.
-            ValueError: If the run, the branch or the priors do not fit.
+            ValueError: If the run, the branch, the priors or the parameter
+                names do not fit.
             NotImplementedError: For runs with several independent samplers
                 or reversible jumps.
             MissingDependencyError: If eryn is not installed.
@@ -300,7 +308,36 @@ class Chains(eqx.Module):
             branch=branch,
             num_repeats_in_model=num_repeats_in_model,
             priors=priors,
+            parameters=parameters,
         )
+
+    @classmethod
+    def from_npz(cls, path: str | os.PathLike[str]) -> "Chains":
+        """Read chains from a ``.npz`` archive with the keyword names of this class.
+
+        The archive holds ``samples``, in the eryn layout (step, temp, walker,
+        leaf, param) or as (step, walker, param) for one temperature, and
+        optionally ``betas``, ``log_like``, ``log_prior``, ``accepted``,
+        ``proposed``, ``swaps_accepted`` and ``swaps_proposed``. The arrays
+        carry no parameter names, so the last axis is read in order. See
+        :mod:`mixed_signals.io.files` for the details.
+
+        Args:
+            path: A ``.npz`` archive.
+
+        Returns:
+            The chains.
+
+        Raises:
+            ValueError: If the suffix, the keys, the shapes or the values do
+                not fit.
+            TypeError: If an array is not real-valued.
+            NotImplementedError: If the chains hold several leaves.
+            OSError: If the file cannot be read.
+        """
+        from mixed_signals.io.files import chains_from_npz
+
+        return chains_from_npz(path)
 
     @property
     def shape(self) -> ChainShape:

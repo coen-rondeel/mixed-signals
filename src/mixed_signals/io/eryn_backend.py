@@ -22,6 +22,18 @@ Swap counts
     neighbouring temperatures (Vousden, Farr and Mandel 2016), so the
     proposals behind the swap counts are the stored steps times the walkers.
     A run with one temperature has none.
+Parameter names
+    The backend stores the key order of each branch. The columns of a run are
+    named by it: the keys when every key is a string, otherwise ``x0``, ``x1``,
+    ... by position in the full stored vector, as
+    :meth:`~mixed_signals.core.space.ParamSpace.from_eryn_priors` names them.
+    With ``parameters``, the chains keep the named columns in that order, so a
+    parameter space chooses its columns by name, and a space may hold a subset
+    of the sampled parameters. A fixed parameter that the priors drop is no
+    longer available by name. A name that the run lacks or a repeated name
+    raises an error. A backend that stores no key order has no names, so its
+    columns stay in their stored order and their number must equal the number
+    of names that the caller gives.
 Fixed parameters
     With the priors, from a sampler or the ``priors`` argument, the reader
     drops the columns of ``DeltaFunction`` parameters, which the space of
@@ -42,7 +54,7 @@ References:
 """
 
 import os
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from typing import Any
 
 import numpy as np
@@ -57,6 +69,7 @@ def from_eryn(
     branch: str | None = None,
     num_repeats_in_model: int | None = None,
     priors: object = None,
+    parameters: Sequence[str] | None = None,
 ) -> Chains:
     """Read one branch of an eryn run into ``Chains``.
 
@@ -73,6 +86,9 @@ def from_eryn(
         priors: eryn ``ProbDistContainer`` of the branch, for a backend or
             file, so that the ``DeltaFunction`` columns are dropped. A sampler
             supplies it.
+        parameters: The names of the columns to keep, in the order of the last
+            axis of the chains; all columns, in their stored order, when
+            ``None``.
 
     Returns:
         The chains of the branch, in eryn's sampling coordinates.
@@ -82,8 +98,9 @@ def from_eryn(
             ``num_repeats_in_model`` is not an integer.
         ValueError: If a sampler comes with ``num_repeats_in_model`` or
             ``priors``, the backend holds no stored step, the branch is
-            missing or ambiguous, or the priors do not fit the stored
-            parameters.
+            missing or ambiguous, the priors do not fit the stored
+            parameters, or a parameter name is repeated or not among the
+            columns of the run.
         NotImplementedError: For runs with several independent samplers or
             reversible jumps.
         MissingDependencyError: If eryn is not installed.
@@ -99,9 +116,14 @@ def from_eryn(
     if sampler_priors is not None:
         priors = _branch_priors(sampler_priors, branch)
     samples = np.asarray(backend.get_chain(branch_names=[branch])[branch])
+    names = _stored_names(backend, branch)
     if priors is not None:
         _check_parameter_order(backend, branch, priors, samples.shape[-1])
-        samples = samples[..., list(_free_positions(priors))]
+        free = list(_free_positions(priors))
+        samples = samples[..., free]
+        names = None if names is None else [names[position] for position in free]
+    if parameters is not None:
+        samples = _select_parameters(samples, names, list(parameters))
     stored_steps = int(backend.iteration)
     temp_count, walker_count = samples.shape[1], samples.shape[2]
     counts: dict[str, np.ndarray] = {}
@@ -122,6 +144,45 @@ def from_eryn(
         log_prior=np.asarray(backend.get_log_prior()),
         **counts,
     )
+
+
+def _stored_names(backend: Any, branch: str) -> list[str] | None:
+    """Return the names of the stored columns, or ``None`` without a key order."""
+    stored = getattr(backend, "key_order", None)
+    if not (isinstance(stored, Mapping) and branch in stored):
+        return None
+    keys = list(stored[branch])
+    if all(isinstance(key, str) for key in keys):
+        return [str(key) for key in keys]
+    # * Integer keys give x0, x1, ... by position, as the space of the priors does.
+    return [f"x{position}" for position in range(len(keys))]
+
+
+def _select_parameters(
+    samples: np.ndarray, names: list[str] | None, parameters: list[str]
+) -> np.ndarray:
+    """Return the columns of the chain that the parameter names pick, in order."""
+    repeated = sorted({name for name in parameters if parameters.count(name) > 1})
+    if repeated:
+        raise ValueError(
+            f"parameters repeats {', '.join(map(repr, repeated))}; each name picks"
+            " one column"
+        )
+    if names is None:
+        if len(parameters) != samples.shape[-1]:
+            raise ValueError(
+                "the run stores no parameter names, so its"
+                f" {samples.shape[-1]} columns are read in order, but"
+                f" {len(parameters)} parameters were named"
+            )
+        return samples
+    missing = [name for name in parameters if name not in names]
+    if missing:
+        raise ValueError(
+            f"the run has no parameters {', '.join(map(repr, missing))}; the"
+            f" available parameters are {', '.join(map(repr, names))}"
+        )
+    return samples[..., [names.index(name) for name in parameters]]
 
 
 def _resolve_source(

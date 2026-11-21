@@ -649,6 +649,117 @@ class SampleSet(eqx.Module):
         self.log_prior = fields.get("log_prior")
         self.log_q = fields.get("log_q")
 
+    @classmethod
+    def from_npz(
+        cls, path: str | os.PathLike[str], *, n_eff: object = None
+    ) -> "SampleSet":
+        """Read the samples of one posterior from a ``.npy`` or ``.npz`` file.
+
+        A ``.npy`` file holds the samples alone, and a ``.npz`` archive holds
+        arrays under the keyword names of this class. Samples shaped (N, D) are
+        one problem, and (B, N, D) are B problems. The arrays carry no parameter
+        names, so the last axis is read in order. See
+        :mod:`mixed_signals.io.files` for the details.
+
+        Args:
+            path: A ``.npy`` file or a ``.npz`` archive; the suffix tells them
+                apart.
+            n_eff: The effective sample size, a number for one problem or one
+                number per problem, for a file that holds none.
+
+        Returns:
+            The set, shaped (B, 1, N, D).
+
+        Raises:
+            ValueError: If the suffix, the keys, the shapes or the values do
+                not fit, or ``n_eff`` is given for an archive that holds one.
+            TypeError: If an array is not real-valued.
+            OSError: If the file cannot be read.
+        """
+        from mixed_signals.io.files import sample_set_from_npz
+
+        return sample_set_from_npz(path, n_eff=n_eff)
+
+    @classmethod
+    def from_table(
+        cls,
+        path: str | os.PathLike[str],
+        names: Sequence[str],
+        *,
+        log_weights: str | None = None,
+        n_eff: float | None = None,
+    ) -> "SampleSet":
+        """Read the samples of one posterior from a parquet or CSV table.
+
+        The columns are read by name, in the order of ``names``, so the table
+        may hold more columns in any order. The set has one problem. See
+        :mod:`mixed_signals.io.files` for the details.
+
+        Args:
+            path: A ``.parquet`` or ``.csv`` file with one column per parameter.
+            names: The parameter columns, in the order of the last sample axis;
+                the names of the parameter space.
+            log_weights: The column of natural-log weights, not among
+                ``names``; equal weights when ``None``.
+            n_eff: The effective sample size; the Kish value of the weights
+                when ``None``.
+
+        Returns:
+            The set, shaped (1, 1, N, D).
+
+        Raises:
+            ValueError: If the suffix, the names, a column, a null or a value
+                does not fit.
+            TypeError: If a selected column is not integer or float.
+            OSError: If the file cannot be read.
+        """
+        from mixed_signals.io.files import sample_set_from_table
+
+        return sample_set_from_table(path, names, log_weights=log_weights, n_eff=n_eff)
+
+    @classmethod
+    def from_hdf5(
+        cls,
+        path: str | os.PathLike[str],
+        group: str,
+        names: Sequence[str],
+        *,
+        log_weights: str | None = None,
+        n_eff: object = None,
+    ) -> "SampleSet":
+        """Read the samples of one posterior from the datasets of an HDF5 group.
+
+        The group holds one dataset per parameter, read by name in the order of
+        ``names``. Datasets shaped (N,) are one problem, and (B, N) are B
+        problems. The file opens read-only. See :mod:`mixed_signals.io.hdf5` for
+        the details.
+
+        Args:
+            path: An HDF5 file.
+            group: The path of the group inside the file; ``""`` or ``"/"`` for
+                the root.
+            names: The parameter datasets, in the order of the last sample axis;
+                the names of the parameter space.
+            log_weights: The dataset of natural-log weights in the same group,
+                not among ``names``; equal weights when ``None``.
+            n_eff: The effective sample size, a number for one problem or one
+                number per problem; the Kish value of the weights when ``None``.
+
+        Returns:
+            The set, shaped (B, 1, N, D).
+
+        Raises:
+            ValueError: If the group, a dataset, a shape or a value does not fit.
+            TypeError: If a dataset is not integer or float.
+            OSError: If the file cannot be read.
+            MissingDependencyError: If h5py is not installed.
+        """
+        from mixed_signals.io.hdf5 import sample_set_from_hdf5
+
+        return sample_set_from_hdf5(
+            path, group, names, log_weights=log_weights, n_eff=n_eff
+        )
+
     @property
     def shape(self) -> SampleShape:
         """Axis sizes (B, K, N, D)."""

@@ -26,3 +26,7 @@ __marimo__/
 # Operating system and editor files
 .DS_Store
 .idea/
+
+# Data and run folders that the pipeline example writes
+examples/pipeline/data/
+examples/pipeline/results/
