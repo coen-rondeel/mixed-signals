@@ -104,10 +104,15 @@ def test_archives_equal_the_constructor_with_the_posterior_axis(
 def test_a_npy_file_holds_the_samples_alone(tmp_path: Path) -> None:
     """The array is the samples, and the suffix is read in any case."""
     samples = draws(SAMPLES, PARAMS)
-    for name in ("samples.npy", "SAMPLES.NPY"):
-        np.save(tmp_path / name, samples)
+    names = ("lower.npy", "UPPER.NPY")
+    for name in names:
+        # ! A handle makes np.save write the name as given, whereas a path that does
+        # ! not end in lowercase .npy gets that suffix appended.
+        with (tmp_path / name).open("wb") as handle:
+            np.save(handle, samples)
         read = SampleSet.from_npz(tmp_path / name)
         assert_same_set(read, SampleSet(samples))
+    assert sorted(path.name for path in tmp_path.iterdir()) == sorted(names)
     assert read.n_eff is None
 
 
