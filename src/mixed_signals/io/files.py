@@ -5,6 +5,8 @@
 :meth:`SampleSet.from_npz <mixed_signals.core.samples.SampleSet.from_npz>`,
 :meth:`SampleSet.from_table <mixed_signals.core.samples.SampleSet.from_table>`
 and :meth:`Chains.from_npz <mixed_signals.core.chains.Chains.from_npz>`.
+:func:`sample_set_to_npz` backs the writer
+:meth:`SampleSet.to_npz <mixed_signals.core.samples.SampleSet.to_npz>`.
 
 NumPy files
     ``numpy.load`` reads a ``.npy`` array or a ``.npz`` archive with
@@ -17,6 +19,9 @@ NumPy files
     chains. Unknown keys raise an error, so a misspelt name never drops an
     array silently. The files carry no parameter names, so their last axis is
     read in order and must match the parameter space of the comparison.
+    The writer stores the same keyword names, shaped (B, N, D) for the samples,
+    so that the reader returns an equal set; the pipeline writes the samples of
+    each posterior this way.
 Tables
     A parquet or CSV table holds one column per parameter and, if the posterior
     has weights, one column of natural-log weights. The columns are read by
@@ -40,7 +45,7 @@ Precision
 import os
 from collections.abc import Mapping, Sequence
 from pathlib import Path
-from typing import Final
+from typing import Any, Final
 
 import jax.numpy as jnp
 import numpy as np
@@ -51,7 +56,12 @@ from mixed_signals.core.chains import Chains
 from mixed_signals.core.samples import SampleSet, _warn_narrow_floats
 from mixed_signals.io.arrays import to_jax
 
-__all__ = ["chains_from_npz", "sample_set_from_npz", "sample_set_from_table"]
+__all__ = [
+    "chains_from_npz",
+    "sample_set_from_npz",
+    "sample_set_from_table",
+    "sample_set_to_npz",
+]
 
 _SAMPLE_SET_KEYS: Final = (
     "samples",
@@ -176,6 +186,40 @@ def sample_set_from_table(
     if log_weights is not None:
         arrays["log_weights"] = columns[log_weights].astype(np.float64)
     return _flat_sample_set(arrays)
+
+
+def sample_set_to_npz(sample_set: SampleSet, path: str | os.PathLike[str]) -> None:
+    """Write the sample set of one posterior to a ``.npz`` archive.
+
+    :meth:`SampleSet.to_npz <mixed_signals.core.samples.SampleSet.to_npz>`
+    calls this function; the module docstring describes the layout.
+
+    Args:
+        sample_set: A set with one posterior, K = 1, of one or several
+            problems.
+        path: The archive to write, which must end in ``.npz``, in lower case.
+
+    Raises:
+        ValueError: If the set holds several posteriors, so that one of them
+            must be selected first, or the path does not end in ``.npz``.
+        OSError: If the file cannot be written.
+    """
+    if sample_set.shape.posterior != 1:
+        raise ValueError(
+            f"a file holds one posterior, but the set holds"
+            f" {sample_set.shape.posterior}; select one posterior first, for"
+            " example with sample_set.select(posteriors=0)"
+        )
+    file_path = Path(path)
+    if file_path.suffix != ".npz":
+        # ! numpy.savez appends .npz to any other suffix without a word.
+        raise ValueError(f"{file_path} must end in .npz, got {file_path.suffix!r}")
+    # * Drop the posterior axis, so that the reader inserts it again.
+    arrays: dict[str, Any] = {
+        name: np.asarray(array)[:, 0]
+        for name, array in sample_set.to_arrays("numpy").items()
+    }
+    np.savez(file_path, **arrays)
 
 
 def chains_from_npz(path: str | os.PathLike[str]) -> Chains:

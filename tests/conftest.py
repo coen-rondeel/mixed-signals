@@ -4,15 +4,23 @@ import functools
 import shutil
 import sys
 import types
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from pathlib import Path
+from typing import Any
 
 import jax
+import jax.numpy as jnp
 import numpy as np
 import polars as pl
 import pytest
 
 from mixed_signals import zoo
+from mixed_signals.core.result import Provenance, Result
+from mixed_signals.core.samples import SampleSet
+from mixed_signals.engines import compare as run_compare
+from mixed_signals.engines import reweight
+from mixed_signals.errors import ValidityWarning
+from mixed_signals.pipeline import run_pipeline
 
 # * The validation build lives in scripts/, which is not an installed package.
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
@@ -215,3 +223,130 @@ def own_models(monkeypatch: pytest.MonkeyPatch) -> None:
 def pipeline_config() -> str:
     """The config of the five formats and three engines of ``pipeline_project``."""
     return PROJECT_CONFIG
+
+
+# * Shared run folders of the report tests: a pipeline run, a reweighting and a batch.
+
+REPORT_CONFIG = """
+seed: 11
+output: report_run
+space: {eryn_priors: models:priors}
+posteriors:
+  - {name: mcmc, format: eryn, path: data/mcmc.h5, burn_in: 20, thin: 4}
+  - {name: table, format: table, path: data/table.parquet}
+  - {name: group, format: hdf5, path: data/peer.h5, group: posterior}
+diagnose: {draws: 20, diagnostics: [chains, shape, modes, railing], cap: 200}
+compare:
+  reference: mcmc
+  metrics: [mean_shift, width_ratio, ks, js, hellinger, kl, energy, sinkhorn]
+  sinkhorn_epsilon_factors: [0.25, 1.0]
+  draws: 20
+  cap: 200
+  level: 1.0
+  transform: 'models:shift'
+compare_signals:
+  generator: models:generator
+  noise: models:noise
+  reference: mcmc
+  centre: [0.0, 0.0, 0.0]
+  draws: 20
+  cap: 200
+  level: 1.0
+"""
+BATCH_SIZE = 3
+
+
+class GaussianPrior:
+    """A new prior for the reweighting fixture: N(0, variance I) up to a constant."""
+
+    def __init__(self, variance: float) -> None:
+        """Store the variance."""
+        self.variance = variance
+
+    def logpdf(self, samples: object) -> np.ndarray:
+        """Return the log density, up to a constant, at samples shaped (N, D)."""
+        return -0.5 * np.sum(np.asarray(samples) ** 2, axis=-1) / self.variance
+
+    def rvs(self, size: int | tuple[int, ...], *, key: jax.Array) -> jax.Array:
+        """Draw from the prior with the JAX key."""
+        shape = (size,) if isinstance(size, int) else size
+        return jnp.sqrt(self.variance) * jax.random.normal(key, (*shape, 2))
+
+
+@pytest.fixture(scope="session")
+def report_run_folder(
+    pipeline_project: Path, tmp_path_factory: pytest.TempPathFactory
+) -> Path:
+    """A run folder of the pipeline, with every engine and a transform of compare.
+
+    It holds diagnostics of three posteriors, the comparisons of two pairs with
+    the Sinkhorn divergence at two factors, the data-space rows with their chart
+    rows, flags at the level 1, and the samples with the mapped copies of compare.
+    """
+    config_path = pipeline_project / "report.yaml"
+    config_path.write_text(REPORT_CONFIG, encoding="utf-8")
+    folder = tmp_path_factory.mktemp("report_run")
+    with pytest.warns(ValidityWarning, match="fewer than 50 autocorrelation times"):
+        run_pipeline(config_path, output=folder)
+    return folder
+
+
+@pytest.fixture(scope="session")
+def reweighting_run_folder(tmp_path_factory: pytest.TempPathFactory) -> Path:
+    """A folder of one result table of reweighting rows: one weight set flags."""
+    case = zoo.shifted_gaussians(1.0, param_count=2)
+    draws = case.sample(jax.random.key(3), 2_000)
+    # * The stored prior is a unit Gaussian, so a wider new prior has heavy weights.
+    sample_set = SampleSet(
+        draws.samples, log_prior=-0.5 * jnp.sum(draws.samples**2, axis=-1)
+    )
+    reweighting = reweight(sample_set, case.names, case.space, prior=GaussianPrior(3.5))
+    folder = tmp_path_factory.mktemp("reweighting_run")
+    reweighting.result.write_parquet(folder / "results.parquet")
+    return folder
+
+
+@pytest.fixture(scope="session")
+def batch_run_folder(tmp_path_factory: pytest.TempPathFactory) -> Path:
+    """A folder of one result table of three problems from the compare engine."""
+    case = zoo.shifted_gaussians(1.0, param_count=2)
+    draws = case.sample(jax.random.key(4), 400, batch_size=BATCH_SIZE)
+    result = run_compare(
+        draws,
+        case.names,
+        case.space,
+        key=5,
+        metrics=["mean_shift", "width_ratio"],
+        draws=20,
+        cap=200,
+        level=1.0,
+    )
+    folder = tmp_path_factory.mktemp("batch_run")
+    result.write_parquet(folder / "results.parquet")
+    return folder
+
+
+def build_result(*rows: Mapping[str, Any]) -> Result:
+    """Build a result table from rows that name only what a test needs.
+
+    Every row is a diagnostic row of the posterior ``a`` unless it says otherwise.
+    """
+    defaults: dict[str, Any] = {
+        "problem": 0,
+        "pair": ["a"],
+        "metric": "skewness",
+        "estimator": "empirical",
+        "estimator_settings": "{}",
+        "space": "identity",
+        "parameters": ["x0"],
+        "value": 0.0,
+        "warnings": [],
+        "provenance": Provenance.collect(seed=1),
+    }
+    return Result.from_rows([{**defaults, **row} for row in rows])
+
+
+@pytest.fixture
+def result_of() -> Callable[..., Result]:
+    """The builder of small result tables, for the tests of the report tables."""
+    return build_result

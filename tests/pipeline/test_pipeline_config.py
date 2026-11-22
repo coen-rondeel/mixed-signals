@@ -43,6 +43,7 @@ from mixed_signals.sigma.thresholds import SIGNIFICANCE_LEVEL, THRESHOLDS
 from mixed_signals.sigma.uncertainty import HALF_SAMPLE_PAIRS
 
 EXAMPLE = Path(__file__).resolve().parents[2] / "examples" / "pipeline" / "config.yaml"
+EPSILON_EXAMPLE = EXAMPLE.with_name("epsilon.yaml")
 INLINE_SPACE: dict[str, Any] = {
     "parameters": [{"name": "x0"}, {"name": "x1"}],
 }
@@ -690,6 +691,26 @@ def test_the_example_config_validates() -> None:
     assert config.compare.reference == "mcmc"
     assert config.compare_signals is not None
     assert isinstance(config.space, ErynSpace)
+
+
+def test_the_epsilon_example_config_validates() -> None:
+    """The Sinkhorn curve of the example compares alone, at six factors of epsilon."""
+    config = load_config(EPSILON_EXAMPLE)
+    assert config.base_folder == EPSILON_EXAMPLE.parent
+    assert config.seed == 2026
+    assert config.output == "results_epsilon"
+    assert [entry.name for entry in config.posteriors] == ["mcmc", "sbi", "peer"]
+    assert config.diagnose is None
+    assert config.compare_signals is None
+    assert config.compare is not None
+    assert config.compare.reference == "mcmc"
+    assert config.compare.metrics == ("sinkhorn",)
+    assert config.compare.sinkhorn_epsilon_factors == (0.05, 0.1, 0.25, 0.5, 1.0, 2.0)
+    assert config.compare.draws == 100
+    assert config.compare.cap == 1_000
+    main = load_config(EXAMPLE)
+    assert config.posteriors == main.posteriors
+    assert config.space == main.space
 
 
 def test_unknown_keys_are_invalid_with_their_location() -> None:

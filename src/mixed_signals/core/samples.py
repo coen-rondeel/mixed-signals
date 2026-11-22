@@ -680,6 +680,27 @@ class SampleSet(eqx.Module):
 
         return sample_set_from_npz(path, n_eff=n_eff)
 
+    def to_npz(self, path: str | os.PathLike[str]) -> None:
+        """Write the samples of one posterior to a ``.npz`` archive.
+
+        The archive holds the fields under their keyword names, shaped (B, N, D)
+        for the samples and (B, N) for the per-sample fields, and (B,) for
+        ``n_eff``, so that :meth:`from_npz` returns an equal set. See
+        :mod:`mixed_signals.io.files` for the details.
+
+        Args:
+            path: The archive to write; it must end in ``.npz``, in lower case.
+
+        Raises:
+            ValueError: If the set holds several posteriors, so that one of
+                them must be selected first, or the path does not end in
+                ``.npz``.
+            OSError: If the file cannot be written.
+        """
+        from mixed_signals.io.files import sample_set_to_npz
+
+        sample_set_to_npz(self, path)
+
     @classmethod
     def from_table(
         cls,

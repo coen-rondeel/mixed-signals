@@ -45,6 +45,16 @@ class ConfigError(MixedSignalsError, ValueError):
     """
 
 
+class ReportError(MixedSignalsError, ValueError):
+    """A run folder cannot be reported as asked.
+
+    The run folder holds no ``results.parquet``, report files exist and
+    ``overwrite`` is false, or a list of problem indices names a problem that
+    the result does not hold. The message names the folder or the files at
+    fault.
+    """
+
+
 class CapabilityError(MixedSignalsError):
     """An engine needs a capability that its inputs do not provide.
 

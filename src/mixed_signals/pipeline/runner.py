@@ -8,10 +8,12 @@ nothing.
 
 Steps
     A run first reads the config and resolves the run folder, and stops with a
-    :class:`~mixed_signals.errors.ConfigError` when the folder already holds a
-    ``results.parquet`` and ``overwrite`` is false, before any work. It then
-    prepares everything inside one block that holds the folder of the config on
-    ``sys.path``: the parameter space, the transform of each section, the
+    :class:`~mixed_signals.errors.ConfigError` before any work when the folder
+    already holds a ``results.parquet`` and ``overwrite`` is false, or holds an
+    entry named ``samples`` but no ``results.parquet``, so that a run never mixes
+    with or deletes a folder of the user's own. It then prepares everything
+    inside one block that holds the folder of the config on ``sys.path``: the
+    parameter space, the transform of each section, the
     generator, the noise model and the arrays, the posteriors, and the reduction
     of every run of chains with :func:`~mixed_signals.mcmc.reduce.reduce_chains`,
     which gives the reduction that ``diagnose`` makes. It then estimates every
@@ -27,8 +29,9 @@ Budget
     above the budget of the config and goes on. It calls the engines with an
     infinite budget, so they do not warn again.
 Run folder
-    The folder holds five files, all written on every run, so that ``overwrite``
-    never leaves a stale file of an earlier run. ``results.parquet`` holds every
+    The folder holds five files and the folder ``samples``, all written on every
+    run, so that ``overwrite`` never leaves a stale file of an earlier run.
+    ``results.parquet`` holds every
     row of every engine in run order. ``config.json`` holds the canonical JSON that
     the config hash covers, byte for byte, so ``sha256sum config.json`` gives the
     hash in the provenance of every row. It leaves out ``output`` and ``budget``,
@@ -41,14 +44,32 @@ Run folder
     JAX and Python, the device platform and the machine, the config file, the run
     folder, the start time in UTC, the wall and estimated seconds, the rows and
     seconds of each engine, the file, size and SHA-256 of every input and the file
-    and SHA-256 of the module of every import path.
+    and SHA-256 of the module of every import path. ``samples/<k>.npz`` holds the
+    flat samples that the engines compared for the k-th posterior of the config,
+    in the space of the config, which
+    :meth:`SampleSet.from_npz <mixed_signals.core.samples.SampleSet.from_npz>`
+    reads back: the reduction of a run of chains, or the loaded set. When the
+    ``diagnose`` or the ``compare`` section has a transform, ``samples/diagnose/``
+    or ``samples/compare/`` holds the mapped copies ``<k>.npz``, as the engine
+    maps them, and ``space.yaml``, the mapped parameter space, so that a plot sits
+    in the coordinates of the rows of that section. ``compare_signals`` gets no
+    mapped copy, because its rows lie in data space. The report
+    (:mod:`mixed_signals.report`) needs nothing but this folder.
+Overwrite
+    A run folder that holds a ``results.parquet`` and is overwritten loses
+    ``samples/``, ``report.py``, ``report.json``, ``report.html`` and marimo's
+    ``__marimo__/`` cache first, so that no file of the replaced run, and no
+    report of it, remains. A folder without a ``results.parquet`` is never
+    cleaned.
 Why last
     The folder is written once, at the end, so a failed run writes nothing and a
-    folder with a ``results.parquet`` is always a finished run.
+    folder with a ``results.parquet`` is a finished run, whose samples follow
+    the five files at once.
 Determinism
     ``results.parquet`` is the same, table for table, from the same config, data
-    and seed: the rows hold no time, and every key derives from the seed.
-    ``provenance.json`` holds the start time and the wall seconds, which differ.
+    and seed: the rows hold no time, and every key derives from the seed. So are
+    the sample archives. ``provenance.json`` holds the start time and the wall
+    seconds, which differ.
 Logging
     The progress goes to the logger ``mixed_signals.pipeline`` at INFO: the
     estimate, the rows and wall time of each engine and the files written. The
@@ -64,6 +85,7 @@ import logging
 import math
 import os
 import platform
+import shutil
 import time
 from collections.abc import Callable, Mapping
 from functools import partial
@@ -125,8 +147,18 @@ _LOGGER: Final = logging.getLogger(LOGGER_NAME)
 # * The engines in run order, which is also the order of their sections.
 _ENGINES: Final = ("diagnose", "compare", "compare_signals")
 _RESULT_FILE: Final = "results.parquet"
+_SAMPLES_FOLDER: Final = "samples"
 _FILES_WRITTEN: Final = (
-    "results.parquet, config.json, reductions.json, cost.parquet and provenance.json"
+    "results.parquet, config.json, reductions.json, cost.parquet, provenance.json"
+    " and samples/"
+)
+# * What an earlier run and its report left, which an overwrite removes first.
+_STALE_ENTRIES: Final = (
+    _SAMPLES_FOLDER,
+    "report.py",
+    "report.json",
+    "report.html",
+    "__marimo__",
 )
 
 # * Errors that an engine raises for an argument that does not fit its inputs.
@@ -245,7 +277,8 @@ def run_pipeline(
         config: A validated config, or the path of a config file.
         output: The run folder, instead of the ``output`` of the config; taken as
             given, so a relative path starts at the working folder.
-        overwrite: Whether to replace a run folder that already holds results.
+        overwrite: Whether to replace a run folder that already holds results,
+            together with its samples and its report.
 
     Returns:
         The rows of every engine, the reductions, the estimate, the config hash
@@ -253,8 +286,9 @@ def run_pipeline(
 
     Raises:
         ConfigError: If the run folder already holds results and ``overwrite`` is
-            false, the config does not resolve, a file does not fit, or an
-            argument of an engine does not fit its inputs.
+            false, holds a ``samples`` entry but no results, the config does not
+            resolve, a file does not fit, or an argument of an engine does not
+            fit its inputs.
         pydantic.ValidationError: If a config file is invalid.
         MissingDependencyError: If a reader needs an optional dependency that is
             not installed.
@@ -302,10 +336,16 @@ def _run_folder(
     ).resolve()
     if folder.exists() and not folder.is_dir():
         raise ConfigError(f"the output {folder} exists and is not a folder")
-    if (folder / _RESULT_FILE).exists() and not overwrite:
+    holds_results = (folder / _RESULT_FILE).exists()
+    if holds_results and not overwrite:
         raise ConfigError(
             f"the folder {folder} already holds {_RESULT_FILE}; choose another folder"
             " or overwrite it"
+        )
+    if not holds_results and (folder / _SAMPLES_FOLDER).exists():
+        raise ConfigError(
+            f"the folder {folder} holds {_SAMPLES_FOLDER} but no {_RESULT_FILE};"
+            " choose another folder"
         )
     return folder
 
@@ -661,8 +701,10 @@ def _write_folder(
     started: str,
     wall_seconds: float,
 ) -> None:
-    """Write the five files of the run folder."""
+    """Write the five files and the samples of the run folder."""
     folder.mkdir(parents=True, exist_ok=True)
+    if (folder / _RESULT_FILE).exists():
+        _remove_stale_entries(folder)
     result.write_parquet(folder / _RESULT_FILE)
     # * The exact bytes of the hash, with no trailing newline.
     (folder / "config.json").write_bytes(prepared.canonical)
@@ -703,6 +745,38 @@ def _write_folder(
         "modules": [record._asdict() for record in prepared.sources.modules.values()],
     }
     (folder / "provenance.json").write_text(_json_text(provenance), encoding="utf-8")
+    _write_samples(folder / _SAMPLES_FOLDER, prepared)
+
+
+def _remove_stale_entries(folder: Path) -> None:
+    """Remove the samples and the report of an earlier run from its folder."""
+    for name in _STALE_ENTRIES:
+        entry = folder / name
+        if entry.is_dir():
+            shutil.rmtree(entry)
+        else:
+            entry.unlink(missing_ok=True)
+
+
+def _write_samples(samples_folder: Path, prepared: _Prepared) -> None:
+    """Write the flat samples of every posterior, and the mapped copies of a section."""
+    samples_folder.mkdir()
+    for position, sample_set in enumerate(prepared.sets):
+        sample_set.to_npz(samples_folder / f"{position}.npz")
+    # * compare_signals lies in data space, so it has no mapped copy.
+    for name in ("diagnose", "compare"):
+        transform = (
+            prepared.objects[name].transform if name in prepared.objects else None
+        )
+        if transform is None:
+            continue
+        mapped_folder = samples_folder / name
+        mapped_folder.mkdir()
+        for position, sample_set in enumerate(prepared.sets):
+            transform.map_sample_set(sample_set).to_npz(
+                mapped_folder / f"{position}.npz"
+            )
+        transform.map_space(prepared.space).to_yaml(mapped_folder / "space.yaml")
 
 
 def _json_text(value: object) -> str:

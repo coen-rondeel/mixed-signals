@@ -30,3 +30,4 @@ __marimo__/
 # Data and run folders that the pipeline example writes
 examples/pipeline/data/
 examples/pipeline/results/
+examples/pipeline/results_epsilon/

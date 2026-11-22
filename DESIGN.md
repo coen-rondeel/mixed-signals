@@ -49,7 +49,7 @@ In v1:
 
 ## Decisions so far
 
-The developers have agreed 332 decisions: 88 from rounds 1–8, the repository setup and the design close-out, 7 from roadmap session 1 (Foundations), 7 from roadmap session 2 (Sample containers) and 14 from roadmap session 3 (Validation zoo), all on 2026-10-13, and 14 from roadmap session 4 (Transforms and whitening), 12 from roadmap session 5 (MCMC tools) and 16 from roadmap session 6 (Estimators), all three on 2026-10-14, 14 from roadmap session 7 (eryn adapters and priors), taken on 2026-10-14 and 2026-10-24, 14 from roadmap session 8 (Metrics I: moments and marginals), on 2026-10-24, and 10 from roadmap session 9 (Metrics II: divergences, kernels and classifiers), 14 from roadmap session 10 (Optimal transport) and 16 from roadmap session 11 (Diagnostics), all three on 2026-10-25, 12 from the first part of roadmap session 12 (Nulls and σ), on 2026-11-16, 5 from its second part, on 2026-11-17, 18 from roadmap session 13 (Reweighting), on 2026-11-18, 28 from roadmap session 14 (Engines), on 2026-11-19 and 2026-11-20, and 15 from roadmap session 15 (Data space), on 2026-11-20, and 28 from roadmap session 16 (Pipeline and CLI), on 2026-11-20 and 2026-11-21.
+The developers have agreed 354 decisions: 88 from rounds 1–8, the repository setup and the design close-out, 7 from roadmap session 1 (Foundations), 7 from roadmap session 2 (Sample containers) and 14 from roadmap session 3 (Validation zoo), all on 2026-10-13, and 14 from roadmap session 4 (Transforms and whitening), 12 from roadmap session 5 (MCMC tools) and 16 from roadmap session 6 (Estimators), all three on 2026-10-14, 14 from roadmap session 7 (eryn adapters and priors), taken on 2026-10-14 and 2026-10-24, 14 from roadmap session 8 (Metrics I: moments and marginals), on 2026-10-24, and 10 from roadmap session 9 (Metrics II: divergences, kernels and classifiers), 14 from roadmap session 10 (Optimal transport) and 16 from roadmap session 11 (Diagnostics), all three on 2026-10-25, 12 from the first part of roadmap session 12 (Nulls and σ), on 2026-11-16, 5 from its second part, on 2026-11-17, 18 from roadmap session 13 (Reweighting), on 2026-11-18, 28 from roadmap session 14 (Engines), on 2026-11-19 and 2026-11-20, and 15 from roadmap session 15 (Data space), on 2026-11-20, 28 from roadmap session 16 (Pipeline and CLI), on 2026-11-20 and 2026-11-21, and 22 from roadmap session 17 (Reports), on 2026-11-22.
 
 | Topic | Decision |
 | --- | --- |
@@ -111,7 +111,7 @@ The developers have agreed 332 decisions: 88 from rounds 1–8, the repository s
 | Distribution name | `mixed-signals` on PyPI, free but not reserved on 2026-10-13; the GitHub repository takes the same name |
 | Thresholds | Per-metric σ_eff and r_eff defaults ship with the package, overridable in the YAML |
 | GPUs | A single GPU in v1; sharding the batch axis comes later |
-| Report contents | σ_eff, r_eff and σ_sig summary table, corner overlays, null histograms and diagnostics; additions maybe later |
+| Report contents | σ_eff, r_eff and σ_sig summary table, corner overlays, null histograms and diagnostics; session 17 added the sections under Report sections |
 | Method menus | The v1 methods in the Engines table; C2ST and the normalizing-flow estimator are placeholders until implemented |
 | References | Every method cites a paper, official document or reference package, and every assumption a paper or a validation-page finding; checked in review |
 | Validation page | A docs page generated from zoo runs: null checks, recovered shifts and width ratios and the checks behind the defaults, stamped with package version and seed |
@@ -378,13 +378,35 @@ The developers have agreed 332 decisions: 88 from rounds 1–8, the repository s
 | Config paths | Relative paths resolve against the folder of the config file |
 | Strict YAML | Unknown keys and repeated keys are invalid, with the entry named |
 | Config hash | SHA-256 of `{"config": the validated config with every default filled and paths as written, without the output folder and the budget, "space": the resolved space}` as sorted compact JSON, kept in the run folder as `config.json`, so `sha256sum config.json` gives the hash of every row. Neither the folder nor the budget changes a row, so the hash covers exactly the settings that shape the rows |
-| Run folder | `results.parquet` (every row of every engine), `config.json`, `reductions.json` (the `ReductionRecord` of every run of chains), `cost.parquet` (the dry-run table) and `provenance.json`; a folder that holds a `results.parquet` stops the run unless `--overwrite` |
+| Run folder | `results.parquet` (every row of every engine), `config.json`, `reductions.json` (the `ReductionRecord` of every run of chains), `cost.parquet` (the dry-run table), `provenance.json` and, since session 17, `samples/` (the flat samples each engine compared); a folder that holds a `results.parquet` stops the run unless `--overwrite` |
 | Writing the run folder | Once, at the end, so a failed run writes nothing; the developers chose this over writing after each engine |
 | Dry run in the CLI | `mixed-signals run config.yaml --dry-run` prints the estimate of every engine and stops; a run prints it, raises one `CostWarning` when the total passes `budget`, goes on, and calls the engines with an infinite budget |
 | Output folder | `output` in the config; `--output` overrides it, and like the budget it stays out of the config hash |
 | Exit codes | 0 when the run finished, 1 when it failed while running, 2 for an invalid config or arguments, printed as a message instead of a traceback |
 | Pipeline API | `load_config`, `estimate_pipeline` and `run_pipeline` in `mixed_signals.pipeline`, not re-exported by `import mixed_signals` |
 | Example pipeline | `examples/pipeline/`: an eryn run, a parquet table and an HDF5 group from the zoo's linear signal, and a config that runs the three engines; data and run folders are written, never committed |
+| Samples in the run folder | The pipeline writes the flat samples that each engine compared into `samples/`, so a report reads only its run folder: no input files, no eryn and no user code; about 0.3 MB for the example (session 17) |
+| Samples layout | By position: `samples/<k>.npz` for the k-th posterior of `config.json`, in the space of the config, each readable by `SampleSet.from_npz` through the new `SampleSet.to_npz`; a `diagnose` or `compare` section with a transform adds `samples/<section>/` with the mapped copies and `space.yaml`, so plots sit in the coordinates of its rows. A posterior name may hold any character and macOS ignores the case of file names, so positions name the files |
+| Report entry point | `mixed-signals report RUN_FOLDER` and `mixed_signals.report.write_report(folder)` write `report.py`, `report.json` and `report.html` into the folder; `run` writes no report and works without the `report` extra, and a report can be rebuilt after a package update without rerunning the engines |
+| Report notebook | One fixed marimo notebook, `report/notebook.py`, copied unchanged; it reads the run folder it sits in and skips sections without rows. Every table, figure and section comes from tested functions of `mixed_signals.report`, which API users can also call on their own results; the notebook leaves the coverage measurement, because coverage never sees the return line of a cell |
+| Report HTML | `marimo export html --no-include-code`: outputs only, for readers. A static export keeps tabs, accordions, full tables and PNG figures, but no widget that needs a running Python |
+| Corner overlays | For every shown problem, an overview of all posteriors at Silverman's one-dimensional factor at the smallest Kish n_eff, then one plot per pair at the pair's shared factor, the bandwidth of its `js` and `hellinger` KDE rows (or `shared_bandwidth_factor` without them), so each diagonal is the estimate whose JS and Hellinger the rows report |
+| Corner panels | cantuccio draws every panel through its exact path with the factor, equal to `KernelDensity` away from bounds to 1e-10 in two dimensions, and on the diagonal, where cantuccio interpolates its estimate from a grid padded by 10%, to below 1e-4 of the peak (about 1e-3 relative, far below a pixel); panels with a circle, or with a finite bound that the kernels reach, are redrawn from `KernelDensity` on a grid, because cantuccio neither corrects nor reflects at bounds and draws circles on 800 × 800 grids. Contours sit at highest-density masses (Hyndman 1996) |
+| Gaussian ellipses | Every corner plot draws each posterior's moment-matched Gaussian, the fit of the `gaussian` rows, dashed at the contour masses, with its intervals on the diagonal (cantuccio's `overlay_covariance`) |
+| Diagnostic corner plots | Each posterior alone at its own Silverman factor, the factor of its mode and railing rows, with its finite bounds as thin lines and its Gaussian, so a run of `diagnose` alone still has corner plots |
+| Contour masses | 68% and 95%, for contours and ellipses alike |
+| Null histograms | Every row with stored draws: one small-multiples figure per pair (its comparison and data-space rows) and per posterior (its diagnostic rows), in collapsed accordions, with the value, the null mean and σ_sig; flagged rows come first and are framed |
+| Comparison summary | Per pair, a heatmap of effect size over threshold, metric:estimator by parameter with the joint rows in a last column, annotated with σ_eff or r_eff, in bold where σ_sig reaches the level and outlined where the row fails, and the full table below it; the effects come from `sigma.thresholds.verdict`, so report and flags agree |
+| ε plot | S_ε against ε/ℓ² on a log axis, one point per `sinkhorn` row, with the null median and the band between the Φ(−L) and Φ(L) quantiles of the draws (L = 2: 2.3% to 97.7%), whose upper edge is where σ_sig reaches the level; a second panel shows σ_eff with the threshold |
+| ε example | `examples/pipeline/epsilon.yaml` runs `compare` alone with `sinkhorn` at six factors from 0.05 to 2, 100 draws and a cap of 1 000 samples, about 53 s by the dry run and 69 s measured; each factor would add about 190 s to the main example, which keeps its 3.5 minutes |
+| Batches in the report | `report.json` holds `problems`: a count of problems shown in full, those with the most flagged rows first (10 by default), `"all"`, or a list of indices; for B > 1 a table of flag counts per problem and engine comes first |
+| Plot cap | `plot_cap` in `report.json`, none by default: above it, a posterior's panels draw a uniform subsample without replacement from a key of the run's seed, at the factor of the full set, with a caption. Uncapped plots draw the estimates of the marginal KDE rows, since those rows use every sample |
+| Report sections | Beyond the summary, corner plots, null histograms, diagnostics with their flags, the ε plot, the data-space pairs side by side and the reweighting rows: a warnings summary, the inputs and reductions, estimated against wall seconds with the cost of each statistic, and the config |
+| Report style | The light theme of the validation page, extended to eight posteriors with slots 4 to 8 of its reference palette; posterior k keeps slot k in every figure, and the overview stops at three posteriors, the slots that stay apart under colour-vision deficiencies when all of them overlap. cantuccio lays out the corner plots under this style, without the LaTeX of its own style |
+| Report overwrite | `write_report` and `mixed-signals report` stop when `report.py`, `report.json` or `report.html` exists, unless `--overwrite`, which replaces all three; a user may have edited the copy |
+| Stale report files | `run --overwrite` removes the report files and the `__marimo__/` cache of the replaced run and clears `samples/`; a folder without `results.parquet` that holds an entry named `samples` stops the run, so a run never deletes or mixes with a user's own folder |
+| Overview of two | A problem that compares exactly two posteriors gets no overview corner plot, which would repeat its pair plot: the same two posteriors at the same factor. With the overview limit of three, the overview appears for three posteriors |
+| Pair colours | A pair plot keeps the slot of each of its posteriors up to eight posteriors, so that colour follows the posterior in every figure, also for the pairs of slots that fall below the palette's all-pairs floors for colour-vision deficiencies (slots 1 and 7, 2 and 4); the legend names both. Beyond eight posteriors a pair plot takes slots 1 and 2 |
 
 ## Design principles
 
@@ -648,7 +670,7 @@ Three layers serve three uses (Decided): kernels for code, SampleSet functions f
 
 1. **Kernels:** pure JAX functions on arrays, public and importable one by one.
 2. **SampleSet API:** `diagnose`, `compare`, `reweight` and `compare_signals`, which add nulls, both σ's, warnings and provenance. They are plain functions that return results.
-3. **Pipeline:** a pydantic-validated YAML config plus an argparse CLI that writes a run folder: `results.parquet`, the hashed config, the reductions, the dry-run table and the provenance (session 16). Session 17 adds a generated marimo notebook, which runs as a script and exports to HTML.
+3. **Pipeline:** a pydantic-validated YAML config plus an argparse CLI that writes a run folder: `results.parquet`, the hashed config, the reductions, the dry-run table and the provenance (session 16), and the samples each engine compared (session 17). `mixed-signals report RUN_FOLDER` (session 17) copies a marimo notebook into the folder, which runs as a script and exports to HTML.
 
 Plots use cantuccio, with contours drawn from the same estimator settings as the metrics, so plots and numbers agree. The report holds a σ_eff, r_eff and σ_sig summary table, corner overlays, null histograms drawn from the stored null draws, and diagnostics.
 
@@ -696,6 +718,8 @@ compare_signals:
 From the shell, `mixed-signals run config.yaml --dry-run` prints the estimate of every engine, and `mixed-signals run config.yaml` runs them and writes the run folder.
 
 **Pipeline (session 16).** `load_config` validates a config without reading data or importing code. A run refuses a folder that already holds results, then prepares everything with the config's folder first on `sys.path`: the space, the transform of each section, the generator, the noise model, the arrays and the posteriors, each read by the names of the space where its file names its columns, and one `reduce_chains` per run of chains. It estimates every engine with the arguments of its section, which checks every argument before any engine runs, `compare`'s Fisher matrices included; an argument that does not fit raises a `ConfigError` that names its section. One `CostWarning` follows when the total passes the budget, the engines run in the order `diagnose`, `compare`, `compare_signals` with the seed of the config and the config hash, and the run folder is written last. eryn copies NumPy's global random state when its sampler is built, so the example seeds NumPy before that, and its data repeat byte for byte. From the shell, two runs of the example gave byte-identical `results.parquet`, `cost.parquet`, `config.json` and `reductions.json`, 198 rows in 3.5 minutes each on the developers' Apple M4 Pro, where the dry run estimated 3.9 minutes; only `provenance.json` differed, in its times and its folder.
+
+**Reports (session 17).** `mixed-signals report RUN_FOLDER` and `write_report` copy one marimo notebook into a run folder as `report.py`, write its settings as `report.json` and export `report.html` without code. The notebook reads only its run folder, so the pipeline now writes the samples that each engine compared into `samples/` with `SampleSet.to_npz`; two runs of the example gave byte-identical archives, 0.3 MB in all. Every table, figure and section is a tested function of `mixed_signals.report`. The effect of a comparison row comes from `sigma.thresholds.verdict` and that of a diagnostic row from the definition in `diagnostics.flags.evaluate`, so a table cannot disagree with a flag. cantuccio (Santini 2026) lays out the corner plots. Its exact path matched `KernelDensity` to 1e-10 on two-dimensional panels. On the diagonal, where it interpolates from a grid padded by 10%, it stayed within 7e-5 and 8e-5 of the peak at 500 and 2 000 samples, 7e-4 and 2e-3 relative where the density exceeds a thousandth of its peak. It neither corrects nor reflects at bounds and draws circles on 800 × 800 grids, so the report unwraps each circle about the pooled circular mean of the plotted posteriors and redraws from `KernelDensity` every panel with a circle or with a bound within twelve kernel widths of a sample, at the highest-density masses (Hyndman 1996) that cantuccio's `hdi_levels` gives for the grid. cantuccio's own style switches LaTeX on, so the report passes its own style. marimo saves a figure at twice its dpi, so a corner plot of D parameters takes min(100, 600/D) dpi, at most 2 400 pixels across. The text of a heatmap cell takes ink or white by the larger contrast ratio of WCAG 2.2, which turns white from an effect of 1.17 times the threshold. The exported page embeds every figure and table but loads marimo's front end from jsDelivr, so it renders only online. On the developers' Apple M4 Pro the example's report took 11 s for 13 figures in a page of 3.4 MB. `epsilon.yaml` ran in 69 s; between 0.05ℓ² and 2ℓ², S_ε of the shifted table against the eryn run fell from 0.24 to 0.17, while its σ_eff stayed at 0.39 to 0.40, above the threshold of 0.2 at every factor.
 
 ## Package layout
 
@@ -774,7 +798,15 @@ mixed-signals/
 │   │   ├── config.py       # YAML config models, load_config, the config hash
 │   │   ├── _sources.py     # import paths, inputs and their records
 │   │   └── runner.py       # dry run, engine runs, the run folder
-│   ├── report/             # marimo notebook, cantuccio plots
+│   ├── report/             # the report of a run folder: marimo notebook, cantuccio plots
+│   │   ├── _style.py       # light theme of the validation page, eight posterior colours
+│   │   ├── folder.py       # read a run folder, report.json settings, problem selection
+│   │   ├── tables.py       # rows by engine, effect sizes, the tables of every section
+│   │   ├── figures.py      # effect heatmap, null histograms, ε plot
+│   │   ├── corner.py       # corner plots: cantuccio with the package's bounded KDE
+│   │   ├── sections.py     # the sections of the notebook as marimo layouts
+│   │   ├── writer.py       # write_report: notebook, settings, HTML export
+│   │   └── notebook.py     # the marimo notebook that write_report copies
 │   ├── cli.py              # argparse: mixed-signals run config.yaml [--dry-run]
 │   └── gw/                 # GW conventions, readers, waveform helpers
 ├── scripts/                # style-rule check; rebuild the validation page from the zoo
@@ -898,6 +930,8 @@ Every method and assumption above cites the sources below. Each module cites the
 | Two-sample AD in the population limit | Pettitt (1976); Scholz and Stephens (1987) |
 | AR(1) autocorrelation time | Thompson (2010); emcee documentation (Foreman-Mackey 2017) |
 | Quadrature of reference values | Gauss-Legendre rules: Davis and Rabinowitz (1984); checked against QUADPACK (Piessens et al. 1983) through SciPy (Virtanen et al. 2020) |
+| Corner-plot contours at credible masses | Highest density regions: Hyndman (1996); corner plots: cantuccio (Santini 2026); estimates: the bounded KDE above |
+| Gaussian ellipses at credible masses | χ² radii of a Gaussian: Johnson and Wichern (2007) |
 | PRNG keys and their derivation | Salmon et al. (2011); Claessen and Pałka (2013); JAX authors (2019); JAX authors (2022) |
 | SHA-256 hashes | National Institute of Standards and Technology (2015) |
 | float32 and float64 resolution | IEEE (2019) |
@@ -964,6 +998,7 @@ Every method and assumption above cites the sources below. Each module cites the
 - Hermans, J., Delaunoy, A., Rozet, F., Wehenkel, A., Begy, V. and Louppe, G. (2022). A trust crisis in simulation-based inference? Your posterior approximations can be unfaithful. *Transactions on Machine Learning Research*.
 - Hoy, C. and Raymond, V. (2021). PESummary: the code agnostic Parameter Estimation Summary page builder. *SoftwareX* 15, 100765.
 - Hu, Y. and Scarrott, C. (2018). evmix: An R package for extreme value mixture modeling, threshold estimation and boundary corrected kernel density estimation. *Journal of Statistical Software* 84(5).
+- Hyndman, R. J. (1996). Computing and graphing highest density regions. *The American Statistician* 50(2), 120–126.
 - IEEE (2019). IEEE Standard for Floating-Point Arithmetic. IEEE Std 754-2019.
 - Janati, H., Muzellec, B., Peyré, G. and Cuturi, M. (2020). Entropic optimal transport between unbalanced Gaussian measures has a closed form. *Advances in Neural Information Processing Systems* 33, 10468–10479.
 - JAX authors (2019). JAX PRNG design. JAX documentation, JAX Enhancement Proposal 263. <https://docs.jax.dev/en/latest/jep/263-prng.html>
@@ -1032,6 +1067,7 @@ Every method and assumption above cites the sources below. Each module cites the
 - Romero-Shaw, I. M. et al. (2020). Bayesian inference for compact binary coalescences with BILBY: validation and application to the first LIGO–Virgo gravitational-wave transient catalogue. *Monthly Notices of the Royal Astronomical Society* 499(3), 3295–3319.
 - Rowland, M., Hron, J., Tang, Y., Choromanski, K., Sarlos, T. and Weller, A. (2019). Orthogonal estimation of Wasserstein distances. *Proceedings of AISTATS*, PMLR 89, 186–195.
 - Salmon, J. K., Moraes, M. A., Dror, R. O. and Shaw, D. E. (2011). Parallel random numbers: as easy as 1, 2, 3. *Proceedings of the 2011 International Conference for High Performance Computing, Networking, Storage and Analysis*, 1–12.
+- Santini, A. (2026). cantuccio: the sweetest corner plot package around. Python package, version 0.5.0. <https://github.com/asantini29/cantuccio>
 - Schilling, M. F., Watkins, A. E. and Watkins, W. (2002). Is human height bimodal? *The American Statistician* 56(3), 223–229.
 - Scholz, F. W. and Stephens, M. A. (1987). K-sample Anderson–Darling tests. *Journal of the American Statistical Association* 82(399), 918–924.
 - Schuster, E. F. (1985). Incorporating support constraints into nonparametric estimators of densities. *Communications in Statistics: Theory and Methods* 14(5), 1123–1136.

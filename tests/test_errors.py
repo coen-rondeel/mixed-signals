@@ -33,10 +33,12 @@ def test_errors_keep_the_builtin_meaning() -> None:
     """Each package error is also the built-in exception that callers expect."""
     assert issubclass(errors.SchemaError, ValueError)
     assert issubclass(errors.MissingDependencyError, ImportError)
+    assert issubclass(errors.ReportError, ValueError)
     for error_class in (
         errors.SchemaError,
         errors.MissingDependencyError,
         errors.CapabilityError,
+        errors.ReportError,
     ):
         assert issubclass(error_class, errors.MixedSignalsError)
 

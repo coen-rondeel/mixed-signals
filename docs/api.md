@@ -335,6 +335,30 @@
    :members:
 ```
 
+## Reports
+
+```{eval-rst}
+.. automodule:: mixed_signals.report
+
+.. automodule:: mixed_signals.report.folder
+   :members:
+
+.. automodule:: mixed_signals.report.tables
+   :members:
+
+.. automodule:: mixed_signals.report.figures
+   :members:
+
+.. automodule:: mixed_signals.report.corner
+   :members:
+
+.. automodule:: mixed_signals.report.sections
+   :members:
+
+.. automodule:: mixed_signals.report.writer
+   :members:
+```
+
 ## Command line
 
 ```{eval-rst}

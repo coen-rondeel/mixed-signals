@@ -1,0 +1,32 @@
+# The Sinkhorn curve of the pipeline example: compare alone, at six values of epsilon.
+# Run `make_data.py` first, then `mixed-signals run examples/pipeline/epsilon.yaml`.
+seed: 2026
+output: results_epsilon
+
+# The same space and posteriors as config.yaml.
+space:
+  eryn_priors: models:priors
+
+posteriors:
+  - name: mcmc
+    format: eryn
+    path: data/mcmc.h5
+    burn_in: 200
+    thin: tau
+  - name: sbi
+    format: table
+    path: data/sbi.parquet
+  - name: peer
+    format: hdf5
+    path: data/peer.h5
+    group: posterior
+
+# Only the Sinkhorn divergence, at epsilon equal to each factor times the squared median
+# bandwidth. The cap of 1 000 samples and 100 draws keep the run short; the report
+# then draws S_epsilon against epsilon with the band of its null.
+compare:
+  reference: mcmc
+  metrics: [sinkhorn]
+  sinkhorn_epsilon_factors: [0.05, 0.1, 0.25, 0.5, 1.0, 2.0]
+  draws: 100
+  cap: 1000

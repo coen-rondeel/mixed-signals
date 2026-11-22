@@ -24,7 +24,7 @@ The implementation is split into twenty focused sessions, numbered 0 to 19. They
 | 14 | Engines | E | 8 to 12 | Done (2026-11-20) |
 | 15 | Data space | E | 4, 9 | Done (2026-11-20) |
 | 16 | Pipeline and CLI | F | 14 | Done (2026-11-21) |
-| 17 | Reports | F | 14 | Open |
+| 17 | Reports | F | 14 | Done (2026-11-22) |
 | 18 | GW subpackage | F | 7 | Open |
 | 19 | Release readiness | G | all | Open |
 
@@ -309,6 +309,8 @@ Scope: `report/`.
 - The run folder holds no samples. The report can read them through the config, with `load_config` and the readers of session 16, and repeat each reduction from `reductions.json`: `reduce_chains` with the recorded burn-in and factor repeats it exactly, and the stored `chains_hash` checks the input. Settle with the developers whether the pipeline should write the reduced samples into the run folder instead.
 - `provenance.json` holds the estimated and the wall seconds of each engine, which the report can set side by side.
 - Done when the example pipeline produces a report that renders.
+
+Outcome (2026-11-22): the developers decided twenty-two items, now in `DESIGN.md`. The pipeline writes the flat samples of every posterior into `samples/<k>.npz`, by position in the config, through the new `SampleSet.to_npz`, and the mapped copies with their `space.yaml` for a `diagnose` or `compare` section with a transform; `run --overwrite` removes the samples and the report of the run that it replaces, and a folder that holds `samples` without a `results.parquet` stops a run before any work. `report/` holds `folder.py` (`read_run_folder` and the `ReportSettings` of `report.json`: the problems shown in full, by count, `"all"` or list, and the plot cap), `tables.py` (polars tables whose effects come from `sigma.thresholds.verdict` and from the definition of `diagnostics.flags.evaluate`), `figures.py` (the heatmap of effect over threshold, the null histograms and the ε plot), `corner.py` (corner plots laid out by cantuccio at the bandwidth factor of the rows, redrawn from `KernelDensity` on circles and near bounds, with dashed Gaussian ellipses at 68% and 95%), `sections.py`, `writer.py` and the marimo notebook `notebook.py`. `mixed-signals report RUN_FOLDER [--problems VALUE] [--plot-cap N] [--no-html] [--overwrite]` and `write_report` copy the notebook into the run folder as `report.py` and export `report.html` without code; `errors.ReportError` marks a folder that cannot be reported as asked. In the review the developers left out the overview of two posteriors, which repeats their pair plot, and kept each posterior's colour in pair plots up to eight posteriors. cantuccio's exact path matched `KernelDensity` to 1e-10 in two dimensions but only to below 1e-4 of the peak on the diagonal, where it interpolates, which corrected a record; its own style switches LaTeX on, so the report passes its own. marimo saves figures at twice their dpi, and its exported page loads the front end from jsDelivr, so it renders only online. `examples/pipeline/epsilon.yaml` runs `compare` with the Sinkhorn divergence at six factors of ε (69 s) for the ε plot. The example's report took 11 s, 13 figures in a page of 3.4 MB, and two runs repeated the sample archives byte for byte. The suite holds 2 352 tests at 100% line and branch coverage. Later sessions add a report section as a tested function of `report/sections.py` with a cell of the notebook, and read run folders with `report.read_run_folder`.
 
 ### 18. GW subpackage
 

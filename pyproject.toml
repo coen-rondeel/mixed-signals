@@ -180,6 +180,17 @@ module = ["eryn.*"]
 ignore_missing_imports = true
 
 [[tool.mypy.overrides]]
+# ? cantuccio ships without type information; only the report modules import it.
+module = ["cantuccio", "cantuccio.*"]
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+# ? marimo cells are untyped functions whose parameters are the names of other cells.
+module = ["mixed_signals.report.notebook"]
+disallow_untyped_defs = false
+check_untyped_defs = true
+
+[[tool.mypy.overrides]]
 # ? CuPy needs CUDA, so the lint environment does not install it.
 module = ["cupy", "cupy.*"]
 ignore_missing_imports = true
@@ -227,6 +238,8 @@ xfail_strict = true
 [tool.coverage.run]
 source = ["mixed_signals"]
 branch = true
+# ? Coverage misses the return line of a marimo cell and a cell that a test overrides.
+omit = ["*/mixed_signals/report/notebook.py"]
 
 [tool.coverage.report]
 show_missing = true

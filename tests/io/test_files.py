@@ -202,6 +202,56 @@ def test_narrow_arrays_warn_and_non_real_arrays_raise(tmp_path: Path) -> None:
         SampleSet.from_npz(tmp_path / "text.npy")
 
 
+@pytest.mark.parametrize("batch", [None, BATCH])
+@pytest.mark.parametrize("optional", [True, False])
+def test_to_npz_reads_back_as_an_equal_set(
+    tmp_path: Path, batch: int | None, optional: bool
+) -> None:
+    """Every field returns exactly, with and without the optional ones."""
+    arrays: dict[str, Any] = flat_arrays(batch)
+    if not optional:
+        arrays = {name: arrays[name] for name in ("samples", "log_weights")}
+    np.savez(tmp_path / "source.npz", **arrays)
+    original = SampleSet.from_npz(tmp_path / "source.npz")
+    original.to_npz(tmp_path / "copy.npz")
+    assert_same_set(SampleSet.from_npz(tmp_path / "copy.npz"), original)
+    with np.load(tmp_path / "copy.npz") as archive:
+        assert list(archive.files) == list(arrays)
+        assert archive["samples"].shape == (batch or 1, SAMPLES, PARAMS)
+        assert all(archive[name].dtype == np.float64 for name in archive.files)
+        if optional:
+            assert archive["n_eff"].shape == (batch or 1,)
+            assert archive["log_q"].shape == (batch or 1, SAMPLES)
+
+
+def test_to_npz_gives_identical_bytes_for_the_same_set(tmp_path: Path) -> None:
+    """Two writes of one set are the same file, so a run folder is reproducible."""
+    arrays: dict[str, Any] = flat_arrays(BATCH)
+    np.savez(tmp_path / "source.npz", **arrays)
+    original = SampleSet.from_npz(tmp_path / "source.npz")
+    original.to_npz(tmp_path / "first.npz")
+    original.to_npz(tmp_path / "second.npz")
+    assert (tmp_path / "first.npz").read_bytes() == (
+        tmp_path / "second.npz"
+    ).read_bytes()
+
+
+def test_to_npz_needs_one_posterior_and_an_npz_path(tmp_path: Path) -> None:
+    """Several posteriors and a path without the suffix raise before any write."""
+    pair = SampleSet(draws(2, SAMPLES, PARAMS))
+    with pytest.raises(ValueError, match="select one posterior first"):
+        pair.to_npz(tmp_path / "pair.npz")
+    pair.select(posteriors=1).to_npz(tmp_path / "second.npz")
+    assert_same_set(
+        SampleSet.from_npz(tmp_path / "second.npz"), pair.select(posteriors=1)
+    )
+    for name in ("plain", "set.npy", "set.NPZ"):
+        with pytest.raises(ValueError, match=r"must end in \.npz"):
+            pair.select(posteriors=0).to_npz(tmp_path / name)
+    # ! numpy.savez would have appended .npz to the names above without a word.
+    assert sorted(path.name for path in tmp_path.iterdir()) == ["second.npz"]
+
+
 # * Chains
 
 

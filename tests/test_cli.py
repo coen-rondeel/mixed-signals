@@ -1,11 +1,14 @@
 """Tests for the ``mixed-signals`` command line."""
 
+import json
 import logging
 import re
 import shutil
+import subprocess
 import sys
 from importlib.metadata import entry_points
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -13,6 +16,7 @@ import mixed_signals
 from mixed_signals import cli
 from mixed_signals.errors import CostWarning
 from mixed_signals.pipeline import runner
+from mixed_signals.report import DEFAULT_PROBLEMS
 
 FILES = {
     "results.parquet",
@@ -20,6 +24,7 @@ FILES = {
     "reductions.json",
     "cost.parquet",
     "provenance.json",
+    "samples",
 }
 # * Two flat posteriors and the cheapest engines: the commands run in a few seconds.
 CONFIG = """
@@ -122,8 +127,8 @@ def test_a_run_writes_the_folder_and_prints_the_progress(
         "compare",
     ]
     assert lines[6] == (
-        "Wrote results.parquet, config.json, reductions.json, cost.parquet and"
-        f" provenance.json to {out.resolve()}"
+        "Wrote results.parquet, config.json, reductions.json, cost.parquet,"
+        f" provenance.json and samples/ to {out.resolve()}"
     )
     assert {path.name for path in out.iterdir()} == FILES
 
@@ -265,3 +270,181 @@ def test_repeated_calls_do_not_print_a_line_twice(
     assert cli.main(["run", str(pipeline_project / "nowhere.yaml")]) == 2
     capsys.readouterr()
     assert logger.handlers == handlers
+
+
+# * The report command
+
+
+@pytest.fixture
+def run_copy(report_run_folder: Path, tmp_path: Path) -> Path:
+    """A private copy of the full run folder, which a test may write reports into."""
+    copy = tmp_path / "run"
+    shutil.copytree(report_run_folder, copy)
+    return copy
+
+
+def read_settings(folder: Path) -> Any:
+    """Read the report.json of a folder."""
+    return json.loads((folder / "report.json").read_text(encoding="utf-8"))
+
+
+def test_the_help_lists_the_report_command_and_its_default(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """The usage names the subcommand and its flags; the run help names the samples."""
+    assert cli.main([]) == 0
+    assert "report" in capsys.readouterr().out
+    with pytest.raises(SystemExit) as exit_info:
+        cli.main(["report", "--help"])
+    assert exit_info.value.code == 0
+    help_text = " ".join(capsys.readouterr().out.split())
+    for flag in ("--problems", "--plot-cap", "--no-html", "--overwrite"):
+        assert flag in help_text
+    assert f"(default: {DEFAULT_PROBLEMS})" in help_text
+    with pytest.raises(SystemExit):
+        cli.main(["run", "--help"])
+    assert "samples" in " ".join(capsys.readouterr().out.split())
+
+
+def test_a_report_without_html_writes_the_notebook_and_the_settings(
+    run_copy: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Exit code 0, the two files, and their paths on standard output."""
+    assert cli.main(["report", str(run_copy), "--no-html"]) == 0
+    captured = capsys.readouterr()
+    assert captured.out.splitlines() == [
+        f"Wrote {run_copy / 'report.py'}",
+        f"Wrote {run_copy / 'report.json'}",
+    ]
+    assert captured.err == ""
+    assert (run_copy / "report.py").is_file()
+    assert read_settings(run_copy) == {"problems": DEFAULT_PROBLEMS, "plot_cap": None}
+    assert not (run_copy / "report.html").exists()
+
+
+def test_a_folder_without_results_returns_two(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The message names the folder, on standard error, with no traceback."""
+    assert cli.main(["report", str(tmp_path)]) == 2
+    captured = capsys.readouterr()
+    assert captured.err.startswith("mixed-signals: error: ")
+    assert str(tmp_path) in captured.err
+    assert "Traceback" not in captured.err
+    assert captured.out == ""
+
+
+def test_existing_report_files_need_overwrite(
+    run_copy: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Without --overwrite the files stop the command; with it the command goes on."""
+    assert cli.main(["report", str(run_copy), "--no-html"]) == 0
+    capsys.readouterr()
+    assert cli.main(["report", str(run_copy), "--no-html"]) == 2
+    captured = capsys.readouterr()
+    assert "report.py, report.json" in captured.err
+    assert captured.out == ""
+    assert cli.main(["report", str(run_copy), "--no-html", "--overwrite"]) == 0
+    assert "Wrote" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [("all", "all"), ("1", 1), ("0,", [0]), ("0, ", [0]), ("0,0,", None)],
+)
+def test_the_problems_option_reads_all_a_count_or_a_list(
+    run_copy: Path,
+    capsys: pytest.CaptureFixture[str],
+    value: str,
+    expected: Any,
+) -> None:
+    """A comma makes a list, so 0, is problem 0 alone and 1 is a count of one."""
+    code = cli.main(["report", str(run_copy), "--no-html", "--problems", value])
+    if expected is None:
+        # * A repeated index is invalid, which pydantic reports.
+        assert code == 2
+        assert "repeat an index" in capsys.readouterr().err
+    else:
+        assert code == 0
+        assert read_settings(run_copy)["problems"] == expected
+
+
+@pytest.mark.parametrize("value", ["x", "1.5", "a,b", "-1,", "0"])
+def test_an_unparsable_or_invalid_problems_value_returns_two(
+    run_copy: Path, capsys: pytest.CaptureFixture[str], value: str
+) -> None:
+    """The message goes to standard error and nothing is written."""
+    arguments = ["report", str(run_copy), "--no-html", f"--problems={value}"]
+    assert cli.main(arguments) == 2
+    captured = capsys.readouterr()
+    assert captured.err.startswith("mixed-signals: error: ")
+    assert "Traceback" not in captured.err
+    assert not (run_copy / "report.py").exists()
+
+
+def test_a_problem_outside_the_result_and_a_bad_plot_cap_return_two(
+    run_copy: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The result holds problem 0 only; a plot cap must be positive."""
+    assert cli.main(["report", str(run_copy), "--no-html", "--problems", "3,"]) == 2
+    assert "are not in the result" in capsys.readouterr().err
+    assert cli.main(["report", str(run_copy), "--no-html", "--plot-cap", "0"]) == 2
+    assert "plot_cap" in capsys.readouterr().err
+    assert cli.main(["report", str(run_copy), "--no-html", "--plot-cap", "250"]) == 0
+    assert read_settings(run_copy)["plot_cap"] == 250
+
+
+def test_a_failing_export_returns_one_with_the_lines_of_marimo(
+    run_copy: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The message goes to standard error with no traceback; the files stay."""
+
+    def failing(
+        command: list[str], **keywords: Any
+    ) -> subprocess.CompletedProcess[str]:
+        return subprocess.CompletedProcess(
+            command, 1, stdout="", stderr="MarimoExceptionRaisedError: boom\n"
+        )
+
+    monkeypatch.setattr("mixed_signals.report.writer.subprocess.run", failing)
+    assert cli.main(["report", str(run_copy)]) == 1
+    captured = capsys.readouterr()
+    assert captured.err.startswith("mixed-signals: error: marimo could not export")
+    assert "MarimoExceptionRaisedError: boom" in captured.err
+    assert "Traceback" not in captured.err
+    assert captured.out == ""
+    assert (run_copy / "report.py").exists()
+
+
+def test_another_failure_returns_one_with_a_traceback(
+    run_copy: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """As run does: an unexpected exception prints its traceback."""
+
+    def broken(*arguments: Any, **keywords: Any) -> Any:
+        raise KeyError("unexpected")
+
+    monkeypatch.setattr("mixed_signals.report.write_report", broken)
+    assert cli.main(["report", str(run_copy)]) == 1
+    captured = capsys.readouterr()
+    assert "Traceback (most recent call last)" in captured.err
+    assert "KeyError: 'unexpected'" in captured.err
+
+
+def test_a_missing_report_extra_returns_two_and_run_still_works(
+    run_copy: Path,
+    pipeline_project: Path,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The report imports only in its branch, so without marimo run still runs."""
+    for name in [
+        name for name in sys.modules if name.startswith("mixed_signals.report")
+    ]:
+        monkeypatch.delitem(sys.modules, name)
+    monkeypatch.setitem(sys.modules, "marimo", None)
+    assert cli.main(["report", str(run_copy)]) == 2
+    assert 'pip install "mixed-signals[report]"' in capsys.readouterr().err
+    config_path = write_config(pipeline_project)
+    assert cli.main(["run", str(config_path), "--dry-run"]) == 0

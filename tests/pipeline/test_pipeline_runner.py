@@ -3,6 +3,7 @@
 import datetime
 import functools
 import hashlib
+import importlib.util
 import json
 import math
 import platform
@@ -10,16 +11,19 @@ import shutil
 import warnings
 from collections.abc import Callable, Iterator
 from pathlib import Path
-from types import MappingProxyType
+from types import MappingProxyType, ModuleType
 from typing import Any, NamedTuple
 
 import jax
+import numpy as np
 import polars as pl
 import pytest
 
 import mixed_signals
 from mixed_signals import _config
 from mixed_signals.core.result import Result
+from mixed_signals.core.samples import SampleSet
+from mixed_signals.core.space import ParamSpace
 from mixed_signals.engines.compare import compare
 from mixed_signals.engines.cost import CostEstimate
 from mixed_signals.engines.diagnose import diagnose
@@ -45,8 +49,14 @@ FILES = {
     "cost.parquet",
     "provenance.json",
 }
+RUN_ENTRIES = FILES | {"samples"}
+# * The files that a report and its export leave in a run folder.
+REPORT_FILES = ("report.py", "report.json", "report.html")
+PARAMETER_NAMES = ("x0", "x1", "x2")
+POSTERIORS = ("mcmc", "chains", "samples", "table", "group")
 SHORT_RUN = r"fewer than 50 autocorrelation times"
 HOLDS_RESULTS = r"already holds results\.parquet"
+HOLDS_SAMPLES = r"holds samples but no results\.parquet"
 ENGINES = ("diagnose", "compare", "compare_signals")
 # * Two flat posteriors and two cheap engines, which no chains reduce.
 LIGHT = """
@@ -96,6 +106,24 @@ def read_json(path: Path) -> Any:
 def sha256_of(path: Path) -> str:
     """Return the SHA-256 of a file."""
     return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def assert_same_set(first: SampleSet, second: SampleSet) -> None:
+    """Check that two sets hold the same fields with the same values."""
+    first_fields, second_fields = first.to_arrays(), second.to_arrays()
+    assert first_fields.keys() == second_fields.keys()
+    for name, values in first_fields.items():
+        np.testing.assert_array_equal(values, second_fields[name], err_msg=name)
+
+
+def load_models(project: Path) -> ModuleType:
+    """Import the models of the project under another name, so no guard objects."""
+    spec = importlib.util.spec_from_file_location("models_copy", project / "models.py")
+    assert spec is not None
+    assert spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 
 def refuse_engine(calls: list[str], name: str, prepared: Any) -> Any:
@@ -156,6 +184,13 @@ def runs(
         # * Stale files of an earlier run: the folder already holds a results table.
         for name in FILES:
             (other_folder / name).write_text("stale", encoding="utf-8")
+        # * A report of the earlier run leaves its files, its cache and old samples.
+        for name in REPORT_FILES:
+            (other_folder / name).write_text("stale", encoding="utf-8")
+        (other_folder / "__marimo__").mkdir()
+        (other_folder / "__marimo__" / "x").write_text("stale", encoding="utf-8")
+        (other_folder / "samples").mkdir()
+        (other_folder / "samples" / "9.npz").write_text("stale", encoding="utf-8")
         with pytest.raises(ConfigError) as refused:
             run_pipeline(config_path, output=other_folder)
         assert len(diagnoses) == 1
@@ -169,12 +204,37 @@ def runs(
 # * The run folder
 
 
-def test_the_run_folder_holds_five_files(runs: FullRuns) -> None:
-    """Every file is written on every run, in the folder that was given."""
+def test_the_run_folder_holds_five_files_and_the_samples(runs: FullRuns) -> None:
+    """Every entry is written on every run, in the folder that was given."""
     for folder, run in ((runs.folder, runs.first), (runs.other_folder, runs.second)):
-        assert {path.name for path in folder.iterdir()} == FILES
+        assert {path.name for path in folder.iterdir()} == RUN_ENTRIES
         assert run.output == folder.resolve()
     assert isinstance(runs.first.estimate, PipelineEstimate)
+
+
+def test_each_posterior_has_an_archive_that_reads_back_equal(
+    runs: FullRuns, pipeline_project: Path
+) -> None:
+    """Position k of the config gives samples/k.npz: the set that the engines took."""
+    data = pipeline_project / "data"
+    inputs = {
+        "samples": SampleSet.from_npz(data / "draws.npz"),
+        "table": SampleSet.from_table(data / "table.parquet", PARAMETER_NAMES),
+        "group": SampleSet.from_hdf5(data / "peer.h5", "posterior", PARAMETER_NAMES),
+    }
+    for run, folder in ((runs.first, runs.folder), (runs.second, runs.other_folder)):
+        archives = sorted((folder / "samples").glob("*.npz"))
+        assert [path.name for path in archives] == [
+            f"{position}.npz" for position in range(len(POSTERIORS))
+        ]
+        for position, name in enumerate(POSTERIORS):
+            reduced = name in run.reductions
+            expected = run.reductions[name].sample_set if reduced else inputs[name]
+            read = SampleSet.from_npz(folder / "samples" / f"{position}.npz")
+            assert_same_set(read, expected)
+    assert {path.name for path in (runs.folder / "samples").iterdir()} == {
+        f"{position}.npz" for position in range(len(POSTERIORS))
+    }
 
 
 def test_results_read_back_with_the_rows_of_each_engine_in_run_order(
@@ -301,7 +361,9 @@ def test_two_runs_give_the_same_table_and_files(runs: FullRuns) -> None:
     """Same config, data and seed: identical results, config, reductions and costs."""
     assert runs.first.result.table.equals(runs.second.result.table)
     assert runs.first.config_hash == runs.second.config_hash
-    for name in ("config.json", "reductions.json", "cost.parquet", "results.parquet"):
+    names = ["config.json", "reductions.json", "cost.parquet", "results.parquet"]
+    names += [f"samples/{position}.npz" for position in range(len(POSTERIORS))]
+    for name in names:
         first = (runs.folder / name).read_bytes()
         assert first == (runs.other_folder / name).read_bytes(), name
     # * The provenance holds the start time and the wall seconds, so it may differ.
@@ -318,6 +380,16 @@ def test_stale_files_stop_the_run_until_they_are_overwritten(runs: FullRuns) -> 
     assert len(runs.diagnoses) == 2
     for name in FILES:
         assert (runs.other_folder / name).read_bytes() != b"stale"
+
+
+def test_an_overwrite_removes_the_report_and_the_old_samples(runs: FullRuns) -> None:
+    """No file of the replaced run remains: its report, its cache and its samples."""
+    folder = runs.other_folder
+    for name in (*REPORT_FILES, "__marimo__"):
+        assert not (folder / name).exists(), name
+    assert not (folder / "samples" / "9.npz").exists()
+    assert (folder / "samples" / "0.npz").exists()
+    assert {path.name for path in folder.iterdir()} == RUN_ENTRIES
 
 
 # * Before the engines run
@@ -341,6 +413,27 @@ def test_an_existing_results_table_raises_before_any_work(
     (tmp_path / "file").write_text("x")
     with pytest.raises(ConfigError, match="exists and is not a folder"):
         run_pipeline(config_path, output=tmp_path / "file")
+
+
+def test_a_folder_with_samples_and_no_results_is_never_touched(
+    pipeline_project: Path,
+    tmp_path: Path,
+    no_engines: list[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A samples folder without results stops the run, with or without overwrite."""
+    config_path = write_config(pipeline_project, light(LIGHT_DIAGNOSE), "own.yaml")
+    reads: list[Any] = []
+    monkeypatch.setattr(runner, "_prepare", reads.append)
+    (tmp_path / "samples").mkdir()
+    (tmp_path / "samples" / "mine.txt").write_text("keep me")
+    for overwrite in (False, True):
+        with pytest.raises(ConfigError, match=HOLDS_SAMPLES) as refused:
+            run_pipeline(config_path, output=tmp_path, overwrite=overwrite)
+        assert str(tmp_path.resolve()) in str(refused.value)
+    assert reads == []
+    assert (tmp_path / "samples" / "mine.txt").read_text() == "keep me"
+    assert {path.name for path in tmp_path.iterdir()} == {"samples"}
 
 
 @pytest.mark.parametrize(
@@ -496,8 +589,8 @@ def test_progress_goes_to_the_logger(
     assert " rows in " in lines[4]
     assert lines[5].startswith("compare finished: ")
     assert lines[6] == (
-        "Wrote results.parquet, config.json, reductions.json, cost.parquet and"
-        f" provenance.json to {(tmp_path / 'out').resolve()}"
+        "Wrote results.parquet, config.json, reductions.json, cost.parquet,"
+        f" provenance.json and samples/ to {(tmp_path / 'out').resolve()}"
     )
     assert len(lines) == 7
     caplog.clear()
@@ -541,6 +634,48 @@ def test_a_transform_resolves_by_import_path(
     assert table["space"].str.contains("shift").all()
 
 
+@pytest.mark.parametrize("section", ["diagnose", "compare"])
+def test_a_section_with_a_transform_gets_mapped_copies_and_its_space(
+    pipeline_project: Path, tmp_path: Path, section: str
+) -> None:
+    """The mapped samples and space.yaml appear for that section and no other."""
+    prefix = "transform: 'models:shift', "
+    diagnose = LIGHT_DIAGNOSE.replace(
+        "diagnose: {", "diagnose: {" + (prefix if section == "diagnose" else "")
+    )
+    compare = LIGHT_COMPARE.replace(
+        "compare: {", "compare: {" + (prefix if section == "compare" else "")
+    )
+    text = light(diagnose, compare, "compare_signals: {" + SIGNALS + "}\n")
+    config_path = write_config(pipeline_project, text, f"{section}_shift.yaml")
+    run = run_pipeline(config_path, output=tmp_path / "out")
+    samples = tmp_path / "out" / "samples"
+    other = "compare" if section == "diagnose" else "diagnose"
+    assert {path.name for path in samples.iterdir()} == {
+        "0.npz",
+        "1.npz",
+        section,
+    }
+    assert not (samples / other).exists()
+    assert not (samples / "compare_signals").exists()
+    mapped = samples / section
+    assert sorted(path.name for path in mapped.iterdir()) == [
+        "0.npz",
+        "1.npz",
+        "space.yaml",
+    ]
+    models = load_models(pipeline_project)
+    for position in range(2):
+        original = SampleSet.from_npz(samples / f"{position}.npz")
+        expected = models.shift.map_sample_set(original)
+        assert_same_set(SampleSet.from_npz(mapped / f"{position}.npz"), expected)
+    space = ParamSpace.from_yaml(mapped / "space.yaml")
+    assert space == models.shift.map_space(
+        ParamSpace.model_validate(read_json(run.output / "config.json")["space"])
+    )
+    assert space.names == PARAMETER_NAMES
+
+
 def test_relative_paths_start_at_the_config_folder(
     pipeline_project: Path,
     tmp_path: Path,
@@ -556,7 +691,7 @@ def test_relative_paths_start_at_the_config_folder(
     monkeypatch.chdir(elsewhere)
     run = run_pipeline(config_path)
     assert run.output == (copy / "light_results").resolve()
-    assert {path.name for path in (copy / "light_results").iterdir()} == FILES
+    assert {path.name for path in (copy / "light_results").iterdir()} == RUN_ENTRIES
     # * The copy imported its own models.py, not the cached one of the project.
     modules = read_json(run.output / "provenance.json")["modules"]
     assert {record["file"] for record in modules} == {
