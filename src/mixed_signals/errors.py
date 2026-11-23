@@ -55,6 +55,15 @@ class ReportError(MixedSignalsError, ValueError):
     """
 
 
+class ConventionError(MixedSignalsError, ValueError):
+    """Two holders disagree on a convention, a per-source setting or a parameter set.
+
+    For example, two LISA source holders in different sky frames or at different
+    epochs, or matched sources whose constant parameters differ. The message names
+    the holder method that aligns them where one exists.
+    """
+
+
 class CapabilityError(MixedSignalsError):
     """An engine needs a capability that its inputs do not provide.
 

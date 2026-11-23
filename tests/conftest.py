@@ -326,6 +326,107 @@ def batch_run_folder(tmp_path_factory: pytest.TempPathFactory) -> Path:
     return folder
 
 
+# * Synthetic LISA posteriors in catpylisa's layout: a structured array per source.
+
+LISA_CENTRES: dict[str, dict[str, tuple[float, float]]] = {
+    "galactic_binary": {
+        "frequency": (3e-3, 1e-9),
+        "frequency_dot": (1e-17, 1e-18),
+        "amplitude": (1e-22, 1e-23),
+        "right_ascension": (1.0, 0.01),
+        "declination": (0.3, 0.01),
+        "polarization": (0.5, 0.05),
+        "inclination": (1.0, 0.05),
+        "initial_phase": (2.0, 0.1),
+    },
+    "massive_black_hole_binary": {
+        "primary_mass_det_frame": (1e6, 1e4),
+        "secondary_mass_det_frame": (5e5, 1e4),
+        "luminosity_distance": (30.0, 0.5),
+        "spin1": (0.5, 0.02),
+        "spin2": (0.3, 0.02),
+        "coalescence_time": (1e7, 100.0),
+        "phase_at_reference_time": (1.0, 0.1),
+        "frequency_at_reference_time": (1e-4, 1e-8),
+        "right_ascension": (1.0, 0.01),
+        "declination": (0.3, 0.01),
+        "inclination": (1.0, 0.05),
+        "polarization": (0.5, 0.05),
+    },
+    "extreme_mass_ratio_inspiral": {
+        "primary_mass_det_frame": (1e6, 1e4),
+        "secondary_mass_det_frame": (10.0, 0.1),
+        "chi_1": (0.9, 0.01),
+        "polar_angle_spin1": (1.0, 0.02),
+        "azimuthal_angle_spin1": (2.0, 0.02),
+        "semi_latus_rectum_tref": (12.0, 0.1),
+        "eccentricity_tref": (0.3, 0.01),
+        "azimuthal_orbit_phase_tref": (1.0, 0.1),
+        "mean_anomaly_tref": (2.0, 0.1),
+        "luminosity_distance": (2.0, 0.05),
+        "right_ascension": (1.0, 0.01),
+        "declination": (0.3, 0.01),
+        "inclination_tref": (0.8, 0.02),
+        "polar_orbit_phase_tref": (0.5, 0.1),
+    },
+    "stellar_origin_binary_black_hole": {
+        "primary_mass_det_frame": (35.0, 0.5),
+        "secondary_mass_det_frame": (30.0, 0.5),
+        "spin_1": (0.2, 0.02),
+        "spin_2": (0.1, 0.02),
+        "f_ref": (0.01, 1e-6),
+        "inclination": (1.0, 0.05),
+        "polarization": (0.5, 0.05),
+        "phase_tref": (1.0, 0.1),
+        "luminosity_distance": (0.5, 0.01),
+        "right_ascension": (1.0, 0.01),
+        "declination": (0.3, 0.01),
+        "eccentricity_tref": (0.05, 0.005),
+        "polar_angle_spin1": (1.0, 0.02),
+        "polar_angle_spin2": (1.5, 0.02),
+        "azimuthal_angle_spin1": (2.0, 0.02),
+        "azimuthal_angle_spin2": (3.0, 0.02),
+    },
+}
+
+
+def build_lisa_posteriors(
+    source_type: str,
+    counts: Mapping[str, int],
+    *,
+    seed: int = 0,
+    shift: float = 0.0,
+    constant: tuple[str, ...] = (),
+) -> dict[str, np.ndarray]:
+    """Draw posteriors of LISA sources as structured arrays with the L2 field names.
+
+    Each source gets its own number of samples, from Gaussians around plausible
+    values. A ``shift`` moves every centre by that many widths, and the fields
+    in ``constant`` take their unshifted centre value in every sample.
+    """
+    centres = LISA_CENTRES[source_type]
+    rng = np.random.default_rng(seed)
+    dtype = [(name, "f8") for name in (*centres, "loglikelihood", "logprior")]
+    posteriors = {}
+    for source_id, count in counts.items():
+        table = np.zeros(count, dtype=dtype)
+        for name, (centre, width) in centres.items():
+            if name in constant:
+                table[name] = centre
+            else:
+                table[name] = centre + (shift + rng.normal(size=count)) * width
+        table["loglikelihood"] = rng.normal(size=count)
+        table["logprior"] = rng.normal(size=count)
+        posteriors[source_id] = table
+    return posteriors
+
+
+@pytest.fixture
+def lisa_posteriors() -> Callable[..., dict[str, np.ndarray]]:
+    """The builder of synthetic LISA posteriors in the layout of catpylisa."""
+    return build_lisa_posteriors
+
+
 def build_result(*rows: Mapping[str, Any]) -> Result:
     """Build a result table from rows that name only what a test needs.
 

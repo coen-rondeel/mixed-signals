@@ -52,6 +52,10 @@ Issues = "https://github.com/coen-rondeel/mixed-signals/issues"
 eryn = [
     "eryn",
 ]
+gw = [
+    "astropy>=7.2.4",
+    "lisaconstants>=2.0.2",
+]
 hdf5 = [
     "h5py>=3.16.0",
 ]
@@ -78,7 +82,7 @@ cuda13 = [
 [dependency-groups]
 # * The default environment carries every extra except the CUDA ones, which need a GPU.
 dev = [
-    "mixed-signals[eryn,hdf5,plot,report,torch]",
+    "mixed-signals[eryn,gw,hdf5,plot,report,torch]",
     { include-group = "test" },
     { include-group = "lint" },
 ]
@@ -153,8 +157,8 @@ select = [
 ]
 # * jaxtyping shape strings such as "sample param" are not Python, but F722 parses them as annotations.
 ignore = ["F722"]
-# * Scientific docstrings write σ, ρ, α, ν, ℓ and the minus sign −, which the confusable-character rules flag.
-allowed-confusables = ["σ", "ρ", "α", "ν", "ℓ", "−"]
+# * Scientific docstrings write σ, ρ, α, ν, ℓ, ι, 𝓜, 𝒜, ×, ′ and the minus sign −, which the confusable-character rules flag.
+allowed-confusables = ["σ", "ρ", "α", "ν", "ℓ", "−", "𝓜", "𝒜", "ι", "×", "′"]
 
 [tool.ruff.lint.per-file-ignores]
 # * Re-exports in the package root must follow the float64 switch.
@@ -182,6 +186,11 @@ ignore_missing_imports = true
 [[tool.mypy.overrides]]
 # ? cantuccio ships without type information; only the report modules import it.
 module = ["cantuccio", "cantuccio.*"]
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+# ? astropy and lisaconstants ship without type information; only gw.lisa and its tests import them.
+module = ["astropy", "astropy.*", "lisaconstants", "lisaconstants.*"]
 ignore_missing_imports = true
 
 [[tool.mypy.overrides]]
@@ -232,6 +241,8 @@ filterwarnings = [
     "error",
     # ? ott-jax imports jaxopt, which warns on import that it is no longer maintained.
     "ignore:JAXopt is no longer maintained:DeprecationWarning",
+    # ? lisaconstants 2.0.2 warns at import under astropy 8 about a constant that gw.lisa does not use.
+    "ignore:The following constants differ between lisaconstants:UserWarning",
 ]
 xfail_strict = true
 

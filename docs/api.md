@@ -308,6 +308,46 @@
    :members:
 ```
 
+## LISA sources
+
+```{eval-rst}
+.. automodule:: mixed_signals.gw
+
+.. automodule:: mixed_signals.gw.lisa
+
+.. automodule:: mixed_signals.gw.lisa.conventions
+   :members:
+   :show-inheritance:
+
+.. automodule:: mixed_signals.gw.lisa.sources
+   :members:
+   :show-inheritance:
+
+.. automodule:: mixed_signals.gw.lisa.galactic_binaries
+   :members:
+   :show-inheritance:
+
+.. automodule:: mixed_signals.gw.lisa.massive_black_hole_binaries
+   :members:
+   :show-inheritance:
+
+.. automodule:: mixed_signals.gw.lisa.extreme_mass_ratio_inspirals
+   :members:
+   :show-inheritance:
+
+.. automodule:: mixed_signals.gw.lisa.stellar_origin_binary_black_holes
+   :members:
+   :show-inheritance:
+
+.. automodule:: mixed_signals.gw.lisa.transforms
+   :members:
+   :show-inheritance:
+
+.. automodule:: mixed_signals.gw.lisa.compare
+   :members:
+   :show-inheritance:
+```
+
 ## Warnings and errors
 
 ```{eval-rst}

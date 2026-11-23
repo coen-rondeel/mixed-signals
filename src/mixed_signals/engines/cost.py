@@ -11,7 +11,8 @@ evaluations of every statistic with their estimated seconds. They compute no
 metric and use only counts and shapes; the data-space estimate also probes the
 generator and the noise model on one sample to learn the number of data
 entries. A transform does not change counts, so the estimates do not rely on
-it. The engines call the same estimate first and
+it. The counts are those of the samples with a positive weight, as the engines
+drop the others. The engines call the same estimate first and
 raise one :class:`~mixed_signals.errors.CostWarning` when it exceeds their
 ``budget``, which defaults to :data:`COST_BUDGET`, one hour.
 
@@ -740,7 +741,7 @@ def _compare_groups(
     embedding: int,
 ) -> list[_Group]:
     """Return the statistics of one comparison with the sizes they run on."""
-    samples = max(first.samples.shape[1], second.samples.shape[1])
+    samples = max(_positive_count(first, problem), _positive_count(second, problem))
     bootstrap = arguments.uncertainty is UncertaintyMethod.SUBSAMPLING_BOOTSTRAP
     halves = arguments.half_samples if bootstrap else 0
     units = {
@@ -982,7 +983,8 @@ def _diagnosed_size(
         return count, float(count)
     assert source.sample_set is not None
     n_eff = float(source.sample_set.effective_sample_size()[problem, position])
-    return source.sample_set.shape.sample, n_eff
+    positive = jnp.sum(source.sample_set.log_weights[problem, position] > -jnp.inf)
+    return int(positive), n_eff
 
 
 def _diagnose_groups(

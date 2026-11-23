@@ -39,7 +39,10 @@ Weights
     rows on its rejection subset
     (:func:`~mixed_signals.core.samples.rejection_subset`; Smith and Gelfand
     1992; Ashton et al. 2019), with surrogates of the effective size of that
-    subset, M times the relative efficiency of the input.
+    subset, M times the relative efficiency of the input. Samples with a
+    log weight of −∞ have no weight and are dropped from every problem first,
+    before each statistic, surrogate, input hash and Kish size, so that padding
+    with zero weights changes no row.
 Rows
     One row per parameter, per parameter pair, or per joint statistic, with
     the pair column holding the name of the posterior. A row with a threshold
@@ -116,6 +119,7 @@ from mixed_signals.engines._common import (
     Posterior,
     gather_posteriors,
     null_moments,
+    problem_samples,
     provenance,
     settings_text,
 )
@@ -581,8 +585,7 @@ def _posterior_rows(
         IDENTITY_DESCRIPTION if transform is None else transform.description,
         provenance(arguments.seed, arguments.root, hashes, arguments.config_hash),
     )
-    samples = posterior.samples[problem]
-    log_weights = posterior.log_weights[problem]
+    samples, log_weights = problem_samples(posterior, problem)
     n_eff = float(posterior.n_eff[problem])
     families = arguments.families
     rows: list[dict[str, Any]] = []

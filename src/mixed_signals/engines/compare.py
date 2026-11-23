@@ -15,6 +15,11 @@ Modes
     ``"reference"`` (mode A only), ``"pooled"``, or ``"fisher"`` with ``fisher=``
     and ``centre=``. In a pair (p, q), a metric reads from p to q, so the
     reverse KL rows carry the pair [q, p].
+Zero weights
+    A sample with a log weight of −∞ has no weight, so every problem is read
+    without such samples before each whitening, statistic, null, input hash and
+    Kish size. Padding with zero weights, as for sources that are in a chain
+    for part of a run, changes no row, bit for bit.
 Transform
     A ``transform`` maps the sets, the space, the Fisher matrices (Γ_y = JᵀΓJ,
     Jeffreys 1946) and the centres first, and the whitening follows it, so the
@@ -124,6 +129,7 @@ from mixed_signals.engines._common import (
     Posterior,
     flat_space,
     null_moments,
+    problem_samples,
     provenance,
     settings_text,
     space_text,
@@ -521,11 +527,13 @@ def _shared_whitenings(
     """Return the whitenings of one problem from its reference or its Fisher matrix."""
     if arguments.source is WhiteningSource.REFERENCE:
         assert arguments.reference is not None
-        reference = arguments.posteriors[arguments.reference]
+        reference_samples, reference_log_weights = problem_samples(
+            arguments.posteriors[arguments.reference], problem
+        )
         builder: Callable[[ParamSpace, bool], Whitening] = partial(
             _samples_whitening,
-            samples=reference.samples[problem][None],
-            log_weights=reference.log_weights[problem][None],
+            samples=reference_samples[None],
+            log_weights=reference_log_weights[None],
         )
     else:
         assert arguments.fisher is not None
@@ -554,11 +562,8 @@ def _pooled_whitenings(
 def _padded_pair(
     first: Posterior, second: Posterior, problem: int
 ) -> tuple[Array, Array]:
-    """Stack two posteriors, padding the smaller with zero-weight copies of a sample."""
-    sets = [
-        (first.samples[problem], first.log_weights[problem]),
-        (second.samples[problem], second.log_weights[problem]),
-    ]
+    """Stack the kept samples of two posteriors, padding the smaller by copies."""
+    sets = [problem_samples(first, problem), problem_samples(second, problem)]
     count = max(samples.shape[0] for samples, _ in sets)
     padded_samples, padded_weights = [], []
     for samples, log_weights in sets:
@@ -1156,12 +1161,12 @@ def _compute_settings(
     """
     records: dict[str, list[WarningRecord]] = {}
     factor = bandwidth = directions = sinkhorn_directions = sinkhorn_epsilon = None
+    first_log_weights = problem_samples(first, problem)[1]
+    second_log_weights = problem_samples(second, problem)[1]
     if "kde" in families:
         with errors.capture_warnings() as records["factor"]:
             factor = float(
-                shared_bandwidth_factor(
-                    first.log_weights[problem], second.log_weights[problem]
-                )
+                shared_bandwidth_factor(first_log_weights, second_log_weights)
             )
     usable = joint is not None and joint.space is not None
     if usable and {"mmd", "sinkhorn"} & families:
@@ -1173,9 +1178,9 @@ def _compute_settings(
             value = float(
                 median_bandwidth(
                     joint.first,
-                    first.log_weights[problem],
+                    first_log_weights,
                     joint.second,
-                    second.log_weights[problem],
+                    second_log_weights,
                     joint.space,
                     key=key("bandwidth"),
                 )
@@ -1207,9 +1212,9 @@ def _compute_settings(
             value = float(
                 sliced_sinkhorn_epsilon(
                     joint.first,
-                    first.log_weights[problem],
+                    first_log_weights,
                     joint.second,
-                    second.log_weights[problem],
+                    second_log_weights,
                     joint.space,
                     directions=sinkhorn_directions,
                     key=key("sliced_sinkhorn", "epsilon"),
@@ -1237,11 +1242,13 @@ def _shared_plan(
     """Return the null plan on the unwhitened samples, with the warnings it raised."""
     first_n_eff = float(first.n_eff[problem])
     second_n_eff = float(second.n_eff[problem])
+    first_samples, first_log_weights = problem_samples(first, problem)
+    second_samples, second_log_weights = problem_samples(second, problem)
     with errors.capture_warnings() as records:
         if arguments.construction is Construction.SPLIT_HALF:
             plan = split_half_null(
-                first.samples[problem],
-                first.log_weights[problem],
+                first_samples,
+                first_log_weights,
                 approximation_n_eff=second_n_eff,
                 key=key("null"),
                 reference_n_eff=first_n_eff,
@@ -1249,10 +1256,10 @@ def _shared_plan(
             )
         else:
             plan = permutation_null(
-                first.samples[problem],
-                first.log_weights[problem],
-                second.samples[problem],
-                second.log_weights[problem],
+                first_samples,
+                first_log_weights,
+                second_samples,
+                second_log_weights,
                 key=key("null"),
                 first_n_eff=first_n_eff,
                 second_n_eff=second_n_eff,
@@ -1268,7 +1275,7 @@ def _prepare_set(
     key: Callable[..., PRNGKeyArray],
 ) -> tuple[Array, float]:
     """Convert a whitened set to equal weights, and give its effective size."""
-    log_weights = posterior.log_weights[problem]
+    log_weights = problem_samples(posterior, problem)[1]
     kept = rejection_subset(
         samples, log_weights, key=key("knn", "prepare", posterior.name)
     )
@@ -1599,7 +1606,9 @@ def _compare_pair(
         provenance(arguments.seed, arguments.root, hashes, arguments.config_hash),
         provenance(arguments.seed, arguments.root, hashes[::-1], arguments.config_hash),
     )
-    samples = (first.samples[problem], second.samples[problem])
+    first_kept = problem_samples(first, problem)
+    second_kept = problem_samples(second, problem)
+    samples = (first_kept[0], second_kept[0])
     joint = _whiten_pair(
         built.joint, arguments.space, *samples, arguments.transform_text
     )
@@ -1667,9 +1676,9 @@ def _compare_pair(
                 assert whitened.second is not None
                 sets = _Sets(
                     whitened.first,
-                    first.log_weights[problem],
+                    first_kept[1],
                     whitened.second,
-                    second.log_weights[problem],
+                    second_kept[1],
                     float(first.n_eff[problem]),
                     float(second.n_eff[problem]),
                 )

@@ -34,11 +34,13 @@ def test_errors_keep_the_builtin_meaning() -> None:
     assert issubclass(errors.SchemaError, ValueError)
     assert issubclass(errors.MissingDependencyError, ImportError)
     assert issubclass(errors.ReportError, ValueError)
+    assert issubclass(errors.ConventionError, ValueError)
     for error_class in (
         errors.SchemaError,
         errors.MissingDependencyError,
         errors.CapabilityError,
         errors.ReportError,
+        errors.ConventionError,
     ):
         assert issubclass(error_class, errors.MixedSignalsError)
 

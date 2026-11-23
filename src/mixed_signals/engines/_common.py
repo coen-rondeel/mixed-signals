@@ -4,10 +4,19 @@ The engines read the same arguments, so their checks and conversions live here:
 the key of a call (:func:`read_key`), the names of the posteriors
 (:func:`unique_names`), the posteriors of one or several
 :class:`~mixed_signals.core.samples.SampleSet` objects
-(:func:`gather_posteriors`), the space text of a row (:func:`space_text`, and
+(:func:`gather_posteriors`), the samples of one problem that carry a weight
+(:func:`problem_samples`), the space text of a row (:func:`space_text`, and
 :func:`data_space_text` for the rows of data space) and its provenance
 (:func:`provenance`). The module is private: its functions are not part of the
 public interface and may change with the engines.
+
+Zero weights
+    A sample with a log weight of −∞ has no weight and no effect on any
+    estimate. Padding with such samples, as for sources that are in the chain
+    for part of a run, must not change a row, so the engines read each problem
+    through :func:`problem_samples`, which keeps the samples with a finite log
+    weight, and the input hashes and the Kish sizes of a posterior come from
+    these samples alone.
 """
 
 import json
@@ -17,10 +26,11 @@ from typing import Final, NamedTuple
 
 import jax
 import jax.numpy as jnp
+import numpy as np
 from jaxtyping import Array, Float, PRNGKeyArray
 
 from mixed_signals.core.result import Provenance, hash_arrays
-from mixed_signals.core.samples import SampleSet
+from mixed_signals.core.samples import SampleSet, kish_effective_sample_size
 from mixed_signals.core.space import ParamSpace
 from mixed_signals.prng import format_key, root_key
 from mixed_signals.transforms.base import COMPOSITION_SEPARATOR, Transform
@@ -44,7 +54,10 @@ class Posterior(NamedTuple):
     n_eff: Float[Array, " batch"]
     """The effective sample size of the posterior in every problem."""
     hashes: tuple[str, ...]
-    """SHA-256 digest of the samples and log weights of every problem, as input."""
+    """SHA-256 digest of the samples and log weights of every problem, as input.
+
+    The digest covers the samples with a finite log weight only.
+    """
 
 
 def read_key(key: object) -> tuple[PRNGKeyArray, int | None]:
@@ -162,12 +175,39 @@ def gather_posteriors(
     mapped_sets = (
         sets if transform is None else tuple(map(transform.map_sample_set, sets))
     )
+    set_sizes = tuple(_effective_sizes(mapped_set) for mapped_set in mapped_sets)
     return tuple(
-        _posterior(name, sets[set_position], mapped_sets[set_position], posterior)
+        _posterior(
+            name,
+            sets[set_position],
+            mapped_sets[set_position],
+            set_sizes[set_position],
+            posterior,
+        )
         for name, (set_position, posterior) in zip(
             posterior_names, members, strict=True
         )
     )
+
+
+def problem_samples(
+    posterior: Posterior, problem: int
+) -> tuple[Float[Array, "selected param"], Float[Array, " selected"]]:
+    """Return the samples and log weights of one problem that carry a weight.
+
+    Samples with a log weight of −∞ are dropped, so that padding with zero
+    weights never reaches a statistic, a null or a hash. The function reads
+    concrete arrays, as the per-problem code of the engines does.
+
+    Args:
+        posterior: The posterior, as the engine reads it.
+        problem: Index of the problem.
+
+    Returns:
+        The kept samples shaped (N_kept, D) and their log weights shaped
+        (N_kept,), in their input order.
+    """
+    return _kept(posterior.samples[problem], posterior.log_weights[problem])
 
 
 def flat_space(space: ParamSpace) -> ParamSpace:
@@ -260,8 +300,52 @@ def _read_sets(sample_sets: object) -> tuple[SampleSet, ...]:
     return tuple(sample_sets)
 
 
+def _kept(
+    samples: Float[Array, "sample param"], log_weights: Float[Array, " sample"]
+) -> tuple[Float[Array, "selected param"], Float[Array, " selected"]]:
+    """Return the samples with a finite log weight and their log weights."""
+    kept = jnp.flatnonzero(log_weights > -jnp.inf)
+    if kept.shape[0] == log_weights.shape[0]:
+        return samples, log_weights
+    return samples[kept], log_weights[kept]
+
+
+def _effective_sizes(
+    sample_set: SampleSet,
+) -> Float[Array, "batch posterior"]:
+    """Return ``n_eff``, or the Kish size of the samples that carry a weight.
+
+    A set whose every posterior keeps the same number of samples gives its Kish
+    sizes as one array of the kept log weights, so that padding with zero
+    weights leaves them bit for bit as without it. Where the kept counts
+    differ, each posterior of each problem gives its own Kish size.
+    """
+    if sample_set.n_eff is not None:
+        return sample_set.n_eff
+    log_weights = sample_set.log_weights
+    kept = log_weights > -jnp.inf
+    counts = np.asarray(jnp.sum(kept, axis=-1))
+    batch_size, posterior_count, _ = log_weights.shape
+    if counts.min() == counts.max():
+        return kish_effective_sample_size(
+            log_weights[kept].reshape(batch_size, posterior_count, int(counts.min()))
+        )
+    sizes = [
+        kish_effective_sample_size(
+            log_weights[problem, posterior][kept[problem, posterior]]
+        )
+        for problem in range(batch_size)
+        for posterior in range(posterior_count)
+    ]
+    return jnp.stack(sizes).reshape(batch_size, posterior_count)
+
+
 def _posterior(
-    name: str, input_set: SampleSet, mapped_set: SampleSet, posterior: int
+    name: str,
+    input_set: SampleSet,
+    mapped_set: SampleSet,
+    sizes: Float[Array, "batch posterior"],
+    posterior: int,
 ) -> Posterior:
     """Return one posterior: arrays of the mapped set, hashes of the input set."""
     input_samples = input_set.samples[:, posterior]
@@ -270,9 +354,9 @@ def _posterior(
         name=name,
         samples=mapped_set.samples[:, posterior],
         log_weights=mapped_set.log_weights[:, posterior],
-        n_eff=mapped_set.effective_sample_size()[:, posterior],
+        n_eff=sizes[:, posterior],
         hashes=tuple(
-            hash_arrays(input_samples[problem], input_log_weights[problem])
+            hash_arrays(*_kept(input_samples[problem], input_log_weights[problem]))
             for problem in range(input_samples.shape[0])
         ),
     )
