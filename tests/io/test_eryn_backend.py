@@ -1,7 +1,9 @@
 """Tests for reading eryn runs into ``Chains``, and the round trip to a space."""
 
+import contextlib
 import copy
 import math
+from collections.abc import Generator, Iterator
 from pathlib import Path
 from typing import Any, NamedTuple
 
@@ -27,6 +29,7 @@ THIN_BY = 2
 REPEATS = 3
 TWO_PI = 2 * math.pi
 FIXED_VALUE = 0.5
+NUMPY_SEED = 2026
 BRANCH = "model_0"
 FIELDS = (
     "samples",
@@ -38,6 +41,25 @@ FIELDS = (
     "swaps_accepted",
     "swaps_proposed",
 )
+
+
+@contextlib.contextmanager
+def seeded_numpy_state() -> Generator[None]:
+    """Seed NumPy's global random state, and restore it on exit."""
+    saved_state = np.random.get_state()  # noqa: NPY002
+    # ! eryn copies the global state when the sampler is built, so seed before that.
+    np.random.seed(NUMPY_SEED)  # noqa: NPY002
+    try:
+        yield
+    finally:
+        np.random.set_state(saved_state)  # noqa: NPY002
+
+
+@pytest.fixture(autouse=True)
+def seed_each_test() -> Iterator[None]:
+    """Run every test of the module from the seeded state."""
+    with seeded_numpy_state():
+        yield
 
 
 class Run(NamedTuple):
@@ -68,18 +90,19 @@ def log_like(points: np.ndarray, *args: Any) -> np.ndarray:
 def run_sampler(temp_count: int, backend: Any = None) -> Run:
     """Run a short tempered eryn sampler that stores every second step."""
     priors = run_priors()
-    sampler = ensemble.EnsembleSampler(
-        WALKER_COUNT,
-        3,
-        log_like,
-        priors,
-        tempering_kwargs={"ntemps": temp_count},
-        num_repeats_in_model=REPEATS,
-        periodic={BRANCH: {1: TWO_PI}},
-        backend=backend,
-    )
-    start = priors.rvs(size=(temp_count, WALKER_COUNT))
-    sampler.run_mcmc(start, STEP_COUNT, thin_by=THIN_BY, progress=False)
+    with seeded_numpy_state():
+        sampler = ensemble.EnsembleSampler(
+            WALKER_COUNT,
+            3,
+            log_like,
+            priors,
+            tempering_kwargs={"ntemps": temp_count},
+            num_repeats_in_model=REPEATS,
+            periodic={BRANCH: {1: TWO_PI}},
+            backend=backend,
+        )
+        start = priors.rvs(size=(temp_count, WALKER_COUNT))
+        sampler.run_mcmc(start, STEP_COUNT, thin_by=THIN_BY, progress=False)
     return Run(sampler, priors)
 
 
