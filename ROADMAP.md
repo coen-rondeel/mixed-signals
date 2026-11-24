@@ -26,7 +26,7 @@ The implementation is split into twenty focused sessions, numbered 0 to 19. They
 | 16 | Pipeline and CLI | F | 14 | Done (2026-11-21) |
 | 17 | Reports | F | 14 | Done (2026-11-22) |
 | 18 | GW subpackage | F | 7 | Done (2026-11-23) |
-| 19 | Release readiness | G | all | Open |
+| 19 | Release readiness | G | all | In progress: 19a |
 
 The critical path runs through sessions 0, 1, 2, 3 or 6, 8, 12, 14, 16 and 19. Session 8 needs both 3 and 6, so either one can delay it.
 
@@ -331,9 +331,27 @@ Outcome (2026-11-23): the developers decided thirty-six items, now in `DESIGN.md
 
 ### 19. Release readiness
 
-- A Sphinx user guide and API pages, the validation page, and marimo examples in `examples/`. The user guide covers the pipeline: the config format, whose reference is the docstring of `pipeline/config.py`, the run folder and the example pipeline of session 16. It also covers `gw.lisa` (session 18): holders built from catpylisa's posterior mapping, their conventions and transforms, and `compare_sources` with `match_indices`.
-- The next full build of the validation page, whichever session runs it, adds the six reweighting checks of session 13 (under a minute), the checks of session 14 in `scripts/zoo_validation/engines.py` and the costs grid (31 minutes) and the four data-space checks of session 15 in `scripts/zoo_validation/dataspace.py` (under two minutes), about 88 minutes in all; then link the docstrings that name `scripts/zoo_validation/reweighting.py`, `engines.py` and `dataspace.py` to their sections instead. Run it in High Power mode with the machine idle.
+The developers split the session into six parts on 2026-11-24, each with its own review and commit where it changes the repository. The developers test the package on real global-fit posteriors first, and the tutorials, examples and docs follow while they explore, so that each part can draw on the others. From this session on, the Sonnet 5.5 subagent writes all code, including the comparison scripts outside the repository, their notebook, the code cells of the tutorials and the examples; the main session writes the prose and reviews every line.
+
+**19a. Comparison of real posteriors.** In progress.
+
+- Comparison scripts outside the repository read the L2 files of two global fits with catpylisa's own readers, build `gw.lisa` holders and run three routes from one interface module: the pipeline and its report from sample archives and configs, the Python API, and catpylisa's own scaffold with its open comparison functions filled, to move into catpylisa later. A notebook shows the posteriors against their injections with PP plots, the diagnostics of each fit and the distances between the fits. MBHBs come first; the scripts handle every source type.
+- Package fixes that real files need, as their own commit: the MBHB reference frequency defaults to 0, whole-number float source ids read as integers, `LisaSources.with_bounds` sets prior bounds after transforms, and the mass forms gain the inverted ratio Q = m₁/m₂. The specification is `scratchpad/spec_session19a_package.md` of session 74ad2528, and the scripts follow `scratchpad/spec_session19a_scripts.md`.
+- Done when the package fixes pass every check and the three routes and the notebook run on catpylisa's test files, a self-comparison flags no row, and a copy whose chirp mass moves by 0.3 of its width flags where the self-comparison does not.
+
+**19b. Tutorials.** Executed MyST-NB pages in `docs/tutorials/` on the validation zoo and synthetic LISA holders, which teach the package step by step: a first comparison, spaces and diagnostics, chains with the pipeline and the report, and LISA sources. They address any Bayesian practitioner and explain both how and why, so each page reads on its own; the LISA tutorial draws its synthetic posteriors inline. myst-nb and ipykernel join the docs group.
+
+**19c. Examples.** marimo notebooks in `examples/`, among them a LISA example on synthetic holders that the exploration of 19a helps to make realistic.
+
+**19d. User guide and API pages.** A Sphinx user guide and API pages next to the validation page; the README and the index lose their status of early development. The user guide covers the pipeline: the config format, whose reference is the docstring of `pipeline/config.py`, the run folder and the example pipeline of session 16. It also covers `gw.lisa` (session 18): holders built from catpylisa's posterior mapping, their conventions and transforms, `with_bounds`, and `compare_sources` with `match_indices`.
+
+**19e. Checks that need the machine or a cluster alone.**
+
+- The next full build of the validation page adds the six reweighting checks of session 13 (under a minute), the checks of session 14 in `scripts/zoo_validation/engines.py` and the costs grid (31 minutes) and the four data-space checks of session 15 in `scripts/zoo_validation/dataspace.py` (under two minutes), about 88 minutes in all; then link the docstrings that name `scripts/zoo_validation/reweighting.py`, `engines.py` and `dataspace.py` to their sections instead. Run it in High Power mode with the machine idle, so not while comparisons of 19a run.
 - The GPU suite on the cluster with a single GPU, and a performance check. It includes `reweight`, whose `pareto_tail` compiles once per distinct tail length, so a batch of MCMC sets with different relative efficiencies compiles once per set; the developers accepted this in session 13. It also includes `compare`, `diagnose` and `compare_signals`, whose distance matrices need 8P² bytes, 3.2 GB at the cap; the cost model of `engines/cost.py` holds for one CPU of the developers' machine, so its estimates overstate a GPU run.
 - Benchmark `SAMPLE_CAP` per metric. At the cap, one kNN JS evaluation took 9.5 s and one MMD² evaluation 0.3 s on one CPU (session 9); the developers kept one cap for now, because it is easy to tune.
+
+**19f. Release.**
+
 - Release blockers: reserve `mixed-signals` on PyPI, wait for eryn to release its JAX-compatible prior setup, now on its `feat-jaxpriors` branch, and wait for an ott-jax release with the fix of its online mode (ott-jax pull request 701), now pinned at a commit of its main branch, because a published package cannot depend on git sources.
 - Done when version 0.1.0 can be published.

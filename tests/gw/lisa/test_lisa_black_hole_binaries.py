@@ -1,5 +1,6 @@
 """Tests for the holders of binary black holes: masses, redshift, epochs and spins."""
 
+import dataclasses
 import math
 from collections.abc import Callable
 from typing import Any
@@ -9,6 +10,7 @@ import numpy as np
 import pytest
 from astropy.cosmology import Planck15, z_at_value
 
+from mixed_signals.core.samples import SampleSet
 from mixed_signals.errors import ConventionError
 from mixed_signals.gw.lisa import (
     BlackHoleBinarySources,
@@ -27,6 +29,8 @@ TYPES: dict[str, tuple[type[BlackHoleBinarySources], str]] = {
 }
 COUNTS = {"alpha": 16, "beta": 12, "gamma": 14}
 TWO_PI = 2 * math.pi
+# * Each mass form as (chirp mass instead of total mass, inverted mass ratio Q = m1/m2).
+FORMS = [(False, False), (False, True), (True, False), (True, True)]
 
 
 def binaries(posteriors: Builder, kind: str, **keywords: Any) -> BlackHoleBinarySources:
@@ -41,6 +45,28 @@ def binaries(posteriors: Builder, kind: str, **keywords: Any) -> BlackHoleBinary
 def column(sources: BlackHoleBinarySources, name: str) -> np.ndarray:
     """Return one parameter of the full vector, shaped (B, N)."""
     return np.asarray(sources._column(name))
+
+
+def in_form(
+    sources: BlackHoleBinarySources, form: tuple[bool, bool]
+) -> BlackHoleBinarySources:
+    """Convert a holder to the mass form (chirp, inverted) through its public method."""
+    chirp, inverted = form
+    if chirp:
+        return sources.to_chirp_mass_and_mass_ratio(inverted=inverted)
+    return sources.to_total_mass_and_mass_ratio(inverted=inverted)
+
+
+def closed_form(
+    primary: np.ndarray, secondary: np.ndarray, form: tuple[bool, bool]
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Return the mass, the ratio and ln(mass/denominator²) of a form, from NumPy."""
+    chirp, inverted = form
+    total = primary + secondary
+    mass = (primary * secondary) ** 0.6 / total**0.2 if chirp else total
+    ratio = primary / secondary if inverted else secondary / primary
+    denominator = secondary if inverted else primary
+    return mass, ratio, np.log(mass / denominator**2)
 
 
 # * Mass quantities
@@ -200,12 +226,108 @@ def test_mass_parametrisations_convert_and_round_trip(
     )
 
 
+@pytest.mark.parametrize("target", FORMS)
+@pytest.mark.parametrize("source", FORMS)
+def test_every_mass_form_converts_to_every_other_through_the_components(
+    lisa_posteriors: Builder, source: tuple[bool, bool], target: tuple[bool, bool]
+) -> None:
+    """Values follow the closed forms, and log_prior moves by both Jacobians."""
+    sources = binaries(lisa_posteriors, "massive_black_hole_binary")
+    primary = column(sources, "primary_mass_det_frame")
+    secondary = column(sources, "secondary_mass_det_frame")
+    start = in_form(sources, source)
+    converted = in_form(start, target)
+    mass, ratio, log_determinant = closed_form(primary, secondary, target)
+    names = converted.parameter_names[:2]
+    assert names == (
+        "chirp_mass_det_frame" if target[0] else "total_mass_det_frame",
+        "inverted_mass_ratio" if target[1] else "mass_ratio",
+    )
+    np.testing.assert_allclose(column(converted, names[0]), mass, rtol=1e-10)
+    np.testing.assert_allclose(column(converted, names[1]), ratio, rtol=1e-10)
+    start_log_determinant = closed_form(primary, secondary, source)[2]
+    np.testing.assert_allclose(
+        np.asarray(converted.values.log_prior)[:, 0]
+        - np.asarray(start.values.log_prior)[:, 0],
+        start_log_determinant - log_determinant,
+        atol=1e-10,
+    )
+    np.testing.assert_allclose(
+        np.asarray(converted.values.log_prior)[:, 0],
+        np.asarray(sources.values.log_prior)[:, 0] - log_determinant,
+        atol=1e-10,
+    )
+    back = converted.to_component_masses()
+    np.testing.assert_allclose(back.values.samples, sources.values.samples, rtol=1e-10)
+    assert back.space == sources.space
+    assert back.parameter_names == sources.parameter_names
+
+
+@pytest.mark.parametrize("form", FORMS)
+def test_a_holder_in_the_target_form_is_returned_unchanged(
+    lisa_posteriors: Builder, form: tuple[bool, bool]
+) -> None:
+    """The same mass and ratio return the holder itself, with its values and space."""
+    sources = binaries(lisa_posteriors, "massive_black_hole_binary")
+    primary = column(sources, "primary_mass_det_frame")
+    secondary = column(sources, "secondary_mass_det_frame")
+    mapped = in_form(sources, form)
+    again = in_form(mapped, form)
+    assert again is mapped
+    mass, ratio, log_determinant = closed_form(primary, secondary, form)
+    np.testing.assert_allclose(again.values.samples[:, 0, :, 0], mass, rtol=1e-12)
+    np.testing.assert_allclose(again.values.samples[:, 0, :, 1], ratio, rtol=1e-12)
+    np.testing.assert_allclose(
+        np.asarray(again.values.log_prior)[:, 0],
+        np.asarray(sources.values.log_prior)[:, 0] - log_determinant,
+        atol=1e-10,
+    )
+    ratio_name, ratio_bounds = (
+        ("inverted_mass_ratio", (1.0, math.inf))
+        if form[1]
+        else ("mass_ratio", (0.0, 1.0))
+    )
+    assert again.space.names[1] == ratio_name
+    assert again.space[ratio_name].bounds == ratio_bounds
+    other_ratio = in_form(mapped, (form[0], not form[1]))
+    assert other_ratio is not mapped
+    assert other_ratio.parameter_names[1] != mapped.parameter_names[1]
+
+
+def test_the_mass_forms_convert_for_either_order_of_the_masses(
+    lisa_posteriors: Builder,
+) -> None:
+    """The conversions are defined for any positive masses: m₁ < m₂ gives Q < 1."""
+    sources = binaries(lisa_posteriors, "massive_black_hole_binary")
+    fields = sources.values.to_arrays("numpy", copy=True)
+    samples = fields["samples"].copy()
+    samples[..., [0, 1]] = samples[..., [1, 0]]
+    swapped = dataclasses.replace(
+        sources, values=SampleSet(**{**fields, "samples": samples})
+    )
+    converted = swapped.to_total_mass_and_mass_ratio(inverted=True)
+    ratio = column(converted, "inverted_mass_ratio")
+    assert (ratio < 1.0).all()
+    np.testing.assert_allclose(
+        ratio,
+        column(swapped, "primary_mass_det_frame")
+        / column(swapped, "secondary_mass_det_frame"),
+        rtol=1e-14,
+    )
+    np.testing.assert_allclose(
+        converted.to_component_masses().values.samples, samples, rtol=1e-12
+    )
+
+
 def test_the_mass_ratio_space_has_the_edge_at_one(lisa_posteriors: Builder) -> None:
     """The mass ratio lies in (0, 1], and the masses keep their detector-frame units."""
     sources = binaries(lisa_posteriors, "massive_black_hole_binary")
     chirp = sources.to_chirp_mass_and_mass_ratio()
     assert chirp.space["mass_ratio"].bounds == (0.0, 1.0)
     assert chirp.space["chirp_mass_det_frame"].unit == "Msun"
+    inverted = sources.to_chirp_mass_and_mass_ratio(inverted=True)
+    assert inverted.space["inverted_mass_ratio"].bounds == (1.0, math.inf)
+    assert inverted.space["inverted_mass_ratio"].label == "Q"
     with pytest.raises(ValueError, match="carry prior bounds"):
         binaries(
             lisa_posteriors,
@@ -214,22 +336,46 @@ def test_the_mass_ratio_space_has_the_edge_at_one(lisa_posteriors: Builder) -> N
         ).to_total_mass_and_mass_ratio()
 
 
-def test_the_properties_read_the_masses_in_every_form(lisa_posteriors: Builder) -> None:
-    """The mass properties give the same values from the total and the chirp form."""
-    sources = binaries(lisa_posteriors, "stellar_origin_binary_black_hole")
-    for form in (
-        sources.to_total_mass_and_mass_ratio(),
-        sources.to_chirp_mass_and_mass_ratio(),
-    ):
-        np.testing.assert_allclose(
-            form.symmetric_mass_ratio, sources.symmetric_mass_ratio, rtol=1e-12
-        )
-        np.testing.assert_allclose(
-            form.inverted_mass_ratio, sources.inverted_mass_ratio, rtol=1e-12
-        )
-        np.testing.assert_allclose(
-            form.source_frame_chirp_mass, sources.source_frame_chirp_mass, rtol=1e-11
-        )
+@pytest.mark.parametrize("kind", TYPES)
+def test_the_properties_read_the_masses_in_every_form(
+    lisa_posteriors: Builder, kind: str
+) -> None:
+    """The mass properties agree across the four forms and the components."""
+    sources = binaries(lisa_posteriors, kind)
+    for target in FORMS:
+        form = in_form(sources, target)
+        for name in (
+            "total_mass",
+            "mass_ratio",
+            "inverted_mass_ratio",
+            "reduced_mass",
+            "symmetric_mass_ratio",
+            "chirp_mass",
+            "source_frame_primary_mass",
+            "source_frame_secondary_mass",
+            "source_frame_total_mass",
+            "source_frame_chirp_mass",
+        ):
+            np.testing.assert_allclose(
+                getattr(form, name), getattr(sources, name), rtol=1e-11
+            )
+
+
+def test_the_properties_keep_working_with_bounds_on_the_mass_forms(
+    lisa_posteriors: Builder,
+) -> None:
+    """with_bounds does not stop the derived masses, which need no holder transform."""
+    sources = binaries(lisa_posteriors, "massive_black_hole_binary")
+    bounded = sources.to_chirp_mass_and_mass_ratio(inverted=True).with_bounds(
+        {"chirp_mass_det_frame": (1e5, 1e8), "inverted_mass_ratio": (1.0, 10.0)}
+    )
+    assert isinstance(bounded, BlackHoleBinarySources)
+    np.testing.assert_allclose(bounded.total_mass, sources.total_mass, rtol=1e-12)
+    np.testing.assert_allclose(bounded.mass_ratio, sources.mass_ratio, rtol=1e-12)
+    np.testing.assert_allclose(
+        bounded.inverted_mass_ratio, sources.inverted_mass_ratio, rtol=1e-12
+    )
+    np.testing.assert_allclose(bounded.chirp_mass, sources.chirp_mass, rtol=1e-12)
 
 
 # * Epochs

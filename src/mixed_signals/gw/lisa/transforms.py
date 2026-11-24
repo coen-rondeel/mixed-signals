@@ -30,8 +30,9 @@ Phase combinations
     is unchanged.
 Masses
     :class:`MassPairTransform` maps the detector-frame masses (m₁, m₂) to the
-    total mass and the mass ratio, or to the chirp mass and the mass ratio, and
-    back (SGS Section 2.3).
+    total mass and the mass ratio q = m₂/m₁, or to the chirp mass and the mass
+    ratio, and back (SGS Section 2.3). With ``inverted=True`` the ratio is
+    Q = m₁/m₂.
 Chirp mass and distance
     :class:`ChirpMassAndDistanceTransform` maps (ḟ, 𝒜) of a Galactic binary to
     the chirp mass and the distance with the leading-order chirp of
@@ -90,6 +91,39 @@ _ICRS_SUFFIX: Final = "_icrs"
 _ECLIPTIC_SUFFIX: Final = "_ecliptic"
 _GALACTIC_SPECS: Final = {spec.name: spec for spec in GALACTIC_BINARY_SPECS}
 _MASS_SPECS: Final = {spec.name: spec for spec in MBHB_SPECS}
+# * The parameters that MassPairTransform.map_space gives, by name; the domains of
+# * with_bounds come from here.
+_MASS_FORM_PARAMETERS: Final = {
+    parameter.name: parameter
+    for parameter in (
+        Parameter(
+            name="total_mass_det_frame",
+            label=r"M_{\mathrm{det}}",
+            unit="Msun",
+            topology=Topology.INTERVAL,
+            bounds=(0.0, math.inf),
+        ),
+        Parameter(
+            name="chirp_mass_det_frame",
+            label=r"\mathcal{M}_{\mathrm{det}}",
+            unit="Msun",
+            topology=Topology.INTERVAL,
+            bounds=(0.0, math.inf),
+        ),
+        Parameter(
+            name="mass_ratio",
+            label="q",
+            topology=Topology.INTERVAL,
+            bounds=(0.0, 1.0),
+        ),
+        Parameter(
+            name="inverted_mass_ratio",
+            label="Q",
+            topology=Topology.INTERVAL,
+            bounds=(1.0, math.inf),
+        ),
+    )
+}
 # * A kiloparsec is a thousand parsecs; the Galactic-binary distance is in kpc.
 _KILOPARSEC_PER_PARSEC: Final = 1_000.0
 
@@ -696,11 +730,28 @@ class MassPairTransform(Transform):
     the maps in the other direction. The edge m₁ = m₂ becomes the bound q = 1
     (:cite:t:`papamakarios2021normalizing`).
 
+    The inverted mass ratio Q = 1/q = m₁/m₂ ≥ 1 is the form in which some priors
+    are set. With ``inverted=True`` the ratio is Q and the edge m₁ = m₂ becomes
+    Q = 1. The inverse then solves for m₂ first: m₂ = M/(1 + Q) or
+    m₂ = 𝓜(1 + Q)^{1/5}Q^{−3/5}, and m₁ = Qm₂. The Jacobian determinants of the
+    forward maps are M/m₂² and 𝓜/m₂². The maps are defined for any positive
+    masses; only the intervals of q and Q assume m₁ ≥ m₂.
+
+    Derivation of the Jacobian
+        M and 𝓜 are homogeneous of degree one in (m₁, m₂), so Euler's theorem
+        gives m₁ ∂mass/∂m₁ + m₂ ∂mass/∂m₂ = mass. For q = m₂/m₁ the
+        determinant of (m₁, m₂) → (mass, q) is
+        (m₁ ∂mass/∂m₁ + m₂ ∂mass/∂m₂)/m₁² = mass/m₁². For Q = m₁/m₂ it is
+        −(m₁ ∂mass/∂m₁ + m₂ ∂mass/∂m₂)/m₂² = −mass/m₂², and its absolute value
+        is mass/m₂².
+
     Attributes:
         primary: Position of m₁ in the vector, which M or 𝓜 takes.
-        secondary: Position of m₂, which q takes.
+        secondary: Position of m₂, which the ratio takes.
         chirp: ``True`` for the chirp mass, ``False`` for the total mass.
-        to_ratio: ``True`` for (m₁, m₂) to the mass and q, ``False`` for the inverse.
+        to_ratio: ``True`` for (m₁, m₂) to the mass and the ratio, ``False``
+            for the inverse.
+        inverted: ``True`` for Q = m₁/m₂, ``False`` for q = m₂/m₁.
 
     References:
         :cite:t:`baghi2026lisa`; :cite:t:`papamakarios2021normalizing`.
@@ -710,6 +761,7 @@ class MassPairTransform(Transform):
     secondary: int = eqx.field(static=True)
     chirp: bool = eqx.field(static=True)
     to_ratio: bool = eqx.field(static=True)
+    inverted: bool = eqx.field(static=True, default=False)
 
     def touched_names(self, space: ParamSpace) -> tuple[str, ...]:
         """Return the names of the two parameters that the map changes."""
@@ -724,37 +776,39 @@ class MassPairTransform(Transform):
         mass = (
             (primary * secondary) ** (3 / 5) / total ** (1 / 5) if self.chirp else total
         )
-        return (
-            points.at[..., self.primary]
-            .set(mass)
-            .at[..., self.secondary]
-            .set(secondary / primary)
-        )
+        ratio = primary / secondary if self.inverted else secondary / primary
+        return points.at[..., self.primary].set(mass).at[..., self.secondary].set(ratio)
 
     def _to_components(
         self, points: Float[Array, "*leading param"]
     ) -> Float[Array, "*leading param"]:
         mass = points[..., self.primary]
         ratio = points[..., self.secondary]
-        primary = (
+        # * The ratio is numerator over denominator mass: m₂ over m₁, or m₁ over m₂
+        # * if inverted; the denominator mass solves first.
+        denominator = (
             mass * (1 + ratio) ** (1 / 5) * ratio ** (-3 / 5)
             if self.chirp
             else mass / (1 + ratio)
+        )
+        numerator = ratio * denominator
+        primary, secondary = (
+            (numerator, denominator) if self.inverted else (denominator, numerator)
         )
         return (
             points.at[..., self.primary]
             .set(primary)
             .at[..., self.secondary]
-            .set(ratio * primary)
+            .set(secondary)
         )
 
     def _log_determinant_of_ratio_map(
         self, components: Float[Array, "*leading param"]
     ) -> Float[Array, " *leading"]:
-        """Return ln(M/m₁²) or ln(𝓜/m₁²) at points that hold the components."""
-        primary = components[..., self.primary]
+        """Return ln(mass/m₁²), or ln(mass/m₂²) if inverted, at the components."""
+        denominator = components[..., self.secondary if self.inverted else self.primary]
         mapped = self._to_ratio(components)[..., self.primary]
-        return jnp.log(mapped) - 2 * jnp.log(primary)
+        return jnp.log(mapped) - 2 * jnp.log(denominator)
 
     def forward(
         self, points: Float[Array, "*leading param"]
@@ -781,32 +835,21 @@ class MassPairTransform(Transform):
         """The mass parameters that the map produces."""
         if not self.to_ratio:
             return "component_masses"
-        return (
-            "chirp_mass_and_mass_ratio" if self.chirp else "total_mass_and_mass_ratio"
-        )
+        mass = "chirp_mass" if self.chirp else "total_mass"
+        ratio = "inverted_mass_ratio" if self.inverted else "mass_ratio"
+        return f"{mass}_and_{ratio}"
 
     def map_space(self, space: ParamSpace) -> ParamSpace:
         """Return the space with the mass and the mass ratio in place of the masses."""
         if self.to_ratio:
-            mass_name, mass_label = (
-                ("chirp_mass_det_frame", r"\mathcal{M}_{\mathrm{det}}")
-                if self.chirp
-                else ("total_mass_det_frame", r"M_{\mathrm{det}}")
-            )
-            mass = Parameter(
-                name=mass_name,
-                label=mass_label,
-                unit="Msun",
-                topology=Topology.INTERVAL,
-                bounds=(0.0, math.inf),
-            )
-            ratio = Parameter(
-                name="mass_ratio",
-                label="q",
-                topology=Topology.INTERVAL,
-                bounds=(0.0, 1.0),
-            )
-            replacements = {self.primary: mass, self.secondary: ratio}
+            replacements = {
+                self.primary: _MASS_FORM_PARAMETERS[
+                    "chirp_mass_det_frame" if self.chirp else "total_mass_det_frame"
+                ],
+                self.secondary: _MASS_FORM_PARAMETERS[
+                    "inverted_mass_ratio" if self.inverted else "mass_ratio"
+                ],
+            }
         else:
             replacements = {
                 self.primary: frame_parameter(

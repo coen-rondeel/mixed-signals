@@ -20,8 +20,13 @@ frame (:meth:`~mixed_signals.gw.lisa.sources.LisaSources.to_icrs` and
 ``to_ecliptic``), the epoch of Galactic binaries and massive black-hole binaries
 (``at_epoch``), and the opt-in forms of the parameters: the chirp mass and
 distance of Galactic binaries, their phase combinations, and the total or chirp
-mass and the mass ratio of binary black holes. The differences between the codes
-of the global fits are out of scope.
+mass of binary black holes with the mass ratio q = m₂/m₁ or the inverted mass
+ratio Q = m₁/m₂ (``to_total_mass_and_mass_ratio`` and
+``to_chirp_mass_and_mass_ratio``, with ``inverted=True`` for Q). A prior bound
+on a transformed parameter is set after the transform with
+:meth:`~mixed_signals.gw.lisa.sources.LisaSources.with_bounds`, because
+transforms refuse bounded parameters. The differences between the codes of the
+global fits are out of scope.
 
 The package needs the ``gw`` extra (``pip install "mixed-signals[gw]"``) for the
 constants of lisaconstants and the Planck15 cosmology of astropy. Importing this

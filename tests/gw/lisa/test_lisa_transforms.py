@@ -12,6 +12,7 @@ from astropy.coordinates import BarycentricMeanEcliptic, SkyCoord
 
 from mixed_signals.core.samples import SampleSet
 from mixed_signals.core.space import Parameter, ParamSpace
+from mixed_signals.core.topology import Topology
 from mixed_signals.errors import ConventionError
 from mixed_signals.gw.lisa import (
     ExtremeMassRatioInspirals,
@@ -751,6 +752,111 @@ def test_mass_pair_spaces_and_descriptions(lisa_posteriors: Builder) -> None:
         "primary_mass_det_frame",
         "secondary_mass_det_frame",
     )
+
+
+@pytest.mark.parametrize("secondary_is_heavier", [False, True])
+@pytest.mark.parametrize("chirp", [False, True])
+def test_inverted_mass_pairs_follow_their_closed_forms(
+    lisa_posteriors: Builder, chirp: bool, secondary_is_heavier: bool
+) -> None:
+    """(M, Q) and (𝓜, Q) with Q = m₁/m₂: the inverse and both Jacobians, any order."""
+    space = full_space_of(lisa_posteriors, "massive_black_hole_binary")
+    points = draw_points(space)
+    if secondary_is_heavier:
+        points = points.at[:, [0, 1]].set(points[:, [1, 0]])
+    forward = MassPairTransform(
+        primary=0, secondary=1, chirp=chirp, to_ratio=True, inverted=True
+    )
+    backward = MassPairTransform(
+        primary=0, secondary=1, chirp=chirp, to_ratio=False, inverted=True
+    )
+    mapped_jax = forward.forward(points)
+    mapped = np.asarray(mapped_jax)
+    first, second = np.asarray(points[:, 0]), np.asarray(points[:, 1])
+    total = first + second
+    mass = (first * second) ** 0.6 / total**0.2 if chirp else total
+    np.testing.assert_allclose(mapped[:, 0], mass, rtol=1e-13)
+    np.testing.assert_allclose(mapped[:, 1], first / second, rtol=1e-13)
+    assert ((mapped[:, 1] < 1) == secondary_is_heavier).all()
+    np.testing.assert_allclose(forward.inverse(mapped_jax), points, rtol=1e-12)
+    np.testing.assert_allclose(backward.forward(mapped_jax), points, rtol=1e-12)
+    np.testing.assert_allclose(backward.inverse(points), mapped, rtol=1e-12)
+    expected = np.log(mass / second**2)
+    np.testing.assert_allclose(
+        forward.log_abs_det_jacobian(points), expected, rtol=1e-12
+    )
+    np.testing.assert_allclose(
+        forward.log_abs_det_jacobian(points),
+        log_determinant_by_autodiff(forward, points),
+        rtol=0,
+        atol=1e-12,
+    )
+    np.testing.assert_allclose(
+        backward.log_abs_det_jacobian(mapped_jax),
+        log_determinant_by_autodiff(backward, mapped_jax),
+        rtol=0,
+        atol=1e-12,
+    )
+    np.testing.assert_allclose(
+        backward.log_abs_det_jacobian(mapped_jax), -expected, rtol=1e-12
+    )
+
+
+@pytest.mark.parametrize("chirp", [False, True])
+def test_the_two_mass_ratios_are_inverse_and_their_jacobians_differ_by_the_ratio(
+    lisa_posteriors: Builder, chirp: bool
+) -> None:
+    """Q = 1/q for the same mass, and the log-determinants differ by 2 ln Q."""
+    space = full_space_of(lisa_posteriors, "massive_black_hole_binary")
+    points = draw_points(space)
+    ratio = MassPairTransform(primary=0, secondary=1, chirp=chirp, to_ratio=True)
+    inverted = MassPairTransform(
+        primary=0, secondary=1, chirp=chirp, to_ratio=True, inverted=True
+    )
+    by_q, by_inverted_q = ratio.forward(points), inverted.forward(points)
+    np.testing.assert_allclose(by_q[:, 0], by_inverted_q[:, 0], rtol=1e-14)
+    np.testing.assert_allclose(by_q[:, 1] * by_inverted_q[:, 1], 1.0, rtol=1e-14)
+    np.testing.assert_allclose(
+        inverted.log_abs_det_jacobian(points) - ratio.log_abs_det_jacobian(points),
+        2 * np.log(np.asarray(by_inverted_q[:, 1])),
+        rtol=1e-12,
+    )
+
+
+def test_inverted_mass_pair_spaces_and_descriptions(lisa_posteriors: Builder) -> None:
+    """The mapped space names Q with the bounds [1, ∞), and the four descriptions."""
+    space = full_space_of(lisa_posteriors, "massive_black_hole_binary")
+    total = MassPairTransform(
+        primary=0, secondary=1, chirp=False, to_ratio=True, inverted=True
+    )
+    chirp = MassPairTransform(
+        primary=0, secondary=1, chirp=True, to_ratio=True, inverted=True
+    )
+    mapped = total.map_space(space)
+    assert mapped.names[:2] == ("total_mass_det_frame", "inverted_mass_ratio")
+    ratio = mapped["inverted_mass_ratio"]
+    assert (ratio.label, ratio.unit, ratio.bounds) == ("Q", None, (1.0, math.inf))
+    assert ratio.topology is Topology.INTERVAL
+    assert mapped["total_mass_det_frame"].bounds == (0.0, math.inf)
+    assert chirp.map_space(space).names[:2] == (
+        "chirp_mass_det_frame",
+        "inverted_mass_ratio",
+    )
+    plain = MassPairTransform(primary=0, secondary=1, chirp=False, to_ratio=True)
+    assert plain.map_space(space).names[:2] == ("total_mass_det_frame", "mass_ratio")
+    assert plain.map_space(space)["mass_ratio"].bounds == (0.0, 1.0)
+    back = MassPairTransform(
+        primary=0, secondary=1, chirp=False, to_ratio=False, inverted=True
+    )
+    assert back.map_space(mapped) == space
+    assert plain.description == "total_mass_and_mass_ratio"
+    assert total.description == "total_mass_and_inverted_mass_ratio"
+    assert chirp.description == "chirp_mass_and_inverted_mass_ratio"
+    assert (
+        MassPairTransform(primary=0, secondary=1, chirp=True, to_ratio=True).description
+        == "chirp_mass_and_mass_ratio"
+    )
+    assert back.description == "component_masses"
 
 
 # * The chirp mass and the distance

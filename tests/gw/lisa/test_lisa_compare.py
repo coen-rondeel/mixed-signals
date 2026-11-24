@@ -3,6 +3,7 @@
 import dataclasses
 from collections.abc import Callable
 from typing import Any
+from unittest.mock import Mock
 
 import numpy as np
 import polars as pl
@@ -188,6 +189,30 @@ def test_match_indices_reads_integer_ids(lisa_posteriors: Builder) -> None:
         match_indices(first, second, [(7, 1)])
     with pytest.raises(TypeError, match="must not be booleans"):
         match_indices(first, second, [(True, 1)])
+
+
+def test_match_indices_reads_whole_float_ids(lisa_posteriors: Builder) -> None:
+    """The float64 ids of catpylisa's MBHB catalogs match the holders' strings."""
+    counts = {"1": 30, "2": 30, "3": 30}
+    first = GalacticBinaries.from_posteriors(
+        lisa_posteriors("galactic_binary", counts, seed=1), name="erebor", epoch=0.0
+    )
+    keyed = {
+        float(key): table
+        for key, table in lisa_posteriors("galactic_binary", counts, seed=2).items()
+    }
+    second = GalacticBinaries.from_posteriors(keyed, name="geemoo", epoch=0.0)
+    assert second.source_ids == ("1", "2", "3")
+    pairs = match_indices(
+        first,
+        second,
+        [(1.0, 3.0), (np.float64(2.0), "1"), (np.float32(3.0), np.int32(2))],
+    )
+    assert pairs.tolist() == [[0, 2], [1, 0], [2, 1]]
+    with pytest.raises(ValueError, match=r"unknown source ids: \['7'\] in the first"):
+        match_indices(first, second, [(7.0, 1.0)])
+    with pytest.raises(ValueError, match="finite and whole"):
+        match_indices(first, second, [(1.5, 1.0)])
 
 
 def test_the_matches_are_checked(lisa_posteriors: Builder) -> None:
@@ -462,3 +487,130 @@ def test_parameters_defined_differently_are_refused(lisa_posteriors: Builder) ->
         compare_sources(
             first, dataclasses.replace(second, full_space=circles), **KEYWORDS
         )
+
+
+# * Massive black-hole binaries: the reference frequency, the mass forms and the bounds
+
+MBHB_COUNTS = {"a": 30, "b": 30, "c": 30}
+MBHB_KEYWORDS: dict[str, Any] = {
+    "key": 5,
+    "draws": 10,
+    "cap": 40,
+    "metrics": ["mean_shift"],
+}
+
+
+def mbhb_holder(
+    posteriors: Builder, name: str, seed: int, **keywords: Any
+) -> MassiveBlackHoleBinaries:
+    """Build a global fit of three massive black-hole binaries."""
+    return MassiveBlackHoleBinaries.from_posteriors(
+        posteriors("massive_black_hole_binary", MBHB_COUNTS, seed=seed),
+        name=name,
+        epoch=0.0,
+        source_frame="J",
+        **keywords,
+    )
+
+
+def mbhb_fields(
+    posteriors: Builder, seed: int, **replacements: np.ndarray
+) -> dict[str, dict[str, np.ndarray]]:
+    """Return the fields of three massive black-hole binaries, some columns replaced."""
+    data = posteriors("massive_black_hole_binary", MBHB_COUNTS, seed=seed)
+    return {
+        source: {name: table[name] for name in table.dtype.names or ()} | replacements
+        for source, table in data.items()
+    }
+
+
+def test_matched_sources_must_share_the_reference_frequency_setting(
+    lisa_posteriors: Builder,
+) -> None:
+    """A default of 0 against a constant 1e-3 raises, and two defaults agree."""
+    reference = "frequency_at_reference_time"
+    defaults = []
+    for name, seed in (("erebor", 1), ("geemoo", 2)):
+        fields = mbhb_fields(lisa_posteriors, seed)
+        for table in fields.values():
+            del table[reference]
+        defaults.append(
+            MassiveBlackHoleBinaries.from_posteriors(
+                fields, name=name, epoch=0.0, source_frame="J"
+            )
+        )
+    first, second = defaults
+    assert first.settings[reference].to_list() == [0.0] * 3
+    assert compare_sources(first, second, **MBHB_KEYWORDS).pairs.height == 3
+    other = MassiveBlackHoleBinaries.from_posteriors(
+        mbhb_fields(lisa_posteriors, 2, **{reference: np.full(30, 1e-3)}),
+        name="geemoo",
+        epoch=0.0,
+        source_frame="J",
+    )
+    assert other.settings[reference].to_list() == [1e-3] * 3
+    with pytest.raises(
+        ConventionError,
+        match=(
+            "matched sources 'a' and 'a' differ in the setting"
+            " 'frequency_at_reference_time': 0\\.0 and 0\\.001"
+        ),
+    ):
+        compare_sources(first, other, **MBHB_KEYWORDS)
+
+
+def test_holders_in_different_mass_forms_are_refused(lisa_posteriors: Builder) -> None:
+    """(M, Q) against (M, q) differ in a sampled parameter, and so do other forms."""
+    first = mbhb_holder(lisa_posteriors, "erebor", 1).to_total_mass_and_mass_ratio(
+        inverted=True
+    )
+    second = mbhb_holder(lisa_posteriors, "geemoo", 2).to_total_mass_and_mass_ratio()
+    with pytest.raises(
+        ConventionError,
+        match=(
+            "'inverted_mass_ratio' is sampled in 'erebor' and absent in 'geemoo';"
+            " 'mass_ratio' is sampled in 'geemoo' and absent in 'erebor'"
+        ),
+    ):
+        compare_sources(first, second, **MBHB_KEYWORDS)
+    chirp = mbhb_holder(lisa_posteriors, "geemoo", 2).to_chirp_mass_and_mass_ratio(
+        inverted=True
+    )
+    with pytest.raises(ConventionError, match="'total_mass_det_frame' is sampled"):
+        compare_sources(first, chirp, **MBHB_KEYWORDS)
+    aligned = mbhb_holder(lisa_posteriors, "geemoo", 2).to_total_mass_and_mass_ratio(
+        inverted=True
+    )
+    assert compare_sources(first, aligned, **MBHB_KEYWORDS).pairs.height == 3
+
+
+def test_holders_in_the_inverted_form_compare_in_the_union_of_their_bounds(
+    lisa_posteriors: Builder, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The space that compare receives takes the widest bound of the two holders."""
+    first = (
+        mbhb_holder(lisa_posteriors, "erebor", 1)
+        .to_total_mass_and_mass_ratio(inverted=True)
+        .with_bounds(
+            {"total_mass_det_frame": (1e5, 1e8), "inverted_mass_ratio": (1.0, 10.0)}
+        )
+    )
+    second = (
+        mbhb_holder(lisa_posteriors, "geemoo", 2)
+        .to_total_mass_and_mass_ratio(inverted=True)
+        .with_bounds(
+            {"total_mass_det_frame": (5e5, 2e8), "inverted_mass_ratio": (1.5, 20.0)}
+        )
+    )
+    spy = Mock(wraps=compare)
+    monkeypatch.setattr("mixed_signals.gw.lisa.compare.run_compare", spy)
+    comparison = compare_sources(first, second, **MBHB_KEYWORDS)
+    received = spy.call_args.args[2]
+    assert isinstance(received, ParamSpace)
+    assert received["total_mass_det_frame"].bounds == (1e5, 2e8)
+    assert received["inverted_mass_ratio"].bounds == (1.0, 20.0)
+    assert received["luminosity_distance"].bounds == (0.0, float("inf"))
+    assert received.names == first.space.names
+    assert comparison.result.table["problem"].n_unique() == 3
+    names = list(first.space.names)
+    assert _compared_space(second, first, names) == received

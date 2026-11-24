@@ -13,7 +13,9 @@ Matches
     one entry per source of the first holder, with its index in the second or −1
     for none. Without one, the holders pair in order and must have the same
     length. A source may appear in several pairs. :func:`match_indices` builds
-    the pairs from source ids, the form of the match tables of catpylisa.
+    the pairs from source ids, the form of the match tables of catpylisa; an id
+    is a string, UTF-8 bytes, an integer or a whole-number float, as in the
+    holders.
 Checks
     Both holders must be of one source type, with different names, and record
     equal conventions
@@ -70,7 +72,9 @@ def match_indices(
         second: The second holder.
         source_id_pairs: Pairs of a source id of the first holder and one of the
             second, such as a match table of catpylisa. An id is a string,
-            UTF-8 bytes or an integer, which becomes its decimal string.
+            UTF-8 bytes, an integer or a whole-number float. An integer becomes
+            its decimal string, and a float the decimal string of its integer,
+            so 5.0 gives "5".
 
     Returns:
         The indices shaped (M, 2), the pairs in the order given.

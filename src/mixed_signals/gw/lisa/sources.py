@@ -43,10 +43,27 @@ Prior bounds
     support of its prior; it must lie inside the domain, and the positive-weight
     samples must lie inside it too, as a closed interval. Transforms refuse to
     change a parameter with such a bound, because the bound does not map.
+    :meth:`~LisaSources.with_bounds` sets bounds on a holder after its
+    transforms, on the parameters of the transformed vector, such as the total
+    mass and the mass ratio.
+Mass forms
+    Binary black holes keep the detector-frame masses (m₁, m₂) or, as opt-in
+    forms, the total mass M or the chirp mass 𝓜 with the mass ratio q = m₂/m₁
+    or the inverted mass ratio Q = m₁/m₂ (SGS Section 2.3). A conversion
+    passes through the components, and the log-prior moves by the Jacobians
+    M/m₁² or M/m₂², with 𝓜 in place of M for the chirp mass.
+Source ids
+    Ids are strings. UTF-8 bytes decode, and integers become their decimal
+    string. Whole-number floats of magnitude below 2⁵³ become the decimal
+    string of their integer, because catpylisa writes the ids of its massive
+    black-hole binary (MBHB) injection catalogs as float64; below 2⁵³ a float64
+    holds every integer exactly (:cite:t:`ieee2019ieee`). Other floats raise
+    ``ValueError``, and booleans ``TypeError``.
 
 References:
     :cite:t:`baghi2026lisa`; :cite:t:`mardia2000directional`;
-    :cite:t:`ade2016planck`; :cite:t:`astropy2022astropy`.
+    :cite:t:`ade2016planck`; :cite:t:`astropy2022astropy`;
+    :cite:t:`ieee2019ieee`.
 """
 
 import dataclasses
@@ -76,7 +93,11 @@ from mixed_signals.gw.lisa.conventions import (
     frame_sphere,
     rename_to_frame,
 )
-from mixed_signals.gw.lisa.transforms import MassPairTransform, SkyFrameTransform
+from mixed_signals.gw.lisa.transforms import (
+    _MASS_FORM_PARAMETERS,
+    MassPairTransform,
+    SkyFrameTransform,
+)
 from mixed_signals.io.files import _warn_narrow_arrays
 from mixed_signals.transforms.base import Transform
 
@@ -92,6 +113,17 @@ _SECONDARY: Final = "secondary_mass_det_frame"
 _TOTAL: Final = "total_mass_det_frame"
 _CHIRP: Final = "chirp_mass_det_frame"
 _RATIO: Final = "mass_ratio"
+_INVERTED_RATIO: Final = "inverted_mass_ratio"
+# * The five forms of the two mass parameters: the components, or a mass and a ratio.
+_MASS_FORMS: Final = (
+    (_PRIMARY, _SECONDARY),
+    (_TOTAL, _RATIO),
+    (_TOTAL, _INVERTED_RATIO),
+    (_CHIRP, _RATIO),
+    (_CHIRP, _INVERTED_RATIO),
+)
+# * A float64 holds every integer below 2**53, its 53-bit significand.
+_FLOAT_ID_LIMIT: Final = 2**53
 
 
 @dataclass(frozen=True, eq=False, repr=False)
@@ -321,6 +353,76 @@ class LisaSources:
             " without the dynamics of the binary"
         )
 
+    def with_bounds[SourcesType: "LisaSources"](
+        self: SourcesType, bounds: Mapping[str, tuple[float, float]]
+    ) -> SourcesType:
+        """Return the holder with prior bounds set on parameters of its current vector.
+
+        Transforms refuse parameters with prior bounds, because a bound does not
+        map. A prior that is a rectangle in transformed parameters, such as the
+        total mass and the mass ratio, is therefore set in the order build,
+        transform, ``with_bounds``. The new bounds replace the physical domain
+        of their parameters, or an earlier bound of the same name, and update
+        :attr:`bounds` and the space.
+
+        Args:
+            bounds: Name of a parameter of the current full vector to its lower
+                and upper bound, with lower below upper. Names of the type's
+                parameters resolve through the aliases, as in the constructors;
+                the names of the mass forms, ``total_mass_det_frame``,
+                ``chirp_mass_det_frame``, ``mass_ratio`` and
+                ``inverted_mass_ratio``, have no aliases. The bounds must lie
+                inside the physical domain of the parameter: that of the type's
+                table, or that of
+                :class:`~mixed_signals.gw.lisa.transforms.MassPairTransform`
+                for the mass forms.
+
+        Returns:
+            A holder of the same type whose ``full_space`` carries the new
+            bounds: a bounded parameter becomes an interval, or the real line
+            when both bounds are infinite.
+
+        Raises:
+            ConventionError: If a name belongs to the other sky frame.
+            ValueError: If a name is not in the current vector or has no
+                physical domain, a bound lies outside the domain or is not
+                ordered, a parameter is a circle, or a positive-weight sample
+                lies outside its bounds.
+
+        Example:
+            A prior on the total mass M in [10⁵, 10⁸] solar masses and on
+            Q = m₁/m₂ in [1, 10], set after the transform to those parameters::
+
+                sources = MassiveBlackHoleBinaries.from_posteriors(...)
+                sources = sources.to_total_mass_and_mass_ratio(inverted=True)
+                sources = sources.with_bounds(
+                    {
+                        "total_mass_det_frame": (1e5, 1e8),
+                        "inverted_mass_ratio": (1.0, 10.0),
+                    }
+                )
+        """
+        names = self.full_space.names
+        new_bounds = _read_bounds(
+            type(self), bounds, self.conventions.sky_frame, vector_names=names
+        )
+        parameters = list(self.full_space.parameters)
+        for name, bound in new_bounds.items():
+            position = self.full_space.index(name)
+            parameters[position] = _prior_parameter(
+                parameters[position], _physical_domain(self, name), bound
+            )
+        host = np.asarray(self.values.samples[:, 0])
+        positive = np.asarray(self.values.log_weights[:, 0]) > -np.inf
+        _check_prior_bounds(host, names, new_bounds, positive, self.source_ids)
+        return dataclasses.replace(
+            self,
+            full_space=ParamSpace(
+                parameters=tuple(parameters), spheres=self.full_space.spheres
+            ),
+            bounds={**self.bounds, **new_bounds},
+        )
+
     @classmethod
     def from_arrays[SourcesType: "LisaSources"](
         cls: type[SourcesType],
@@ -347,8 +449,9 @@ class LisaSources:
 
         Args:
             values: The samples of each parameter, shaped (B, N).
-            source_ids: The B source ids: strings, UTF-8 bytes or integers,
-                which become their decimal string.
+            source_ids: The B source ids: strings, UTF-8 bytes, integers or
+                whole-number floats. Integers become their decimal string, and
+                a float the decimal string of its integer, so 5.0 gives "5".
             name: The global fit that the samples come from.
             epoch: The reference epoch in TCB seconds since ``LISA_EPOCH_TCB``.
             sky_frame: The frame of the sky position, ICRS by default.
@@ -427,7 +530,9 @@ class LisaSources:
 
         Args:
             posteriors: Source id to the samples. An id is a string, UTF-8
-                bytes or an integer, which becomes its decimal string.
+                bytes, an integer or a whole-number float. An integer becomes
+                its decimal string, and a float the decimal string of its
+                integer, so 5.0 gives "5".
             name: The global fit that the samples come from.
             epoch: The reference epoch in TCB seconds since ``LISA_EPOCH_TCB``.
             sky_frame: The frame of the sky position, ICRS by default.
@@ -549,8 +654,10 @@ class LisaSources:
             sky_frame: The frame of the sky position, ICRS by default.
             source_frame: The frame of the spin vectors; required for the types
                 with spins, and ``None`` for Galactic binaries.
-            id_field: The column of source ids: strings, UTF-8 bytes or
-                integers, which become their decimal string.
+            id_field: The column of source ids: strings, UTF-8 bytes, integers
+                or whole-number floats. Integers become their decimal string,
+                and a float the decimal string of its integer, so 5.0 gives
+                "5".
             bounds: Prior bounds that replace the physical domains of interval
                 parameters, inside them.
             ignore: Columns to drop, such as columns that hold no parameter.
@@ -683,7 +790,8 @@ class LisaSources:
         if clashes:
             raise ValueError(
                 f"{', '.join(map(repr, clashes))} carry prior bounds, which do not"
-                " map through a transform; build the holder without them"
+                " map through a transform; build the holder without those bounds,"
+                " transform it, then add them with with_bounds"
             )
         return dataclasses.replace(
             self,
@@ -716,9 +824,9 @@ class BlackHoleBinarySources(LisaSources):
     Massive black-hole binaries, extreme mass-ratio inspirals and stellar-origin
     binary black holes share the derived mass properties, the redshift and the
     transforms of the masses. The properties read the masses in whichever form
-    the holder carries: components, total mass and mass ratio, or chirp mass and
-    mass ratio. They return arrays shaped (B, N) over all samples, padding
-    included, whose weights are zero.
+    the holder carries: components, total mass or chirp mass with the mass
+    ratio q = m₂/m₁ or the inverted mass ratio Q = m₁/m₂. They return arrays
+    shaped (B, N) over all samples, padding included, whose weights are zero.
 
     References:
         :cite:t:`baghi2026lisa`; :cite:t:`ade2016planck`;
@@ -794,54 +902,80 @@ class BlackHoleBinarySources(LisaSources):
         return self.chirp_mass / (1 + self.redshift)
 
     def to_total_mass_and_mass_ratio[SourcesType: "BlackHoleBinarySources"](
-        self: SourcesType,
+        self: SourcesType, *, inverted: bool = False
     ) -> SourcesType:
         """Return the holder with the total mass and mass ratio in place of the masses.
 
-        The log-prior moves by the Jacobian M/m₁²; see
+        The ratio is q = m₂/m₁, or Q = m₁/m₂ with ``inverted=True``. The
+        log-prior moves by the Jacobian M/m₁², or M/m₂² for Q; see
         :class:`~mixed_signals.gw.lisa.transforms.MassPairTransform`. A holder
-        that already has the total mass is returned unchanged.
+        that already has the total mass and the same ratio is returned
+        unchanged; any other form passes through the component masses, so the
+        log-prior moves by both Jacobians.
+
+        Args:
+            inverted: ``True`` for Q = m₁/m₂ in place of q = m₂/m₁.
+
+        Raises:
+            ValueError: If a mass parameter has a prior bound, which does not
+                map; build the holder without it and add it with
+                :meth:`~LisaSources.with_bounds`.
         """
-        return self._with_masses(chirp=False)
+        return self._with_masses(chirp=False, inverted=inverted)
 
     def to_chirp_mass_and_mass_ratio[SourcesType: "BlackHoleBinarySources"](
-        self: SourcesType,
+        self: SourcesType, *, inverted: bool = False
     ) -> SourcesType:
         """Return the holder with the chirp mass and mass ratio in place of the masses.
 
-        The log-prior moves by the Jacobian 𝓜/m₁².
+        The ratio is q = m₂/m₁, or Q = m₁/m₂ with ``inverted=True``. The
+        log-prior moves by the Jacobian 𝓜/m₁², or 𝓜/m₂² for Q. A holder that
+        already has the chirp mass and the same ratio is returned unchanged;
+        any other form passes through the component masses.
+
+        Args:
+            inverted: ``True`` for Q = m₁/m₂ in place of q = m₂/m₁.
+
+        Raises:
+            ValueError: If a mass parameter has a prior bound, which does not
+                map.
         """
-        return self._with_masses(chirp=True)
+        return self._with_masses(chirp=True, inverted=inverted)
 
     def to_component_masses[SourcesType: "BlackHoleBinarySources"](
         self: SourcesType,
     ) -> SourcesType:
-        """Return the holder with the component masses m₁ and m₂, the canonical form."""
+        """Return the holder with the component masses m₁ and m₂, the canonical form.
+
+        A holder in any mass form converts back, with either mass ratio.
+        """
         form = self._mass_form()
-        if form == _PRIMARY:
+        if form == (_PRIMARY, _SECONDARY):
             return self
+        mass, ratio = form
         names = self.full_space.names
         transform = MassPairTransform(
-            primary=names.index(_TOTAL if form == _TOTAL else _CHIRP),
-            secondary=names.index(_RATIO),
-            chirp=form == _CHIRP,
+            primary=names.index(mass),
+            secondary=names.index(ratio),
+            chirp=mass == _CHIRP,
             to_ratio=False,
+            inverted=ratio == _INVERTED_RATIO,
         )
         return self._apply(transform, transform.touched_names(self.full_space))
 
-    def _mass_form(self) -> str:
-        """Return the name of the first mass parameter: m₁, M or 𝓜."""
+    def _mass_form(self) -> tuple[str, str]:
+        """Return the names of the two mass parameters, in their current form."""
         names = self.full_space.names
-        for form in (_PRIMARY, _TOTAL, _CHIRP):
-            if form in names:
+        for form in _MASS_FORMS:
+            if all(name in names for name in form):
                 return form
         raise ValueError("the parameter vector holds no mass parameters")
 
     def _with_masses[SourcesType: "BlackHoleBinarySources"](
-        self: SourcesType, *, chirp: bool
+        self: SourcesType, *, chirp: bool, inverted: bool
     ) -> SourcesType:
         """Return the holder with the total or the chirp mass and the mass ratio."""
-        target = _CHIRP if chirp else _TOTAL
+        target = (_CHIRP if chirp else _TOTAL, _INVERTED_RATIO if inverted else _RATIO)
         if self._mass_form() == target:
             return self
         components = self.to_component_masses()
@@ -851,6 +985,7 @@ class BlackHoleBinarySources(LisaSources):
             secondary=names.index(_SECONDARY),
             chirp=chirp,
             to_ratio=True,
+            inverted=inverted,
         )
         return components._apply(
             transform, transform.touched_names(components.full_space)
@@ -859,9 +994,25 @@ class BlackHoleBinarySources(LisaSources):
     def _component_masses(
         self,
     ) -> tuple[Float[Array, "batch sample"], Float[Array, "batch sample"]]:
-        """Return m₁ and m₂, whichever mass parameters the holder carries."""
-        components = self.to_component_masses()
-        return components._column(_PRIMARY), components._column(_SECONDARY)
+        """Return m₁ and m₂, whichever mass parameters the holder carries.
+
+        The columns convert without a holder transform, so that a holder with
+        prior bounds on its mass parameters keeps its properties.
+        """
+        mass, ratio = self._mass_form()
+        if (mass, ratio) == (_PRIMARY, _SECONDARY):
+            return self._column(_PRIMARY), self._column(_SECONDARY)
+        transform = MassPairTransform(
+            primary=0,
+            secondary=1,
+            chirp=mass == _CHIRP,
+            to_ratio=False,
+            inverted=ratio == _INVERTED_RATIO,
+        )
+        pair = transform.forward(
+            jnp.stack([self._column(mass), self._column(ratio)], axis=-1)
+        )
+        return pair[..., 0], pair[..., 1]
 
 
 def _read_conventions(
@@ -886,7 +1037,14 @@ def _decode_id(value: object) -> str:
     """Return a source id as a string.
 
     Strings stay as they are, UTF-8 bytes decode, and integers, which catpylisa
-    uses for source ids, become their decimal string. Booleans are refused.
+    uses for source ids, become their decimal string. Whole-number floats of
+    magnitude below 2⁵³ become the decimal string of their integer, so 5.0
+    gives "5"; see the module docstring. Booleans are refused.
+
+    Raises:
+        TypeError: If the id is a boolean or of another type.
+        ValueError: If the id is a float that is not whole, not finite or of
+            magnitude 2⁵³ or more.
     """
     if isinstance(value, bool | np.bool_):
         raise TypeError("source ids must not be booleans")
@@ -896,9 +1054,23 @@ def _decode_id(value: object) -> str:
         return str(value)
     if isinstance(value, int | np.integer):
         return str(int(value))
+    if isinstance(value, float | np.floating):
+        number = float(value)
+        # * float.is_integer is False for NaN, infinities and fractions.
+        if not number.is_integer():
+            raise ValueError(
+                f"a float source id must be finite and whole, got {value!r}"
+            )
+        if abs(number) >= _FLOAT_ID_LIMIT:
+            raise ValueError(
+                "a float source id must have a magnitude below 2**53, where float64"
+                f" holds every integer, got {value!r}"
+            )
+        return str(int(number))
     raise TypeError(
-        "source ids must be strings, UTF-8 bytes or integers, which become their"
-        f" decimal string, got {type(value).__name__}"
+        "source ids must be strings, UTF-8 bytes, integers or whole-number floats,"
+        " which become their decimal string or that of their integer, got"
+        f" {type(value).__name__}"
     )
 
 
@@ -917,13 +1089,16 @@ def _resolve_names(
     *,
     special: Mapping[str, str] | None = None,
     ignore: Collection[str] = (),
+    vector_names: Sequence[str] | None = None,
     context: str,
 ) -> dict[str, str]:
     """Map input names to the canonical names of a frame, through the aliases.
 
     Names in ``ignore`` are dropped, and names in ``special`` map to their
     targets. A name of the other sky frame raises a ConventionError, and any
-    other unknown name a ValueError.
+    other unknown name a ValueError. With ``vector_names``, the names of a
+    holder's current vector also resolve to themselves, and every name must
+    resolve to one of them.
     """
     own = [rename_to_frame(spec.name, frame) for spec in cls.parameter_specs]
     other_frame = SkyFrame.ECLIPTIC if frame is SkyFrame.ICRS else SkyFrame.ICRS
@@ -945,13 +1120,21 @@ def _resolve_names(
             )
         elif key in aliases:
             resolved[key] = aliases[key]
+        elif vector_names is not None and key in vector_names:
+            resolved[key] = key
         else:
             unknown.append(key)
+    if vector_names is not None:
+        unknown += [
+            key for key, target in resolved.items() if target not in vector_names
+        ]
     if unknown:
-        raise ValueError(
-            f"unknown {context} fields {unknown}; the parameters of"
-            f" {cls.__name__} are {own}, and `ignore` drops fields"
+        listing = (
+            f"the parameters of {cls.__name__} are {own}, and `ignore` drops fields"
+            if vector_names is None
+            else f"the holder carries {list(vector_names)}"
         )
+        raise ValueError(f"unknown {context} fields {unknown}; {listing}")
     targets: dict[str, str] = {}
     for key, target in resolved.items():
         if target in targets:
@@ -1096,18 +1279,24 @@ def _check_prior_bounds(
 
 
 def _prior_parameter(
-    parameter: Parameter, spec: ParameterSpec, override: tuple[float, float] | None
+    parameter: Parameter,
+    domain: ParameterSpec | Parameter,
+    override: tuple[float, float] | None,
 ) -> Parameter:
-    """Return a parameter whose bounds are a prior bound inside its physical domain."""
+    """Return a parameter whose bounds are a prior bound inside its physical domain.
+
+    ``domain`` is the spec of the type, or the parameter of a mass form, that
+    holds the topology and the bounds of the physical domain.
+    """
     if override is None:
         return parameter
     lower, upper = (float(override[0]), float(override[1]))
-    if spec.topology is Topology.CIRCLE:
+    if domain.topology is Topology.CIRCLE:
         raise ValueError(
             f"{parameter.name!r} is a circle, whose period is its domain; it takes no"
             " prior bounds"
         )
-    domain_lower, domain_upper = spec.bounds
+    domain_lower, domain_upper = domain.bounds
     if not (domain_lower <= lower < upper <= domain_upper):
         raise ValueError(
             f"the prior bounds {(lower, upper)} of {parameter.name!r} must lie inside"
@@ -1122,6 +1311,24 @@ def _prior_parameter(
         unit=parameter.unit,
         topology=topology,
         bounds=(lower, upper),
+    )
+
+
+def _physical_domain(sources: LisaSources, name: str) -> ParameterSpec | Parameter:
+    """Return the physical domain of a parameter of the full vector of a holder.
+
+    The domain comes from the table of the type, or from the mass forms of
+    :class:`~mixed_signals.gw.lisa.transforms.MassPairTransform`.
+    """
+    frame = sources.conventions.sky_frame
+    for spec in sources.parameter_specs:
+        if rename_to_frame(spec.name, frame) == name:
+            return spec
+    if name in _MASS_FORM_PARAMETERS:
+        return _MASS_FORM_PARAMETERS[name]
+    raise ValueError(
+        f"{name!r} has no physical domain to bound inside; bounds apply to the"
+        f" parameters of {type(sources).__name__} and to the mass forms"
     )
 
 
@@ -1252,11 +1459,15 @@ def _read_bounds(
     cls: type[LisaSources],
     bounds: Mapping[str, tuple[float, float]] | None,
     frame: SkyFrame,
+    *,
+    vector_names: Sequence[str] | None = None,
 ) -> dict[str, tuple[float, float]]:
     """Return the prior bounds by canonical name, resolving aliases."""
     if not bounds:
         return {}
-    resolved = _resolve_names(cls, bounds, frame, context="bounds")
+    resolved = _resolve_names(
+        cls, bounds, frame, vector_names=vector_names, context="bounds"
+    )
     return {
         resolved[key]: (float(value[0]), float(value[1]))
         for key, value in bounds.items()

@@ -5,9 +5,13 @@ the catpylisa conventions (SGS Sections 2.3 and 5.10.2, :cite:t:`baghi2026lisa`)
 the detector-frame masses, the luminosity distance in Gpc, the two spins along
 the orbital angular momentum, the coalescence time, the phase and frequency at
 the reference time, the sky position, the inclination and the polarisation. The
-reference frequency has no default, because 0 lies outside its domain. The
-coalescence time counts seconds from the epoch, so shifting the epoch shifts
-it. Masses, redshift and the source-frame masses are in
+reference frequency defaults to 0 as in the catpylisa conventions file, where 0
+marks the reference that the waveform code chooses, and some global fits leave
+the column out; its domain is [0, ∞), and
+:func:`~mixed_signals.gw.lisa.compare.compare_sources` checks per matched pair
+that the settings of the two holders agree. The coalescence time counts seconds
+from the epoch, so shifting the epoch shifts it. Masses, redshift and the
+source-frame masses are in
 :class:`~mixed_signals.gw.lisa.sources.BlackHoleBinarySources`.
 
 References:

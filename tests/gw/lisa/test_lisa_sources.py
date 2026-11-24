@@ -2,6 +2,7 @@
 
 import dataclasses
 import math
+import re
 from collections.abc import Callable
 from typing import Any
 
@@ -308,7 +309,7 @@ def test_defaults_fill_missing_optional_parameters(lisa_posteriors: Builder) -> 
 
 
 def test_missing_required_parameters_raise(lisa_posteriors: Builder) -> None:
-    """A parameter without a default must be given, the MBHB reference frequency too."""
+    """A parameter without a default must be given, the SOBBH f_ref too."""
     values = gb_arrays(lisa_posteriors)
     del values["amplitude"]
     with pytest.raises(
@@ -317,12 +318,90 @@ def test_missing_required_parameters_raise(lisa_posteriors: Builder) -> None:
         GalacticBinaries.from_arrays(
             values, source_ids=["a", "b"], name="fit", epoch=0.0
         )
-    mbhb = arrays_of(lisa_posteriors, "massive_black_hole_binary")
-    del mbhb["frequency_at_reference_time"]
-    with pytest.raises(ValueError, match="frequency_at_reference_time"):
-        MassiveBlackHoleBinaries.from_arrays(
-            mbhb, source_ids=["a", "b"], name="fit", epoch=0.0, source_frame="J"
+    sobbh = arrays_of(lisa_posteriors, "stellar_origin_binary_black_hole")
+    del sobbh["f_ref"]
+    with pytest.raises(ValueError, match=r"missing required parameters \['f_ref'\]"):
+        StellarOriginBinaryBlackHoles.from_arrays(
+            sobbh, source_ids=["a", "b"], name="fit", epoch=0.0, source_frame="J"
         )
+
+
+# * The MBHB reference frequency, which defaults to 0
+
+REFERENCE_FREQUENCY = "frequency_at_reference_time"
+
+
+def test_a_missing_reference_frequency_defaults_to_a_zero_setting(
+    lisa_posteriors: Builder,
+) -> None:
+    """Both constructors fill 0 for every source, and the parameter is not sampled."""
+    kwargs: dict[str, Any] = {"name": "fit", "epoch": 0.0, "source_frame": "J"}
+    values = arrays_of(lisa_posteriors, "massive_black_hole_binary")
+    del values[REFERENCE_FREQUENCY]
+    from_arrays = MassiveBlackHoleBinaries.from_arrays(
+        values, source_ids=["a", "b"], **kwargs
+    )
+    posteriors = {
+        source: {name: table[name] for name in table.dtype.names or ()}
+        for source, table in lisa_posteriors(
+            "massive_black_hole_binary", COUNTS
+        ).items()
+    }
+    for fields in posteriors.values():
+        del fields[REFERENCE_FREQUENCY]
+    from_posteriors = MassiveBlackHoleBinaries.from_posteriors(posteriors, **kwargs)
+    for sources, expected in ((from_arrays, [0.0] * 2), (from_posteriors, [0.0] * 3)):
+        assert sources.settings[REFERENCE_FREQUENCY].to_list() == expected
+        assert REFERENCE_FREQUENCY not in sources.space.names
+        assert sources.full_space[REFERENCE_FREQUENCY].bounds == (0.0, math.inf)
+        assert sources.full_space[REFERENCE_FREQUENCY].unit == "Hz"
+
+
+def test_an_explicit_zero_reference_frequency_builds(lisa_posteriors: Builder) -> None:
+    """The domain [0, ∞) is closed at 0, so the default value is also accepted."""
+    values = arrays_of(lisa_posteriors, "massive_black_hole_binary")
+    values[REFERENCE_FREQUENCY] = np.zeros((2, 20))
+    sources = MassiveBlackHoleBinaries.from_arrays(
+        values, source_ids=["a", "b"], name="fit", epoch=0.0, source_frame="J"
+    )
+    assert sources.settings[REFERENCE_FREQUENCY].to_list() == [0.0, 0.0]
+    assert REFERENCE_FREQUENCY not in sources.space.names
+
+
+@pytest.mark.parametrize(
+    ("value", "rule"),
+    [(-1e-3, r"in \[0.0, inf\)"), (math.nan, "finite")],
+)
+def test_a_negative_or_missing_reference_frequency_value_is_refused(
+    lisa_posteriors: Builder, value: float, rule: str
+) -> None:
+    """Negative values and NaN fail with the domain message, naming the count."""
+    values = arrays_of(lisa_posteriors, "massive_black_hole_binary")
+    values[REFERENCE_FREQUENCY] = values[REFERENCE_FREQUENCY].copy()
+    values[REFERENCE_FREQUENCY][1, :3] = value
+    with pytest.raises(
+        ValueError,
+        match=rf"{REFERENCE_FREQUENCY} must be {rule}.*3 of the 40.*source 'b'",
+    ):
+        MassiveBlackHoleBinaries.from_arrays(
+            values, source_ids=["a", "b"], name="fit", epoch=0.0, source_frame="J"
+        )
+
+
+def test_a_catalog_with_a_nan_reference_frequency_needs_ignore(
+    lisa_posteriors: Builder,
+) -> None:
+    """The MBHB catalog of catpylisa holds NaN there; ignoring it fills the default."""
+    catalog = table_of(lisa_posteriors, "massive_black_hole_binary")
+    catalog[REFERENCE_FREQUENCY] = np.nan
+    kwargs: dict[str, Any] = {"name": "injections", "epoch": 0.0, "source_frame": "J"}
+    with pytest.raises(ValueError, match=rf"{REFERENCE_FREQUENCY} must be finite"):
+        MassiveBlackHoleBinaries.from_catalog(catalog, **kwargs)
+    filled = MassiveBlackHoleBinaries.from_catalog(
+        catalog, ignore=(REFERENCE_FREQUENCY,), **kwargs
+    )
+    assert filled.sample_counts.tolist() == [1, 1, 1]
+    np.testing.assert_array_equal(filled._column(REFERENCE_FREQUENCY), 0.0)
 
 
 def test_source_frame_is_required_for_spinning_types_only(
@@ -714,7 +793,7 @@ def test_detections_with_integer_ids_join_to_the_string_ids(
 
 
 def test_booleans_and_other_types_are_not_source_ids(lisa_posteriors: Builder) -> None:
-    """Booleans raise, and so do floats, with the list of the accepted types."""
+    """Booleans raise, and so do other types, with the list of the accepted types."""
     values = gb_arrays(lisa_posteriors)
     kwargs: dict[str, Any] = {"name": "fit", "epoch": 0.0}
     with pytest.raises(TypeError, match="must not be booleans"):
@@ -723,11 +802,140 @@ def test_booleans_and_other_types_are_not_source_ids(lisa_posteriors: Builder) -
         GalacticBinaries.from_arrays(
             values, source_ids=[np.bool_(True), np.bool_(False)], **kwargs
         )
-    with pytest.raises(TypeError, match="strings, UTF-8 bytes or integers"):
-        GalacticBinaries.from_arrays(values, source_ids=[1.5, 2.5], **kwargs)
+    with pytest.raises(
+        TypeError, match="strings, UTF-8 bytes, integers or whole-number floats"
+    ):
+        GalacticBinaries.from_arrays(values, source_ids=[1 + 2j, 3 + 4j], **kwargs)
     data = lisa_posteriors("galactic_binary", {"a": 8, "b": 8})
     with pytest.raises(TypeError, match="must not be booleans"):
         GalacticBinaries.from_posteriors({True: data["a"], "b": data["b"]}, **kwargs)
+
+
+# * Whole-number float source ids
+
+
+def float_catalog(
+    posteriors: Builder, ids: list[float], kind: str = "galactic_binary"
+) -> np.ndarray:
+    """Return a catalog of three sources whose source_id column is float64."""
+    return recfunctions.append_fields(
+        recfunctions.drop_fields(
+            table_of(posteriors, kind), "source_id", usemask=False
+        ),
+        "source_id",
+        np.asarray(ids, dtype=np.float64),
+        usemask=False,
+    )
+
+
+def test_a_float64_id_column_reads_as_integer_strings(lisa_posteriors: Builder) -> None:
+    """The float64 ids 0.0, 1.0 and 5.0 of catpylisa become '0', '1' and '5'."""
+    kwargs: dict[str, Any] = {"name": "injections", "epoch": 0.0}
+    catalog = float_catalog(lisa_posteriors, [0.0, 1.0, 5.0])
+    assert catalog["source_id"].dtype == np.float64
+    sources = GalacticBinaries.from_catalog(catalog, **kwargs)
+    assert sources.source_ids == ("0", "1", "5")
+    columns = {
+        name: catalog[name] for name in catalog.dtype.names or () if name != "source_id"
+    }
+    frame = pl.DataFrame({"source_id": [0.0, 1.0, 5.0], **columns})
+    assert frame["source_id"].dtype == pl.Float64
+    assert GalacticBinaries.from_catalog(frame, **kwargs).source_ids == ("0", "1", "5")
+    mbhb = float_catalog(lisa_posteriors, [0.0, 1.0, 5.0], "massive_black_hole_binary")
+    mbhb[REFERENCE_FREQUENCY] = np.nan
+    injections = MassiveBlackHoleBinaries.from_catalog(
+        mbhb, ignore=(REFERENCE_FREQUENCY,), source_frame="J", **kwargs
+    )
+    assert injections.source_ids == ("0", "1", "5")
+    assert injections["5"].source_ids == ("5",)
+
+
+def test_whole_floats_of_every_kind_read_as_integer_strings(
+    lisa_posteriors: Builder,
+) -> None:
+    """Python and NumPy floats, also negative, zero and 2**53 - 1, give integers."""
+    values = gb_arrays(lisa_posteriors)
+    kwargs: dict[str, Any] = {"name": "fit", "epoch": 0.0}
+    for ids, expected in (
+        ([np.float32(12.0), 7.0], ("12", "7")),
+        ([np.float16(3.0), np.float64(4.0)], ("3", "4")),
+        ([float(2**53 - 1), -3.0], ("9007199254740991", "-3")),
+        ([-0.0, 1.0], ("0", "1")),
+        (np.array([5.0, 6.0]), ("5", "6")),
+    ):
+        sources = GalacticBinaries.from_arrays(values, source_ids=ids, **kwargs)
+        assert sources.source_ids == expected
+    posteriors = integer_keyed(lisa_posteriors, {"a": 12, "b": 12, "c": 12})
+    first, second, third = posteriors.values()
+    keyed = {1.0: first, np.float64(2.0): second, np.float32(10.0): third}
+    from_posteriors = GalacticBinaries.from_posteriors(keyed, **kwargs)
+    assert from_posteriors.source_ids == ("1", "2", "10")
+    sized = GalacticBinaries.from_posteriors(
+        keyed, n_eff={1.0: 5.0, 2.0: 6.0, 10.0: 7.0}, **kwargs
+    )
+    assert sized.values.n_eff is not None
+    np.testing.assert_allclose(np.asarray(sized.values.n_eff[:, 0]), [5.0, 6.0, 7.0])
+
+
+@pytest.mark.parametrize(
+    ("bad", "rule"),
+    [
+        (5.5, "finite and whole"),
+        (np.float32(2.5), "finite and whole"),
+        (math.nan, "finite and whole"),
+        (math.inf, "finite and whole"),
+        (-math.inf, "finite and whole"),
+        (2.0**53, "magnitude below 2"),
+        (-(2.0**53), "magnitude below 2"),
+        (1e300, "magnitude below 2"),
+    ],
+)
+def test_other_floats_are_not_source_ids(
+    lisa_posteriors: Builder, bad: float, rule: str
+) -> None:
+    """A fraction, NaN, an infinity or a float beyond 2**53 raises, naming the value."""
+    values = gb_arrays(lisa_posteriors)
+    with pytest.raises(ValueError, match=rf"{rule}.*{re.escape(repr(bad))}"):
+        GalacticBinaries.from_arrays(
+            values, source_ids=[1.0, bad], name="fit", epoch=0.0
+        )
+
+
+def test_booleans_stay_refused_next_to_floats(lisa_posteriors: Builder) -> None:
+    """True is not the id 1.0: the boolean check comes first."""
+    values = gb_arrays(lisa_posteriors)
+    with pytest.raises(TypeError, match="must not be booleans"):
+        GalacticBinaries.from_arrays(
+            values, source_ids=[1.0, True], name="fit", epoch=0.0
+        )
+
+
+def test_detections_with_float_ids_join_to_the_string_ids(
+    lisa_posteriors: Builder,
+) -> None:
+    """A float64 source_id column, polars or structured, compares as strings."""
+    posteriors = integer_keyed(lisa_posteriors, {"a": 12, "b": 12, "c": 12})
+    table = pl.DataFrame({"source_id": [10.0, 1.0, 99.0], "snr": [3.0, 1.0, 9.0]})
+    assert table["source_id"].dtype == pl.Float64
+    sources = GalacticBinaries.from_posteriors(
+        posteriors, name="fit", epoch=0.0, detections=table
+    )
+    assert sources.detections is not None
+    assert sources.detections["source_id"].to_list() == ["1", "2", "10"]
+    assert sources.detections["snr"].to_list() == [1.0, None, 3.0]
+    structured = np.zeros(2, dtype=[("source_id", "f8"), ("snr", "f8")])
+    structured["source_id"] = [2.0, 10.0]
+    structured["snr"] = [4.0, 5.0]
+    again = GalacticBinaries.from_posteriors(
+        posteriors, name="fit", epoch=0.0, detections=structured
+    )
+    assert again.detections is not None
+    assert again.detections["snr"].to_list() == [None, 4.0, 5.0]
+    fractional = pl.DataFrame({"source_id": [1.5], "snr": [1.0]})
+    with pytest.raises(ValueError, match="finite and whole"):
+        GalacticBinaries.from_posteriors(
+            posteriors, name="fit", epoch=0.0, detections=fractional
+        )
 
 
 # * Selection
@@ -1129,3 +1337,241 @@ def test_a_vector_without_masses_has_no_mass_form(lisa_posteriors: Builder) -> N
     without = dataclasses.replace(sources, full_space=renamed)
     with pytest.raises(ValueError, match="no mass parameters"):
         without.total_mass  # noqa: B018
+
+
+# * Prior bounds set after the transforms
+
+MASS_BOUNDS = {"total_mass_det_frame": (1e5, 1e8), "inverted_mass_ratio": (1.0, 10.0)}
+
+
+def binary_in_total_mass_and_inverted_ratio(posteriors: Builder) -> LisaSources:
+    """Return massive black-hole binaries in the form (M, Q), without bounds."""
+    sources = holder(posteriors, "massive_black_hole_binary")
+    assert isinstance(sources, MassiveBlackHoleBinaries)
+    return sources.to_total_mass_and_mass_ratio(inverted=True)
+
+
+def test_bounds_on_the_total_mass_and_the_inverted_ratio_after_the_transform(
+    lisa_posteriors: Builder,
+) -> None:
+    """The space carries the bounds as intervals, and ``bounds`` holds both names."""
+    mapped = binary_in_total_mass_and_inverted_ratio(lisa_posteriors)
+    bounded = mapped.with_bounds(MASS_BOUNDS)
+    assert type(bounded) is MassiveBlackHoleBinaries
+    for name, bound in MASS_BOUNDS.items():
+        assert bounded.space[name].bounds == bound
+        assert bounded.space[name].topology is Topology.INTERVAL
+        assert bounded.full_space[name].bounds == bound
+    assert bounded.space["total_mass_det_frame"].unit == "Msun"
+    assert bounded.space["inverted_mass_ratio"].label == "Q"
+    assert bounded.bounds == MASS_BOUNDS
+    assert bounded.space.names == mapped.space.names
+    assert bounded.space.spheres == mapped.space.spheres
+    assert bounded.name == mapped.name
+    assert bounded.source_ids == mapped.source_ids
+    assert bounded.conventions == mapped.conventions
+    np.testing.assert_array_equal(
+        np.asarray(bounded.values.samples), np.asarray(mapped.values.samples)
+    )
+    assert mapped.bounds == {}
+    assert mapped.space["inverted_mass_ratio"].bounds == (1.0, math.inf)
+
+
+def test_unbounded_and_real_line_bounds_set_the_topology(
+    lisa_posteriors: Builder,
+) -> None:
+    """Two infinite bounds give the real line, and one finite bound an interval."""
+    sources = holder(lisa_posteriors, "galactic_binary")
+    wide = sources.with_bounds({"frequency_dot": (-math.inf, math.inf)})
+    assert wide.space["frequency_dot"].topology is Topology.REAL
+    half = sources.with_bounds({"frequency_dot": (0.0, math.inf)})
+    assert half.space["frequency_dot"].topology is Topology.INTERVAL
+    assert half.space["frequency_dot"].bounds == (0.0, math.inf)
+
+
+def test_bounds_follow_an_epoch_shift_but_do_not_precede_one(
+    lisa_posteriors: Builder,
+) -> None:
+    """with_bounds after at_epoch works; at_epoch after with_bounds names the remedy."""
+    sources = holder(lisa_posteriors, "massive_black_hole_binary")
+    shifted = sources.at_epoch(4e5)
+    bounded = shifted.with_bounds({"coalescence_time": (9e6, 1e7)})
+    assert bounded.space["coalescence_time"].bounds == (9e6, 1e7)
+    assert bounded.conventions.epoch == 4e5
+    with pytest.raises(
+        ValueError,
+        match=(
+            r"'coalescence_time' carry prior bounds.*build the holder without those"
+            " bounds, transform it, then add them with with_bounds"
+        ),
+    ):
+        sources.with_bounds({"coalescence_time": (9e6, 1.1e7)}).at_epoch(4e5)
+
+
+def test_transforms_keep_refusing_bounded_parameters(lisa_posteriors: Builder) -> None:
+    """A mass form with bounds does not convert, except to itself."""
+    bounded = binary_in_total_mass_and_inverted_ratio(lisa_posteriors).with_bounds(
+        MASS_BOUNDS
+    )
+    assert isinstance(bounded, MassiveBlackHoleBinaries)
+    assert bounded.to_total_mass_and_mass_ratio(inverted=True) is bounded
+    for conversion in (
+        bounded.to_component_masses,
+        bounded.to_total_mass_and_mass_ratio,
+        bounded.to_chirp_mass_and_mass_ratio,
+    ):
+        with pytest.raises(ValueError, match="then add them with with_bounds"):
+            conversion()
+    bounded_sky = holder(lisa_posteriors, "galactic_binary").with_bounds(
+        {"declination": (-1.0, 1.0)}
+    )
+    with pytest.raises(ValueError, match="then add them with with_bounds"):
+        bounded_sky.to_ecliptic()
+
+
+def test_with_bounds_resolves_aliases_and_the_sky_frame(
+    lisa_posteriors: Builder,
+) -> None:
+    """Aliases resolve as in the constructors; the other sky frame raises."""
+    sources = holder(lisa_posteriors, "massive_black_hole_binary")
+    aliased = sources.with_bounds({"tc": (9e6, 1.1e7), "dec": (-1.0, 1.0)})
+    assert aliased.bounds == {
+        "coalescence_time": (9e6, 1.1e7),
+        "declination": (-1.0, 1.0),
+    }
+    with pytest.raises(ConventionError, match="ecliptic frame, but the holder is in"):
+        sources.with_bounds({"ecliptic_latitude": (-1.0, 1.0)})
+    with pytest.raises(ConventionError, match="ecliptic frame, but the holder is in"):
+        sources.with_bounds({"beta": (-1.0, 1.0)})
+    ecliptic = sources.to_ecliptic()
+    named = ecliptic.with_bounds({"beta": (-1.0, 1.0)})
+    assert named.space["ecliptic_latitude"].bounds == (-1.0, 1.0)
+    assert named.bounds == {"ecliptic_latitude": (-1.0, 1.0)}
+    with pytest.raises(ConventionError, match="icrs frame, but the holder is in"):
+        ecliptic.with_bounds({"dec": (-1.0, 1.0)})
+    with pytest.raises(ConventionError, match="icrs frame, but the holder is in"):
+        ecliptic.with_bounds({"declination": (-1.0, 1.0)})
+
+
+def test_with_bounds_names_unknown_parameters_and_lists_the_vector(
+    lisa_posteriors: Builder,
+) -> None:
+    """Unknown names, and names of the table that the transform removed, raise."""
+    sources = holder(lisa_posteriors, "massive_black_hole_binary")
+    with pytest.raises(
+        ValueError, match=r"unknown bounds fields \['nothing'\].*holder carries \['pri"
+    ):
+        sources.with_bounds({"nothing": (0.0, 1.0)})
+    with pytest.raises(ValueError, match=r"unknown bounds fields \['total_mass_det_fr"):
+        sources.with_bounds({"total_mass_det_frame": (1e5, 1e8)})
+    mapped = binary_in_total_mass_and_inverted_ratio(lisa_posteriors)
+    for removed in ("primary_mass_det_frame", "m1", "mass_ratio"):
+        with pytest.raises(ValueError, match="holder carries"):
+            mapped.with_bounds({removed: (1.0, 10.0)})
+    with pytest.raises(ValueError, match="are the same parameter"):
+        sources.with_bounds({"tc": (9e6, 1.1e7), "coalescence_time": (9e6, 1.1e7)})
+
+
+def test_with_bounds_has_no_domain_for_the_chirp_mass_of_galactic_binaries(
+    lisa_posteriors: Builder,
+) -> None:
+    """Only the type's table and the mass forms of binary black holes have domains."""
+    binaries = GalacticBinaries.from_posteriors(
+        lisa_posteriors("galactic_binary", COUNTS), name="fit", epoch=0.0
+    )
+    chirp = binaries.to_chirp_mass_and_distance()
+    with pytest.raises(ValueError, match="'chirp_mass' has no physical domain"):
+        chirp.with_bounds({"chirp_mass": (0.1, 1.0)})
+    phases = binaries.to_phase_combinations()
+    with pytest.raises(ValueError, match="'theta_plus_icrs' has no physical domain"):
+        phases.with_bounds({"theta_plus_icrs": (0.0, 3.0)})
+
+
+@pytest.mark.parametrize(
+    ("bounds", "message"),
+    [
+        ({"mass_ratio": (0.1, 1.5)}, "must lie inside its domain"),
+        ({"mass_ratio": (-0.1, 0.9)}, "must lie inside its domain"),
+        ({"spin1": (-2.0, 1.0)}, "must lie inside its domain"),
+        ({"spin1": (0.5, 0.5)}, "must lie inside its domain"),
+        ({"spin1": (0.9, 0.1)}, "must lie inside its domain"),
+        ({"luminosity_distance": (-1.0, 50.0)}, "must lie inside its domain"),
+        ({"phase_at_reference_time": (0.0, 3.0)}, "is a circle"),
+        ({"polarisation_icrs": (0.0, 3.0)}, "is a circle"),
+    ],
+)
+def test_with_bounds_refuses_bounds_outside_the_domain_and_circles(
+    lisa_posteriors: Builder, bounds: dict[str, tuple[float, float]], message: str
+) -> None:
+    """The physical domain of the table or of the mass form limits the new bounds."""
+    sources = holder(lisa_posteriors, "massive_black_hole_binary")
+    assert isinstance(sources, MassiveBlackHoleBinaries)
+    form = sources.to_total_mass_and_mass_ratio()
+    with pytest.raises(ValueError, match=message):
+        form.with_bounds(bounds)
+
+
+def test_the_inverted_mass_ratio_domain_starts_at_one(lisa_posteriors: Builder) -> None:
+    """Q lies in [1, ∞) and the total mass in (0, ∞), whatever bound came before."""
+    mapped = binary_in_total_mass_and_inverted_ratio(lisa_posteriors)
+    with pytest.raises(ValueError, match="must lie inside its domain"):
+        mapped.with_bounds({"inverted_mass_ratio": (0.5, 10.0)})
+    with pytest.raises(ValueError, match="must lie inside its domain"):
+        mapped.with_bounds({"total_mass_det_frame": (-1.0, 1e8)})
+    edge = mapped.with_bounds({"inverted_mass_ratio": (1.0, math.inf)})
+    assert edge.space["inverted_mass_ratio"].bounds == (1.0, math.inf)
+
+
+def test_with_bounds_checks_the_positive_weight_samples_only(
+    lisa_posteriors: Builder,
+) -> None:
+    """A sample outside raises with its source; zero-weight padding is free."""
+    values = gb_arrays(lisa_posteriors)
+    frequency = values["frequency"].copy()
+    frequency[0, 1] = 5e-3
+    log_weights = np.zeros((2, 20))
+    log_weights[0, 1] = -np.inf
+    kwargs: dict[str, Any] = {
+        "source_ids": ["a", "b"],
+        "name": "fit",
+        "epoch": 0.0,
+        "log_weights": log_weights,
+    }
+    sources = GalacticBinaries.from_arrays(values | {"frequency": frequency}, **kwargs)
+    bounded = sources.with_bounds({"frequency": (2.5e-3, 3.5e-3)})
+    assert bounded.sample_counts.tolist() == [19, 20]
+    assert bounded.space["frequency"].bounds == (2.5e-3, 3.5e-3)
+    frequency[1, 3] = 5e-3
+    frequency[1, 4] = 1e-3
+    outside = GalacticBinaries.from_arrays(values | {"frequency": frequency}, **kwargs)
+    with pytest.raises(
+        ValueError,
+        match=(
+            r"frequency must be inside its prior bounds \[0.0025, 0.0035\], but 2 of"
+            r" the 39 positive-weight values are not \(first in source 'b'\)"
+        ),
+    ):
+        outside.with_bounds({"frequency": (2.5e-3, 3.5e-3)})
+    low, high = float(values["frequency"].min()), float(values["frequency"].max())
+    edge = GalacticBinaries.from_arrays(values, **kwargs).with_bounds(
+        {"frequency": (low, high)}
+    )
+    assert edge.space["frequency"].bounds == (low, high)
+
+
+def test_a_second_with_bounds_replaces_the_first_of_the_same_name(
+    lisa_posteriors: Builder,
+) -> None:
+    """The physical domain limits a new bound, not the earlier one; other names stay."""
+    mapped = binary_in_total_mass_and_inverted_ratio(lisa_posteriors)
+    first = mapped.with_bounds(MASS_BOUNDS)
+    second = first.with_bounds({"inverted_mass_ratio": (1.5, 100.0)})
+    assert second.space["inverted_mass_ratio"].bounds == (1.5, 100.0)
+    assert second.space["total_mass_det_frame"].bounds == (1e5, 1e8)
+    assert second.bounds == {
+        "total_mass_det_frame": (1e5, 1e8),
+        "inverted_mass_ratio": (1.5, 100.0),
+    }
+    assert first.bounds == MASS_BOUNDS
+    narrower = second.with_bounds({"inverted_mass_ratio": (1.5, 5.0)})
+    assert narrower.bounds["inverted_mass_ratio"] == (1.5, 5.0)

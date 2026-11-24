@@ -325,13 +325,13 @@ def test_spec_bounds_and_topologies_follow_the_conventions() -> None:
 
 
 def test_defaults_follow_the_conventions_file() -> None:
-    """Required parameters have no default, the MBHB reference frequency included."""
+    """Required parameters have no default; the MBHB reference frequency has 0."""
     defaults = {spec.name: spec.default for spec in GALACTIC_BINARY_SPECS}
     assert defaults["frequency"] is None
     assert defaults["frequency_dot"] == 0.0
     assert defaults["initial_phase"] == 0.0
     mbhb = {spec.name: spec.default for spec in MBHB_SPECS}
-    assert mbhb["frequency_at_reference_time"] is None
+    assert mbhb["frequency_at_reference_time"] == 0.0
     assert mbhb["spin1"] == 0.0
     assert mbhb["phase_at_reference_time"] == 0.0
     emri = {spec.name: spec.default for spec in EMRI_SPECS}
@@ -340,8 +340,21 @@ def test_defaults_follow_the_conventions_file() -> None:
     assert emri["inclination_tref"] == 0.0
     sobbh = {spec.name: spec.default for spec in SOBBH_SPECS}
     assert sobbh["spin_1"] is None
+    assert sobbh["f_ref"] is None
     assert sobbh["eccentricity_tref"] == 0.0
     assert sobbh["phase_tref"] == 0.0
+
+
+def test_the_mbhb_reference_frequency_is_closed_at_zero_and_open_above() -> None:
+    """The default 0 of the conventions file lies in the domain [0, ∞) in Hz."""
+    spec = {spec.name: spec for spec in MBHB_SPECS}["frequency_at_reference_time"]
+    assert spec.default == 0.0
+    assert spec.bounds == (0.0, math.inf)
+    assert spec.closed == (True, False)
+    assert spec.unit == "Hz"
+    assert spec.topology is Topology.INTERVAL
+    sobbh = {spec.name: spec for spec in SOBBH_SPECS}["f_ref"]
+    assert sobbh.closed == (False, False)
 
 
 def test_the_spheres_name_the_sky_and_the_spin_directions() -> None:

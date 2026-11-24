@@ -30,6 +30,14 @@ Source frame
 Mass frame
     The detector frame, in which the masses are redshifted by 1 + z (SGS
     Section 2.3).
+Reference frequency
+    The reference frequency of a massive black-hole binary defaults to 0, as in
+    the catpylisa conventions file, where 0 marks the reference that the
+    waveform code chooses; some global fits leave the column out. Its domain is
+    [0, ∞), so the default is valid, and
+    :func:`~mixed_signals.gw.lisa.compare.compare_sources` checks per matched
+    pair that the settings of the two holders agree. The reference frequency
+    of stellar-origin binary black holes has no default.
 
 :class:`ParameterSpec` describes one parameter of a type: its name, LaTeX
 label, unit, topology, physical domain and default. The module holds the
@@ -301,7 +309,16 @@ MBHB_SPECS: Final = (
         closed=(False, False),
     ),
     _angle("phase_at_reference_time", r"\phi_{\mathrm{ref}}", default=0.0),
-    _scale("frequency_at_reference_time", r"f_{\mathrm{ref}}", "Hz"),
+    # * catpylisa's 0 marks the waveform code's own reference; some global fits omit it.
+    ParameterSpec(
+        name="frequency_at_reference_time",
+        label=r"f_{\mathrm{ref}}",
+        unit="Hz",
+        topology=Topology.INTERVAL,
+        bounds=(0.0, math.inf),
+        default=0.0,
+        closed=(True, False),
+    ),
     _RIGHT_ASCENSION,
     _DECLINATION,
     _INCLINATION,
