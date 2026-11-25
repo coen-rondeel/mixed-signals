@@ -4,7 +4,7 @@ A JAX package that checks the quality of single posteriors and compares posterio
 
 ## Read first
 
-`DESIGN.md` holds the agreed architecture: 404 decisions, the package layout, what is open or deferred, and the sources of every method. Follow it.
+`DESIGN.md` holds the agreed architecture: 406 decisions, the package layout, what is open or deferred, and the sources of every method. Follow it.
 
 `ROADMAP.md` splits the implementation into sessions 0 to 19 and tracks their status. Take the next open session, follow its brief and the routine at the top of the file, and update the status table when done.
 

@@ -14,7 +14,7 @@ release = distribution_version("mixed-signals")
 version = release
 
 extensions = [
-    "myst_parser",
+    "myst_nb",
     "sphinx.ext.autodoc",
     "sphinx.ext.intersphinx",
     "sphinx.ext.mathjax",
@@ -22,7 +22,7 @@ extensions = [
     "sphinx.ext.viewcode",
     "sphinxcontrib.bibtex",
 ]
-source_suffix = {".md": "markdown", ".rst": "restructuredtext"}
+source_suffix = {".md": "myst-nb", ".rst": "restructuredtext"}
 exclude_patterns = ["_build"]
 
 # * Docstrings follow the Google convention.
@@ -34,6 +34,13 @@ autodoc_member_order = "bysource"
 autodoc_default_options = {"exclude-members": "model_config"}
 
 myst_enable_extensions = ["colon_fence", "dollarmath"]
+
+# * The tutorials are MyST-NB pages that execute at every build.
+# * The cache skips pages that did not change.
+nb_execution_mode = "cache"
+nb_execution_raise_on_error = True
+nb_execution_timeout = 300
+nb_execution_show_tb = True
 
 intersphinx_mapping = {
     "python": ("https://docs.python.org/3", None),

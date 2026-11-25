@@ -9,6 +9,16 @@ are being implemented one by one.
 
 :::{toctree}
 :maxdepth: 2
+:caption: Tutorials
+
+tutorials/first_comparison
+tutorials/spaces_and_diagnostics
+tutorials/chains_pipeline_report
+tutorials/lisa_sources
+:::
+
+:::{toctree}
+:maxdepth: 2
 
 api
 validation
